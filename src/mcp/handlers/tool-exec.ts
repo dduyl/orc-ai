@@ -1,8 +1,9 @@
 import { rpcOk, rpcError, GUIDE_TEXT, BUILTIN_PROMPTS, type JsonRpcRequest, type JsonRpcResponse } from "./constants.js";
 import type { PlannerResult } from "../../planner/registry.js";
 import { WorkflowRegistry } from "../../planner/registry.js";
-import { orchestrate, type ProgressEvent, type RunReport } from "../../harness/orchestrator.js";
-import { RunStore } from "../../harness/RunStore.js";
+import { orchestrate, type ProgressEvent, type RunReport, type RunTracker } from "../../harness/orchestrator.js";
+import { Tracker } from "../../harness/Tracker.js";
+import { Checkpointer } from "../../harness/Checkpointer.js";
 import { setupProject } from "../../harness/bootstrap.js";
 import type { AdapterDef } from "../../agents/adapter.js";
 import { WorkflowDefinition } from "../../schemas.js";
@@ -10,12 +11,13 @@ import { loadAgentSystemPrompts, loadAgentPrompts } from "../../planner/prompt-l
 import { hasPtyWriter, notifyMainPty } from "../../harness/pty-notifier.js";
 import { resolveCompletion } from "../../harness/StepCompletionRegistry.js";
 import * as crypto from "node:crypto";
+import * as path from "node:path";
 import { log } from "../../log.js";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types";
 
 let _registry: WorkflowRegistry;
 let _adapter: AdapterDef;
-let _runStore: RunStore;
+let _tracker: Tracker;
 let _onProgress: ((event: ProgressEvent) => void) | undefined;
 
 /**
@@ -28,7 +30,7 @@ const _bgRuns = new Map<string, Promise<RunReport>>();
 export function init(adapter: AdapterDef, registry?: WorkflowRegistry, onProgress?: (event: ProgressEvent) => void) {
   _adapter = adapter;
   _registry = registry || new WorkflowRegistry();
-  _runStore = new RunStore();
+  _tracker = new Tracker();
   _onProgress = onProgress;
 }
 
@@ -195,11 +197,14 @@ export async function handleRunWorkflowSdk(
   }));
 
   const totalSteps = stepEntries.length;
-  _runStore.createRun(runId, plan.workflow.workflow.id, workflowName, task, _adapter.id, stepEntries);
+  _tracker.createRun(runId, plan.workflow.workflow.id, workflowName, task, _adapter.id, stepEntries);
+
+  const runTracker: RunTracker = { runId, tracker: _tracker };
+  const checkpointer = new Checkpointer(path.join(process.cwd(), ".orc", "checkpoints.sqlite"));
 
   // Fire orchestrate() in the background — do NOT await here.
   // This lets run_workflow return immediately, avoiding the client-side timeout.
-  const bgPromise = orchestrate(task, _adapter, plan, resume, runId, _runStore, (event: ProgressEvent) => {
+  const bgPromise = orchestrate(task, _adapter, plan, resume, runTracker, checkpointer, (event: ProgressEvent) => {
     _onProgress?.(event);
 
     if (event.type === "step_pty") return;
@@ -234,7 +239,7 @@ export async function handleRunWorkflowSdk(
   }).catch((err: any) => {
     _bgRuns.delete(runId);
     log.warn(`[run ${runId}] Workflow "${workflowId}" failed: ${err.message}`);
-    try { _runStore.updateRunStatus(runId, "failed"); } catch {}
+    try { _tracker.updateRunStatus(runId, "failed"); } catch {}
     // Still notify the PTY so opencode knows the run failed.
     const failReport: RunReport = {
       workflowId,
@@ -286,10 +291,13 @@ async function handleRunWorkflowTool(id: number | string, args: any): Promise<Js
     dependsOn: s.depends_on || [],
   }));
 
-  _runStore.createRun(runId, plan.workflow.workflow.id, workflowName, task, _adapter.id, stepEntries);
+  _tracker.createRun(runId, plan.workflow.workflow.id, workflowName, task, _adapter.id, stepEntries);
+
+  const runTracker: RunTracker = { runId, tracker: _tracker };
+  const checkpointer = new Checkpointer(path.join(process.cwd(), ".orc", "checkpoints.sqlite"));
 
   // Fire in background — same pattern as handleRunWorkflowSdk.
-  const bgPromise = orchestrate(task, _adapter, plan, resume, runId, _runStore)
+  const bgPromise = orchestrate(task, _adapter, plan, resume, runTracker, checkpointer)
     .then((report) => {
       _bgRuns.delete(runId);
       log.info(`[run ${runId}] Workflow "${workflowId}" completed: ${report.completed}/${report.totalSteps} completed`);
@@ -299,7 +307,7 @@ async function handleRunWorkflowTool(id: number | string, args: any): Promise<Js
     .catch((err: any) => {
       _bgRuns.delete(runId);
       log.warn(`[run ${runId}] Workflow "${workflowId}" failed: ${err.message}`);
-      try { _runStore.updateRunStatus(runId, "failed"); } catch {}
+      try { _tracker.updateRunStatus(runId, "failed"); } catch {}
       const failReport: RunReport = {
         workflowId,
         source: plan.source,
@@ -331,7 +339,7 @@ async function handleGetRunStatusTool(id: number | string, args: any): Promise<J
   const runId = args?.runId as string;
   if (!runId) return rpcError(id, -32602, "Missing 'runId' argument");
 
-  let run = _runStore.getRun(runId);
+  let run = _tracker.getRun(runId);
   if (!run) return rpcError(id, -32602, `Unknown runId: ${runId}`);
 
   // Headless fallback: when there is no PTY to push notifications into,
@@ -341,7 +349,7 @@ async function handleGetRunStatusTool(id: number | string, args: any): Promise<J
     const pending = _bgRuns.get(runId);
     if (pending) {
       try { await pending; } catch { /* error already logged & stored */ }
-      run = _runStore.getRun(runId) ?? run;
+      run = _tracker.getRun(runId) ?? run;
     }
   }
 
@@ -371,7 +379,7 @@ async function handleGetRunStatusTool(id: number | string, args: any): Promise<J
 }
 
 function handleListRunsTool(id: number | string): JsonRpcResponse {
-  const runs = _runStore.listRuns();
+  const runs = _tracker.listRuns();
   return rpcOk(id, {
     content: [{ type: "text", text: JSON.stringify(runs.map(r => ({
       runId: r.runId,

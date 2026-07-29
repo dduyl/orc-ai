@@ -1,8 +1,18 @@
+/**
+ * Tracker — Visibility layer.
+ *
+ * Tracks live and historical workflow executions for operator inspection via
+ * the MCP API and GUI. Records step timing, status, agent assignment, and
+ * errors — but not raw content.
+ *
+ * Keyed by a UUID generated at dispatch time (single-run identity).
+ * Stored in: .orc/runs.sqlite
+ */
 import Database from "better-sqlite3";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
-export interface RunStepState {
+export interface StepStatusRecord {
   stepId: string;
   agent: string | null;
   task: string | null;
@@ -23,14 +33,14 @@ export interface RunRecord {
   task: string;
   adapterId: string;
   status: RunStatus;
-  steps: RunStepState[];
+  steps: StepStatusRecord[];
   currentStepId: string | null;
   createdAt: number;
   updatedAt: number;
   completedAt: number | null;
 }
 
-export class RunStore {
+export class Tracker {
   private db: Database.Database;
 
   constructor(dbPath?: string) {
@@ -67,7 +77,7 @@ export class RunStore {
     steps: { stepId: string; agent: string | null; task: string | null; dependsOn: string[] }[],
   ): RunRecord {
     const now = Date.now();
-    const stepStates: RunStepState[] = steps.map(s => ({
+    const stepStates: StepStatusRecord[] = steps.map(s => ({
       stepId: s.stepId,
       agent: s.agent,
       task: s.task,
@@ -110,7 +120,7 @@ export class RunStore {
     this.db.transaction(() => {
       const row = this.db.prepare("SELECT steps_json FROM runs WHERE run_id = ?").get(runId) as any;
       if (!row) return;
-      const steps: RunStepState[] = JSON.parse(row.steps_json);
+      const steps: StepStatusRecord[] = JSON.parse(row.steps_json);
       const step = steps.find(s => s.stepId === stepId);
       if (!step) return;
       step.status = "running";
@@ -125,7 +135,7 @@ export class RunStore {
     this.db.transaction(() => {
       const row = this.db.prepare("SELECT steps_json, status FROM runs WHERE run_id = ?").get(runId) as any;
       if (!row) return;
-      const steps: RunStepState[] = JSON.parse(row.steps_json);
+      const steps: StepStatusRecord[] = JSON.parse(row.steps_json);
       const step = steps.find(s => s.stepId === stepId);
       if (!step) return;
       step.status = status;

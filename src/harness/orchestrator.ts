@@ -6,8 +6,8 @@ import { WorkflowRegistry } from "../planner/registry.js";
 import { runWorkflow, type RunContext, type StepHandler, type StepOutcome } from "./step-runner.js";
 import { checkStepBudget, detectLoop } from "./bounding.js";
 
-import { Checkpointer, type StepCheckpointEntry } from "./Checkpointer.js";
-import { RunStore } from "./RunStore.js";
+import { Checkpointer, type StepResumeSnapshot } from "./Checkpointer.js";
+import { Tracker } from "./Tracker.js";
 import { StreamEmitter } from "../stream/emitter.js";
 import { loadAgentSystemPrompts, type AgentSystemPrompt } from "../planner/prompt-loader.js";
 import { setupProject } from "./bootstrap.js";
@@ -64,20 +64,28 @@ function extractOrcResult(hooks: import("../hooks/types.js").HookEvent[]): OrcRe
   return null;
 }
 
+export interface RunTracker {
+  runId: string;
+  tracker: Tracker;
+}
+
 export async function orchestrate(
   task: string,
   adapter: AdapterDef,
   plan: PlannerResult,
   resume?: boolean,
-  runId?: string,
-  runStore?: RunStore,
+  tracker?: RunTracker,
+  checkpointer?: Checkpointer,
   onProgress?: (event: ProgressEvent) => void,
 ): Promise<RunReport> {
   setupProject();
   const projectRoot = process.cwd();
-  const cp = new Checkpointer(path.join(projectRoot, ".orc", "checkpoints.sqlite"));
+  const cp = checkpointer ?? new Checkpointer(path.join(projectRoot, ".orc", "checkpoints.sqlite"));
 
+  let report: RunReport | undefined;
+  try {
   const activeAdapter = adapter;
+  const runId = tracker?.runId;
 
   let sessionId: string;
   const restoredStepResults = new Map<string, StepOutcome>();
@@ -92,12 +100,12 @@ export async function orchestrate(
         }
       }
       log.info(`[resume] Restored ${restoredStepResults.size}/${Object.keys(existing.stepResults).length} completed steps (session=${sessionId})`);
-      if (runId && runStore) {
-        const run = runStore.getRun(runId);
+      if (tracker) {
+        const run = tracker.tracker.getRun(tracker.runId);
         if (run) {
           for (const [stepId, r] of restoredStepResults) {
-            runStore.setStepCompleted(runId, stepId, r.status, r.error);
-            onProgress?.({ type: "step_complete", runId, stepId, status: r.status, error: r.error });
+            tracker.tracker.setStepCompleted(tracker.runId, stepId, r.status, r.error);
+            onProgress?.({ type: "step_complete", runId: tracker.runId, stepId, status: r.status, error: r.error });
           }
         }
       }
@@ -123,7 +131,7 @@ export async function orchestrate(
     const budget = checkStepBudget(ctx.stepResults.size);
     if (!budget.ok) {
       const o: StepOutcome = { stepId: step.id, status: "failed", error: budget.error, retries: 0 };
-      runStore?.setStepCompleted(runId!, step.id, "failed", budget.error);
+      tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", budget.error);
       onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "failed", error: budget.error });
       emitter.stepFinish(step.id, "budget_exceeded", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
       return o;
@@ -132,13 +140,13 @@ export async function orchestrate(
     const loop = detectLoop(allOutcomes);
     if (!loop.ok) {
       const o: StepOutcome = { stepId: step.id, status: "failed", error: loop.error, retries: 0 };
-      runStore?.setStepCompleted(runId!, step.id, "failed", loop.error);
+      tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", loop.error);
       onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "failed", error: loop.error });
       emitter.stepFinish(step.id, "loop_detected", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
       return o;
     }
 
-    runStore?.setStepRunning(runId!, step.id);
+    tracker?.tracker.setStepRunning(tracker.runId, step.id);
     onProgress?.({ type: "step_start", runId, stepId: step.id, agent: step.agent, task: step.task });
 
     for (let attempt = 0; attempt <= ctx.maxRetries; attempt++) {
@@ -147,7 +155,7 @@ export async function orchestrate(
         const agentInfo = agentPrompts.get(name);
         if (!agentInfo) {
           const o: StepOutcome = { stepId: step.id, status: "failed", error: `Unknown agent: ${name}`, retries: attempt };
-          runStore?.setStepCompleted(runId!, step.id, "failed", `Unknown agent: ${name}`);
+          tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", `Unknown agent: ${name}`);
           onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "failed", error: `Unknown agent: ${name}` });
           emitter.stepFinish(step.id, "error", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
           return o;
@@ -206,14 +214,14 @@ export async function orchestrate(
           affectedFiles: summary.affectedFiles,
           signal: orcResult?.signal
         };
-        runStore?.setStepCompleted(runId!, step.id, "completed");
+        tracker?.tracker.setStepCompleted(tracker.runId, step.id, "completed");
         onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "completed", duration: result.duration });
         emitter.stepFinish(step.id, "stop", "", { total: 0, input: 0, output: output.length, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
         return o;
       } catch (err: any) {
         if (attempt < ctx.maxRetries) continue;
         const o: StepOutcome = { stepId: step.id, status: "failed", error: err.message, retries: attempt };
-        runStore?.setStepCompleted(runId!, step.id, "failed", err.message);
+        tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", err.message);
         onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "failed", error: err.message });
         emitter.stepFinish(step.id, "error", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
         return o;
@@ -221,7 +229,7 @@ export async function orchestrate(
     }
 
     const o: StepOutcome = { stepId: step.id, status: "failed", error: "max retries", retries: ctx.maxRetries };
-    runStore?.setStepCompleted(runId!, step.id, "failed", "max retries");
+    tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", "max retries");
     onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "failed", error: "max retries" });
     emitter.stepFinish(step.id, "max_retries", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
     return o;
@@ -234,8 +242,8 @@ export async function orchestrate(
     maxRetries: 2,
   };
 
-  function collectCheckpoint(): Record<string, StepCheckpointEntry> {
-    const out: Record<string, StepCheckpointEntry> = {};
+  function collectCheckpoint(): Record<string, StepResumeSnapshot> {
+    const out: Record<string, StepResumeSnapshot> = {};
     for (const [stepId, o] of ctx.stepResults) {
       out[stepId] = { status: o.status, output: o.output, error: o.error, retries: o.retries, hooks: o.hooks };
     }
@@ -261,7 +269,7 @@ export async function orchestrate(
 
   saveCheckpoint();
 
-  const report: RunReport = {
+  report = {
     workflowId: plan.workflow.workflow.id,
     source: plan.source,
     outcomes,
@@ -270,15 +278,20 @@ export async function orchestrate(
     failed: outcomes.filter(o => o.status === "failed").length,
   };
 
-  if (runId && runStore) {
+  if (tracker) {
     const finalStatus = report.failed > 0 ? "failed" as const : "completed" as const;
-    runStore.updateRunStatus(runId, finalStatus);
+    tracker.tracker.updateRunStatus(tracker.runId, finalStatus);
   }
 
   onProgress?.({ type: "workflow_complete", runId, status: report.failed > 0 ? "failed" : "completed", report });
 
-  cp.close();
   return report;
+  } finally {
+    if (report && report.failed === 0) {
+      cp.prune(task);
+    }
+    cp.close();
+  }
 }
 
 function buildStepContext(step: import("../schemas.js").WorkflowStep, summaries: Map<string, StepSummary>, originalTask?: string, _agentInfo?: AgentSystemPrompt, completionKey?: string): string {

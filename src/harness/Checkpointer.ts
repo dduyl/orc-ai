@@ -1,9 +1,18 @@
+/**
+ * Checkpointer — Durability layer.
+ *
+ * Saves and restores step-level execution snapshots so that a workflow can
+ * resume from the last completed step after a process crash or restart.
+ *
+ * Keyed by the task description string (cross-run identity).
+ * Stored in: .orc/checkpoints.sqlite
+ */
 import Database from "better-sqlite3";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import type { HookEvent } from "../hooks/types.js";
 
-export interface StepCheckpointEntry {
+export interface StepResumeSnapshot {
   status: "completed" | "failed";
   output?: string;
   error?: string;
@@ -11,12 +20,12 @@ export interface StepCheckpointEntry {
   hooks?: HookEvent[];
 }
 
-export interface CheckpointState {
+export interface ResumeState {
   taskId: string;
   workflowId: string;
   sessionId: string;
   agentId: string;
-  stepResults: Record<string, StepCheckpointEntry>;
+  stepResults: Record<string, StepResumeSnapshot>;
   context: Record<string, unknown>;
 }
 
@@ -42,7 +51,7 @@ export class Checkpointer {
     `);
   }
 
-  save(taskKey: string, state: Omit<CheckpointState, "taskId">): void {
+  save(taskKey: string, state: Omit<ResumeState, "taskId">): void {
     const stmt = this.db.prepare(`
       INSERT INTO checkpoints (task_id, workflow_id, session_id, agent_id, step_results, context, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
@@ -64,7 +73,7 @@ export class Checkpointer {
     );
   }
 
-  load(taskKey: string): CheckpointState | null {
+  load(taskKey: string): ResumeState | null {
     const row = this.db.prepare("SELECT * FROM checkpoints WHERE task_id = ?").get(taskKey) as any;
     if (!row) return null;
     return {
