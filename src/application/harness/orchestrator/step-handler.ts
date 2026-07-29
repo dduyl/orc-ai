@@ -91,10 +91,10 @@ export function createStepHandler(options: {
           const raceResult = await Promise.race([handle.promise, mcpDone]);
           if (typeof (raceResult as any).content !== "string") {
             const mcpData = raceResult as OrcReturnResult;
-            const ptyResult = await handle.promise;
             const mcpOutput = JSON.stringify(mcpData);
-            result = { content: mcpOutput, model: ptyResult.model, tokensUsed: ptyResult.tokensUsed, duration: ptyResult.duration };
+            result = { content: mcpOutput, model: activeAdapter.id, tokensUsed: 0, duration: 0 };
             orcResult = mcpData;
+            handle.promise.catch(() => {});
           } else {
             result = raceResult as AgentCallResult;
           }
