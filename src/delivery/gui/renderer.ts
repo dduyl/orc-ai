@@ -131,12 +131,18 @@ api.onStepActivated(async (data: { stepId: string }) => {
 
   setViewLabel(data.stepId, isMain ? "opencode" : data.stepId, refs.viewLabel);
   refreshPTYTree();
+  term.focus();
 });
 
 term.onData((data: string) => api.write(data));
 
 window.addEventListener("resize", fitTerm);
-window.addEventListener("load", () => setTimeout(fitTerm, 50));
+window.addEventListener("load", () => {
+  setTimeout(() => {
+    fitTerm();
+    term.focus();
+  }, 50);
+});
 fitTerm();
 startPolling();
 
