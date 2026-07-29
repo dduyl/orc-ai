@@ -28,10 +28,11 @@ export function handleReturnResult(id: number | string, args: any): JsonRpcRespo
   const summary = args?.summary || "(no summary)";
   const artifact = args?.artifact || "";
   const affectedFiles = args?.affectedFiles || [];
+  const signal = args?.signal;
   const completionKey = args?.completionKey as string | undefined;
-  log.info(`[return_result] summary="${summary}" artifact="${artifact}" files=${JSON.stringify(affectedFiles)}${completionKey ? ` key=${completionKey}` : ""}`);
+  log.info(`[return_result] summary="${summary}" artifact="${artifact}" files=${JSON.stringify(affectedFiles)}${completionKey ? ` key=${completionKey}` : ""}${signal !== undefined ? ` signal=${signal}` : ""}`);
   if (completionKey) {
-    resolveCompletion(completionKey, { summary, artifact, affectedFiles });
+    resolveCompletion(completionKey, { summary, artifact, affectedFiles, signal });
   }
   return rpcOk(id, { status: "ok", message: "Result recorded." });
 }
