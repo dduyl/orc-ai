@@ -76,7 +76,7 @@ describe("Integration: workflows load and are valid", () => {
   beforeEach(() => {
     dir = tmpDir();
     writeWorkflows(dir);
-    reg = new WorkflowRegistry(dir);
+    reg = new WorkflowRegistry({ userDir: dir });
   });
 
   afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });

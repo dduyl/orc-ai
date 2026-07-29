@@ -24,7 +24,7 @@ function tmpReg(...files: { name: string; data: any }[]): WorkflowRegistry {
   for (const f of files) {
     fs.writeFileSync(path.join(dir, f.name), JSON.stringify(f.data));
   }
-  const reg = new WorkflowRegistry(dir);
+  const reg = new WorkflowRegistry({ userDir: dir });
   reg.loadAll();
   return reg;
 }
@@ -203,7 +203,7 @@ describe("MCP Server — handleToolCall() tool execution", () => {
 
   it("create_workflow saves and returns new workflow", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orc-mcp-wf-"));
-    const reg = new WorkflowRegistry(dir);
+    const reg = new WorkflowRegistry({ userDir: dir });
     const server = makeServer(reg);
 
     const res = await (server as any).handleToolCall({
@@ -263,7 +263,7 @@ describe("MCP Server — handleToolCall() tool execution", () => {
     expect(res.error).toBeUndefined();
     const body = JSON.parse(res.result.content[0].text);
     expect(body.workflowId).toBe("existing_wf");
-    expect(body.status).toBe("completed");
+    expect(body.status).toBe("running");
   });
 
   it("run_workflow with workflowId unknown returns error", async () => {
@@ -366,7 +366,7 @@ describe("MCP Server — HTTP SSE streaming", () => {
             foundResult = true;
             const payload = JSON.parse(msg.result.content[0].text);
             expect(payload.workflowId).toBe("sse_wf");
-            expect(payload.status).toBe("completed");
+            expect(payload.status).toBe("running");
           }
         }
       }

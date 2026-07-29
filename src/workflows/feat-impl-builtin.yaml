@@ -1,0 +1,68 @@
+id: feature_implementation_builtin
+name: Feature Implementation (Built-in)
+description: "Full feature lifecycle: requirements analysis, architecture design, code generation, test generation, review, and validation. Best for new features that touch module boundaries."
+
+steps:
+  - id: spec
+    agent: requirement_analyst
+    needs: []
+    task: "Analyze requirements"
+
+  - id: review_spec
+    agent: review
+    needs: [spec]
+    task: "Review requirements spec"
+    signal:
+      name: spec_ok
+      description: "True if spec is clear and complete, false if ambiguous or missing edge cases"
+      on: null
+      off: spec
+
+  - id: architecture
+    agent: architecture_agent
+    needs: [review_spec]
+    task: "Design architecture"
+
+  - id: review_arch
+    agent: review
+    needs: [architecture]
+    task: "Review architecture design"
+    signal:
+      name: arch_ok
+      description: "True if architecture is sound and addresses all concerns, false if design issues found"
+      on: null
+      off: architecture
+
+  - id: code
+    agent: code_generation_backend
+    needs: [review_arch]
+    task: "Generate code"
+    context: [spec, architecture]
+
+  - id: test
+    agent: test_generation_backend
+    needs: [review_arch]
+    task: "Generate tests then run the full test suite and report results"
+    context: [spec, code]
+
+  - id: review_code
+    agent: review
+    needs: [code]
+    task: "Review generated code"
+    signal:
+      name: code_ok
+      description: "True if code quality is acceptable and all tests pass, false if quality is below threshold or tests fail"
+      on: null
+      off: code
+
+  - id: review_test
+    agent: review
+    needs: [test]
+    task: "Review generated tests"
+    signal:
+      name: test_ok
+      description: "True if coverage is adequate and all tests pass, false if quality is below threshold or tests fail"
+      on: null
+      off: test
+
+completion: "Feature implementation complete"

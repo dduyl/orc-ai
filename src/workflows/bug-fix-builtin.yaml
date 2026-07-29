@@ -1,0 +1,36 @@
+id: bug_fix_builtin
+name: Bug Fix (Built-in)
+description: "Lightweight fix workflow: requirements analysis, code fix, and review. Use for targeted bug fixes without architectural changes."
+
+steps:
+  - id: spec
+    agent: requirement_analyst
+    needs: []
+    task: "Analyze requirements"
+
+  - id: review_spec
+    agent: review
+    needs: [spec]
+    task: "Review requirements spec"
+    signal:
+      name: spec_ok
+      description: "True if bug description is clear and reproduction steps are accurate, false if unclear"
+      on: null
+      off: spec
+
+  - id: code
+    agent: code_generation_backend
+    needs: [review_spec]
+    task: "Generate code"
+
+  - id: review_code
+    agent: review
+    needs: [code]
+    task: "Review code changes"
+    signal:
+      name: fix_ok
+      description: "True if the fix correctly addresses the bug and doesn't introduce regressions and all tests pass, false if still broken or tests fail"
+      on: null
+      off: code
+
+completion: "Bug fixed"
