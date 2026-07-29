@@ -9,5 +9,8 @@ export function hasPtyWriter(): boolean {
 }
 
 export function notifyMainPty(text: string): void {
-  _writeFn?.(text + "\r");
+  const fn = _writeFn;
+  if (!fn) return;
+  fn(text);
+  setTimeout(() => fn("\r"), 100);
 }

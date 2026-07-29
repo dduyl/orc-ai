@@ -1,0 +1,7 @@
+id: noop_builtin
+name: No-op (Built-in)
+description: "Zero-step test workflow. Completes immediately — useful for testing the completion prompt delivery without running any agent steps."
+
+steps: []
+
+completion: "No-op workflow completed — no work was needed."
