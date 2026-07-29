@@ -91,8 +91,6 @@ export function createStepHandler(options: {
           const raceResult = await Promise.race([handle.promise, mcpDone]);
           if (typeof (raceResult as any).content !== "string") {
             const mcpData = raceResult as OrcReturnResult;
-            log.info(`[step ${step.id}] MCP return_result won the race, killing sub-agent PTY`);
-            try { handle.pty.kill(); } catch {}
             const ptyResult = await handle.promise;
             const mcpOutput = JSON.stringify(mcpData);
             result = { content: mcpOutput, model: ptyResult.model, tokensUsed: ptyResult.tokensUsed, duration: ptyResult.duration };

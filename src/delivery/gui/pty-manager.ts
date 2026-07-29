@@ -100,12 +100,14 @@ export class PtyManager {
     const existing = this.ptyMap.get(stepId);
     if (existing) {
       try { existing.pty.kill(); } catch {}
-      this.ptyMap.delete(stepId);
+      existing.pty = pty;
+      existing.name = name;
+      existing.buffer = "";
+    } else {
+      this.ptyMap.set(stepId, { pty, name, buffer: "" });
     }
 
-    const entry: PTYEntry = { pty, name, buffer: "" };
-    this.ptyMap.set(stepId, entry);
-
+    const entry = this.ptyMap.get(stepId)!;
     pty.onData((data: string) => {
       entry.buffer += data;
       if (this.activeStepId === stepId) {
