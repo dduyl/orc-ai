@@ -118,6 +118,14 @@ export class PtyManager {
     this.switchToStep(stepId);
   }
 
+  removeSubagentPTYs(): void {
+    for (const [id, entry] of this.ptyMap) {
+      if (id === MAIN_STEP_ID) continue;
+      try { entry.pty.kill(); } catch { /* ignore */ }
+      this.ptyMap.delete(id);
+    }
+  }
+
   writeActive(data: string): void {
     const entry = this.activeStepId ? this.ptyMap.get(this.activeStepId) : undefined;
     if (entry) entry.pty.write(data);

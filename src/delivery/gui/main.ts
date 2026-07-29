@@ -7,7 +7,7 @@ import { WorkflowRegistry } from "../../application/planner/registry.js";
 import type { ProgressEvent } from "../../application/harness/orchestrator/index.js";
 import { setStreamEventHandler } from "../../adapters/stream/emitter.js";
 import { getAdapter, BUILTIN_ADAPTERS, type AdapterDef } from "../../application/agents/adapter.js";
-import { PtyManager } from "./pty-manager.js";
+import { PtyManager, MAIN_STEP_ID } from "./pty-manager.js";
 import { registerIpcHandlers } from "./ipc-handlers.js";
 import { setProjectDir } from "./run-db.js";
 
@@ -41,6 +41,10 @@ function startEmbeddedMcp(adapter: AdapterDef, projectDir?: string): void {
       (event: ProgressEvent) => {
         if (event.type === "step_pty" && event.pty && event.stepId) {
           ptyManager.addSubagentPTY(event.stepId, event.pty, event.agent || event.stepId);
+        }
+        if (event.type === "workflow_complete") {
+          ptyManager.removeSubagentPTYs();
+          ptyManager.switchToStep(MAIN_STEP_ID);
         }
       },
       projectDir,

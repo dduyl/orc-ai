@@ -163,6 +163,7 @@ export async function handleRunWorkflowSdk(
       completed: 0,
       failed: totalSteps,
     };
+    onProgress?.({ type: "workflow_complete", runId, status: "failed", report: failReport });
     notifyMainPty(buildCompletionPrompt(runId, workflowName, failReport));
     throw err;
   });
@@ -216,6 +217,7 @@ export async function handleRunWorkflowTool(id: number | string, args: any): Pro
     .then((report) => {
       bgRuns.delete(runId);
       log.info(`[run ${runId}] Workflow "${workflowId}" completed: ${report.completed}/${report.totalSteps} completed`);
+      onProgress?.({ type: "workflow_complete", runId, status: report.failed > 0 ? "failed" : "completed", report });
       notifyMainPty(buildCompletionPrompt(runId, workflowName, report));
       return report;
     })
@@ -231,6 +233,7 @@ export async function handleRunWorkflowTool(id: number | string, args: any): Pro
         completed: 0,
         failed: stepEntries.length,
       };
+      onProgress?.({ type: "workflow_complete", runId, status: "failed", report: failReport });
       notifyMainPty(buildCompletionPrompt(runId, workflowName, failReport));
       throw err;
     });
