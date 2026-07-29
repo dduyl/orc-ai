@@ -1,0 +1,12 @@
+node_modules/
+dist/
+docs/
+.cache/
+.orc/
+.agents/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.env
+.env.local
+out/
