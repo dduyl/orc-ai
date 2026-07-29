@@ -14,6 +14,7 @@ import {
   handleCancel,
 } from "./handlers/capabilities.js";
 import { handleToolCall as execToolCall, init as initToolExec } from "./handlers/tool-exec.js";
+import { setAgentCwd } from "../../application/agents/adapter-pty.js";
 import { McpHttpTransport, type McpSession } from "./http-transport.js";
 import { createSdkServer } from "./sdk-server-factory.js";
 
@@ -25,8 +26,9 @@ export class McpServer {
   private sessions = new Map<string, McpSession>();
   private transport = new McpHttpTransport(this.sessions);
 
-  constructor(adapter: AdapterDef, registry?: WorkflowRegistry, onProgress?: (event: import("../../application/harness/orchestrator/index.js").ProgressEvent) => void) {
-    initToolExec(adapter, registry, onProgress);
+  constructor(adapter: AdapterDef, registry?: WorkflowRegistry, onProgress?: (event: import("../../application/harness/orchestrator/index.js").ProgressEvent) => void, projectDir?: string) {
+    initToolExec(adapter, registry, onProgress, projectDir);
+    if (projectDir) setAgentCwd(projectDir);
   }
 
   getHttpServer(): http.Server | null {

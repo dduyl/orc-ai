@@ -2,8 +2,18 @@ import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import Database from "better-sqlite3";
 
+let _projectDir: string | undefined;
+
+export function setProjectDir(dir: string): void {
+  _projectDir = dir;
+}
+
+function projectDir(): string {
+  return _projectDir ?? process.cwd();
+}
+
 export function getRunDb(): Database.Database | null {
-  const dbPath = resolve(process.cwd(), ".orc", "runs.sqlite");
+  const dbPath = resolve(projectDir(), ".orc", "runs.sqlite");
   if (!existsSync(dbPath)) return null;
   try {
     return new Database(dbPath, { readonly: true });

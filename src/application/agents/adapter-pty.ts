@@ -7,6 +7,16 @@ import { log } from "../../core/log.js";
 
 const POLL_INTERVAL_MS = 500;
 
+let _agentCwd: string | undefined;
+
+export function setAgentCwd(dir: string): void {
+  _agentCwd = dir;
+}
+
+function agentCwd(): string {
+  return _agentCwd ?? process.cwd();
+}
+
 export interface AgentPTYStreamHandle {
   pty: IPty;
   promise: Promise<AgentCallResult>;
@@ -42,8 +52,8 @@ export function callAgentStream(
 
     if (process.platform === "win32" && strat.id === "opencode") {
       log.info("Spawning opencode via bash.exe");
-      pty = spawn("bash.exe", ["--login"], {
-        cols, rows, name: "xterm-256color", cwd: process.cwd(), env,
+      pty = spawn("bash.exe", [], {
+        cols, rows, name: "xterm-256color", cwd: agentCwd(), env,
       });
       pty.write(`PROMPT=$(cat << 'EOF'\r`);
       for (const line of prompt.split(/\r?\n/)) {
@@ -53,7 +63,7 @@ export function callAgentStream(
       pty.write(`${adapter.command} --pure --prompt "$PROMPT"\r`);
     } else {
       pty = spawn(adapter.command, args, {
-        cols, rows, name: "xterm-256color", cwd: process.cwd(), env,
+        cols, rows, name: "xterm-256color", cwd: agentCwd(), env,
       });
     }
   } catch (err: any) {

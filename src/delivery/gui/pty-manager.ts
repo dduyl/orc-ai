@@ -26,6 +26,7 @@ export class PtyManager {
     private send: (channel: string, data: unknown) => void,
     private getWin: () => BrowserWindow | undefined,
     private onQuit: () => void,
+    private projectDir?: string,
   ) {}
 
   switchToStep(stepId: string): void {
@@ -36,7 +37,7 @@ export class PtyManager {
 
   spawnMainPTY(adapterId: string): void {
     try {
-      loadDotEnv();
+      loadDotEnv(this.projectDir);
 
       const cmd = adapterId === "opencode"
         ? "opencode"
@@ -54,7 +55,7 @@ export class PtyManager {
         cols: 80,
         rows: 24,
         name: "xterm-256color",
-        cwd: process.cwd(),
+        cwd: this.projectDir ?? process.cwd(),
         env: { ...process.env },
       });
 

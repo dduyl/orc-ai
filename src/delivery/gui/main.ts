@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog } from "electron";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { McpServer } from "../../adapters/mcp/server.js";
@@ -9,6 +9,7 @@ import { setStreamEventHandler } from "../../adapters/stream/emitter.js";
 import { getAdapter, BUILTIN_ADAPTERS, type AdapterDef } from "../../application/agents/adapter.js";
 import { PtyManager } from "./pty-manager.js";
 import { registerIpcHandlers } from "./ipc-handlers.js";
+import { setProjectDir } from "./run-db.js";
 
 const MCP_PORT = 3100;
 
@@ -31,7 +32,7 @@ function send(channel: string, data: unknown): void {
   }
 }
 
-function startEmbeddedMcp(adapter: AdapterDef): void {
+function startEmbeddedMcp(adapter: AdapterDef, projectDir?: string): void {
   try {
     const registry = new WorkflowRegistry();
     const server = new McpServer(
@@ -42,6 +43,7 @@ function startEmbeddedMcp(adapter: AdapterDef): void {
           ptyManager.addSubagentPTY(event.stepId, event.pty, event.agent || event.stepId);
         }
       },
+      projectDir,
     );
 
     server.startHttp(MCP_PORT).then(() => {
@@ -53,7 +55,7 @@ function startEmbeddedMcp(adapter: AdapterDef): void {
   }
 }
 
-function createWindow(adapter: AdapterDef): void {
+function createWindow(adapter: AdapterDef, projectDir?: string): void {
   const preloadPath = join(guiDir, "preload.js");
 
   win = new BrowserWindow({
@@ -71,7 +73,7 @@ function createWindow(adapter: AdapterDef): void {
     },
   });
 
-  ptyManager = new PtyManager(send, () => win, () => app.quit());
+  ptyManager = new PtyManager(send, () => win, () => app.quit(), projectDir);
   registerIpcHandlers(ptyManager);
 
   win.loadFile(join(guiDir, "index.html"));
@@ -80,7 +82,7 @@ function createWindow(adapter: AdapterDef): void {
     console.log("[main] window ready-to-show, starting PTY + MCP");
     win?.show();
     ptyManager.spawnMainPTY(adapter.id);
-    startEmbeddedMcp(adapter);
+    startEmbeddedMcp(adapter, projectDir);
   });
 
   win.on("closed", () => {
@@ -95,6 +97,15 @@ app.whenReady().then(() => {
     send("stream-event", event);
     send("log", { text: `[stream:${event.type}] ${JSON.stringify(event.part ?? {})}` });
   });
+
+  const cwdIndex = process.argv.indexOf("--cwd");
+  const projectDir = cwdIndex !== -1 && cwdIndex + 1 < process.argv.length
+    ? resolve(process.cwd(), process.argv[cwdIndex + 1])
+    : undefined;
+  if (projectDir) {
+    console.log("[main] project dir:", projectDir);
+    setProjectDir(projectDir);
+  }
 
   const adapterIndex = process.argv.indexOf("--adapter");
   const rawAdapterId = process.argv.find((a) => a.startsWith("--adapter="))?.split("=")[1]
@@ -111,7 +122,7 @@ app.whenReady().then(() => {
   }
 
   console.log("[main] adapter:", adapter.id);
-  createWindow(adapter);
+  createWindow(adapter, projectDir);
 });
 
 app.on("window-all-closed", () => {

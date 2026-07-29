@@ -9,7 +9,7 @@ import * as crypto from "node:crypto";
 import * as path from "node:path";
 import { log } from "../../../core/log.js";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types";
-import { adapter, registry, tracker, onProgress, bgRuns } from "./state.js";
+import { adapter, registry, tracker, onProgress, bgRuns, projectDir as stateProjectDir } from "./state.js";
 import { getValidAgentNames, buildCompletionPrompt } from "./formatting.js";
 
 export function handleListWorkflowsTool(id: number | string): JsonRpcResponse {
@@ -113,7 +113,8 @@ export async function handleRunWorkflowSdk(
   tracker.createRun(runId, plan.workflow.workflow.id, workflowName, task, adapter.id, stepEntries);
 
   const runTracker: RunTracker = { runId, tracker };
-  const checkpointer = new Checkpointer(path.join(process.cwd(), ".orc", "checkpoints.sqlite"));
+  const rootDir = stateProjectDir ?? process.cwd();
+  const checkpointer = new Checkpointer(path.join(rootDir, ".orc", "checkpoints.sqlite"));
 
   // Fire orchestrate() in the background — do NOT await here.
   // This lets run_workflow return immediately, avoiding the client-side timeout.
@@ -207,7 +208,8 @@ export async function handleRunWorkflowTool(id: number | string, args: any): Pro
   tracker.createRun(runId, plan.workflow.workflow.id, workflowName, task, adapter.id, stepEntries);
 
   const runTracker: RunTracker = { runId, tracker };
-  const checkpointer = new Checkpointer(path.join(process.cwd(), ".orc", "checkpoints.sqlite"));
+  const rootDir = stateProjectDir ?? process.cwd();
+  const checkpointer = new Checkpointer(path.join(rootDir, ".orc", "checkpoints.sqlite"));
 
   // Fire in background — same pattern as handleRunWorkflowSdk.
   const bgPromise = orchestrate(task, adapter, plan, resume, runTracker, checkpointer)

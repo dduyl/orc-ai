@@ -7,6 +7,7 @@ export let registry: WorkflowRegistry;
 export let adapter: AdapterDef;
 export let tracker: Tracker;
 export let onProgress: ((event: ProgressEvent) => void) | undefined;
+export let projectDir: string | undefined;
 
 /**
  * Keeps background orchestrate() Promises referenced so they are not
@@ -15,9 +16,10 @@ export let onProgress: ((event: ProgressEvent) => void) | undefined;
  */
 export const bgRuns = new Map<string, Promise<RunReport>>();
 
-export function init(adapterDef: AdapterDef, registryOpt?: WorkflowRegistry, onProgressOpt?: (event: ProgressEvent) => void) {
+export function init(adapterDef: AdapterDef, registryOpt?: WorkflowRegistry, onProgressOpt?: (event: ProgressEvent) => void, projectDirOpt?: string) {
   adapter = adapterDef;
   registry = registryOpt || new WorkflowRegistry();
   tracker = new Tracker();
   onProgress = onProgressOpt;
+  projectDir = projectDirOpt;
 }
