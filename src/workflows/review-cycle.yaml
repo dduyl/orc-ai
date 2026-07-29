@@ -1,0 +1,23 @@
+id: review_cycle
+name: Review Cycle Test
+description: "Signal loopback test: review signals false 2 times to re-run spec, then passes. Verifies the cascade reset + re-execution path."
+
+steps:
+  - id: spec
+    agent: requirement_analyst
+    needs: []
+    task: "Run return_result right away with no summary!!!"
+
+  - id: review
+    agent: review
+    needs: [spec]
+    task: >-
+      Review the spec. Use return_result with signal: false to loop back to spec
+      (do this twice), then signal: true on the third attempt.
+    signal:
+      name: spec_ok
+      description: "False to redo spec, true to complete"
+      on: null
+      off: spec
+
+completion: "Review cycle complete — spec passed review."

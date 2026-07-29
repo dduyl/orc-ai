@@ -97,7 +97,11 @@ export class PtyManager {
   }
 
   addSubagentPTY(stepId: string, pty: IPty, name: string): void {
-    if (this.ptyMap.has(stepId)) return;
+    const existing = this.ptyMap.get(stepId);
+    if (existing) {
+      try { existing.pty.kill(); } catch {}
+      this.ptyMap.delete(stepId);
+    }
 
     const entry: PTYEntry = { pty, name, buffer: "" };
     this.ptyMap.set(stepId, entry);

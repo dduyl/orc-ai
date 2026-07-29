@@ -75,7 +75,10 @@ export async function orchestrate(
       plan.workflow.workflow.steps,
       handler,
       ctx,
-      () => { saveCheckpoint(); },
+      (step, outcome) => {
+        allOutcomes.push(outcome);
+        saveCheckpoint();
+      },
     );
 
     saveCheckpoint();

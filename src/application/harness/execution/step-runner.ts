@@ -1,5 +1,6 @@
 import type { WorkflowStep } from "../../../core/schemas.js";
 import type { HookEvent } from "../../../core/hooks.js";
+import { log } from "../../../core/log.js";
 
 export interface RunContext {
   workflowId: string;
@@ -115,10 +116,17 @@ export async function runWorkflow(
 
     if (step.signal && outcome.signal !== undefined) {
       const targetId = outcome.signal ? step.signal.signal_on : step.signal.signal_off;
+      log.info(`[step-runner] signal loopback: step=${step.id} signal=${outcome.signal} targetId=${targetId}`);
       if (targetId) {
-        if (!outcome.signal) cascadeReset(targetId);
+        if (!outcome.signal) {
+          log.info(`[step-runner] cascade reset starting from ${targetId}`);
+          cascadeReset(targetId);
+        }
         const target = stepMap.get(targetId);
-        if (target) maybeRun(target);
+        if (target) {
+          log.info(`[step-runner] re-running target step ${target.id}`);
+          maybeRun(target);
+        }
       }
     }
 
