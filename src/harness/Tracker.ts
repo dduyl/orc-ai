@@ -116,6 +116,32 @@ export class Tracker {
   }
 
   setStepRunning(runId: string, stepId: string): void {
+    this.mutateStep(runId, stepId, (step, now) => {
+      step.status = "running";
+      step.startedAt = now;
+    }, (steps, now) => {
+      this.db.prepare("UPDATE runs SET steps_json = ?, current_step_id = ?, updated_at = ? WHERE run_id = ?")
+        .run(JSON.stringify(steps), stepId, now, runId);
+    });
+  }
+
+  setStepCompleted(runId: string, stepId: string, status: "completed" | "failed", error?: string): void {
+    this.mutateStep(runId, stepId, (step, now) => {
+      step.status = status;
+      step.completedAt = now;
+      step.error = error || null;
+      if (step.startedAt) {
+        step.duration = now - step.startedAt;
+      }
+    });
+  }
+
+  private mutateStep(
+    runId: string,
+    stepId: string,
+    mutate: (step: StepStatusRecord, now: number) => void,
+    finalize?: (steps: StepStatusRecord[], now: number) => void,
+  ): void {
     const now = Date.now();
     this.db.transaction(() => {
       const row = this.db.prepare("SELECT steps_json FROM runs WHERE run_id = ?").get(runId) as any;
@@ -123,29 +149,13 @@ export class Tracker {
       const steps: StepStatusRecord[] = JSON.parse(row.steps_json);
       const step = steps.find(s => s.stepId === stepId);
       if (!step) return;
-      step.status = "running";
-      step.startedAt = now;
-      this.db.prepare("UPDATE runs SET steps_json = ?, current_step_id = ?, updated_at = ? WHERE run_id = ?")
-        .run(JSON.stringify(steps), stepId, now, runId);
-    })();
-  }
-
-  setStepCompleted(runId: string, stepId: string, status: "completed" | "failed", error?: string): void {
-    const now = Date.now();
-    this.db.transaction(() => {
-      const row = this.db.prepare("SELECT steps_json, status FROM runs WHERE run_id = ?").get(runId) as any;
-      if (!row) return;
-      const steps: StepStatusRecord[] = JSON.parse(row.steps_json);
-      const step = steps.find(s => s.stepId === stepId);
-      if (!step) return;
-      step.status = status;
-      step.completedAt = now;
-      step.error = error || null;
-      if (step.startedAt) {
-        step.duration = now - step.startedAt;
+      mutate(step, now);
+      if (finalize) {
+        finalize(steps, now);
+      } else {
+        this.db.prepare("UPDATE runs SET steps_json = ?, updated_at = ? WHERE run_id = ?")
+          .run(JSON.stringify(steps), now, runId);
       }
-      this.db.prepare("UPDATE runs SET steps_json = ?, updated_at = ? WHERE run_id = ?")
-        .run(JSON.stringify(steps), now, runId);
     })();
   }
 

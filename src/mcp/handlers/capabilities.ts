@@ -1,4 +1,6 @@
-import { rpcOk, rpcError, GUIDE_TEXT, type JsonRpcResponse } from "./constants.js";
+import { rpcOk, rpcError, type JsonRpcResponse } from "./rpc.js";
+import { GUIDE_TEXT } from "./content.js";
+import { ORC_INSTRUCTIONS } from "./content.js";
 import { log } from "../../log.js";
 
 export function handleInitialize(id: number | string, params: any): JsonRpcResponse {
@@ -7,21 +9,7 @@ export function handleInitialize(id: number | string, params: any): JsonRpcRespo
     protocolVersion: clientVersion,
     capabilities: { prompts: {}, tools: {}, resources: {} },
     serverInfo: { name: "orc-server", version: "0.1.0" },
-    instructions: [
-      "You are using ORC for code generation workflows. You MUST follow this exact sequence in order:",
-      "",
-      "1. list_workflows \u2014 always call this first to see registered workflows.",
-      "2. list_prompts \u2014 always call this before create_workflow to see valid agent names.",
-      "3. create_workflow \u2014 only when no workflow from step 1 fits your task.",
-      "4. run_workflow \u2014 always use a workflowId from step 1 or step 3, never embed a workflow here.",
-      "",
-      "Rules:",
-      "- Never embed a workflow definition inside run_workflow. Create it first, then run it.",
-      "- Never guess a workflowId \u2014 always get it from list_workflows.",
-      "- Agent names in step definitions must match list_prompts output exactly.",
-      "- Root steps have depends_on: [].",
-      "- If a registered workflow matches the task but you consider it too complex or token-heavy to run, you MUST NOT bypass it. Present both options (run workflow vs. implement directly) with brief tradeoffs and let the user decide.",
-    ].join("\n"),
+    instructions: ORC_INSTRUCTIONS,
   });
 }
 

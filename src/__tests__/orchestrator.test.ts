@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { orchestrate } from "../harness/orchestrator.js";
+import { orchestrate } from "../harness/orchestrator/index.js";
 import { registerStrategy } from "../agents/strategy.js";
 import type { AdapterDef } from "../agents/adapter.js";
 import type { PlannerResult } from "../planner/registry.js";

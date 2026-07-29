@@ -1,0 +1,23 @@
+import type { AdapterDef } from "../../agents/adapter.js";
+import type { ProgressEvent, RunReport } from "../../harness/orchestrator/index.js";
+import { Tracker } from "../../harness/Tracker.js";
+import { WorkflowRegistry } from "../../planner/registry.js";
+
+export let registry: WorkflowRegistry;
+export let adapter: AdapterDef;
+export let tracker: Tracker;
+export let onProgress: ((event: ProgressEvent) => void) | undefined;
+
+/**
+ * Keeps background orchestrate() Promises referenced so they are not
+ * garbage-collected before they resolve.  Also used by get_run_status
+ * to await completion in headless (no-PTY) mode.
+ */
+export const bgRuns = new Map<string, Promise<RunReport>>();
+
+export function init(adapterDef: AdapterDef, registryOpt?: WorkflowRegistry, onProgressOpt?: (event: ProgressEvent) => void) {
+  adapter = adapterDef;
+  registry = registryOpt || new WorkflowRegistry();
+  tracker = new Tracker();
+  onProgress = onProgressOpt;
+}
