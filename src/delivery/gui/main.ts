@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, dialog } from "electron";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
@@ -6,6 +6,7 @@ import { McpServer } from "../../adapters/mcp/server.js";
 import { WorkflowRegistry } from "../../application/planner/registry.js";
 import type { ProgressEvent } from "../../application/harness/orchestrator/index.js";
 import { setStreamEventHandler } from "../../adapters/stream/emitter.js";
+import { getAdapter, BUILTIN_ADAPTERS, type AdapterDef } from "../../application/agents/adapter.js";
 import { PtyManager } from "./pty-manager.js";
 import { registerIpcHandlers } from "./ipc-handlers.js";
 
@@ -30,11 +31,11 @@ function send(channel: string, data: unknown): void {
   }
 }
 
-function startEmbeddedMcp(): void {
+function startEmbeddedMcp(adapter: AdapterDef): void {
   try {
     const registry = new WorkflowRegistry();
     const server = new McpServer(
-      { id: "opencode", command: "opencode", label: "OpenCode AI Code Orchestrator" },
+      adapter,
       registry,
       (event: ProgressEvent) => {
         if (event.type === "step_pty" && event.pty && event.stepId) {
@@ -52,7 +53,7 @@ function startEmbeddedMcp(): void {
   }
 }
 
-function createWindow(adapterId: string): void {
+function createWindow(adapter: AdapterDef): void {
   const preloadPath = join(guiDir, "preload.js");
 
   win = new BrowserWindow({
@@ -61,7 +62,7 @@ function createWindow(adapterId: string): void {
     minWidth: 600,
     minHeight: 300,
     backgroundColor: "#0d0d0d",
-    title: `ORC — ${adapterId}`,
+    title: `ORC — ${adapter.id}`,
     show: false,
     webPreferences: {
       preload: preloadPath,
@@ -78,8 +79,8 @@ function createWindow(adapterId: string): void {
   win.once("ready-to-show", () => {
     console.log("[main] window ready-to-show, starting PTY + MCP");
     win?.show();
-    ptyManager.spawnMainPTY(adapterId);
-    startEmbeddedMcp();
+    ptyManager.spawnMainPTY(adapter.id);
+    startEmbeddedMcp(adapter);
   });
 
   win.on("closed", () => {
@@ -94,11 +95,23 @@ app.whenReady().then(() => {
     send("stream-event", event);
     send("log", { text: `[stream:${event.type}] ${JSON.stringify(event.part ?? {})}` });
   });
-  const adapterId = process.argv.find((a) => a.startsWith("--adapter="))?.split("=")[1]
-    ?? process.argv[process.argv.indexOf("--adapter") + 1]
+
+  const adapterIndex = process.argv.indexOf("--adapter");
+  const rawAdapterId = process.argv.find((a) => a.startsWith("--adapter="))?.split("=")[1]
+    ?? (adapterIndex !== -1 && adapterIndex + 1 < process.argv.length ? process.argv[adapterIndex + 1] : undefined)
     ?? "opencode";
-  console.log("[main] adapterId:", adapterId);
-  createWindow(adapterId);
+
+  const adapter = getAdapter(rawAdapterId);
+  if (!adapter) {
+    const errorMsg = `Unknown adapter "${rawAdapterId}". Available: ${BUILTIN_ADAPTERS.map((a) => a.id).join(", ")}`;
+    console.error(`[main] ${errorMsg}`);
+    dialog.showErrorBox("ORC Adapter Error", errorMsg);
+    app.quit();
+    return;
+  }
+
+  console.log("[main] adapter:", adapter.id);
+  createWindow(adapter);
 });
 
 app.on("window-all-closed", () => {
