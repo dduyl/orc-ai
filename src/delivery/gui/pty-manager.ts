@@ -59,7 +59,7 @@ export class PtyManager {
         env: { ...process.env },
       });
 
-      const entry: PTYEntry = { pty: ptyProcess, name: adapterId, buffer: "" };
+      const entry: PTYEntry = { pty: ptyProcess, name: "orchestrator", buffer: "" };
       this.ptyMap.set(MAIN_STEP_ID, entry);
 
       // Register the writer so background orchestrate() completions can push
