@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ORC</title>
+<link rel="stylesheet" href="xterm.css">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #0d0d0d; color: #c0c0c0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; }
+
+/* ── Layout ── */
+#app { display: flex; flex-direction: column; height: 100%; width: 100%; }
+
+/* ── Title bar ── */
+#titlebar {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 32px; min-height: 32px; padding: 0 12px;
+  background: #1a1a1a; border-bottom: 1px solid #2a2a2a;
+  -webkit-app-region: drag; user-select: none;
+}
+#titlebar .title { font-weight: 600; font-size: 13px; color: #e0e0e0; }
+#titlebar .title-status { display: flex; align-items: center; gap: 6px; font-size: 11px; -webkit-app-region: no-drag; }
+
+/* ── Main split area ── */
+#main { display: flex; flex: 1; min-height: 0; position: relative; }
+
+#terminal-container { flex: 1; min-width: 200px; display: flex; flex-direction: column; overflow: hidden; }
+#view-label {
+  height: 22px; min-height: 22px; padding: 0 8px;
+  background: #1e1e1e; border-bottom: 1px solid #2a2a2a;
+  font-size: 10px; color: #888; display: flex; align-items: center;
+  font-family: Consolas, monospace; letter-spacing: 0.5px;
+}
+#terminal { flex: 1; overflow: hidden; }
+#terminal .xterm { height: 100%; }
+.xterm-viewport::-webkit-scrollbar { display: none; }
+.xterm-viewport { scrollbar-width: none; }
+
+/* ── Splitter ── */
+#splitter {
+  width: 4px; cursor: col-resize; flex-shrink: 0;
+  background: #1a1a1a; transition: background 0.15s;
+}
+#splitter:hover, #splitter:active { background: #3465a4; }
+
+/* ── Right info panel ── */
+#right-panel {
+  width: 280px; min-width: 180px; overflow-y: auto;
+  background: #111; border-left: 1px solid #2a2a2a;
+  padding: 12px; display: flex; flex-direction: column; gap: 12px;
+}
+.section-title {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px;
+  color: #666; margin-bottom: 4px; font-weight: 600;
+}
+.info-row { display: flex; justify-content: space-between; padding: 2px 0; font-size: 12px; }
+.info-row .label { color: #888; }
+.info-row .value { color: #e0e0e0; }
+.info-row .value.running { color: #8ae234; }
+.info-row .value.exited { color: #ef2929; }
+
+#event-list { display: flex; flex-direction: column; gap: 2px; max-height: 300px; overflow-y: auto; }
+.event-entry { font-size: 11px; color: #999; padding: 1px 0; font-family: Consolas, monospace; }
+.event-entry:first-child { margin-top: 0; }
+
+.step-entry {
+  font-size: 11px; padding: 3px 4px 3px 12px; cursor: pointer;
+  border-radius: 3px; user-select: none; display: flex; align-items: center; gap: 4px;
+  transition: background 0.1s;
+}
+.step-entry:hover { background: #1e1e1e; }
+.step-entry.active { background: #1a3a2a; color: #8ae234; }
+.step-entry .step-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+.step-entry .step-dot.main { background: #729fcf; }
+.step-entry .step-dot.child { background: #555; }
+.step-entry .step-dot.active { background: #8ae234; }
+.step-entry .step-label { color: #c0c0c0; }
+.step-entry.active .step-label { color: #8ae234; }
+
+/* ── Status bar ── */
+#statusbar {
+  display: flex; align-items: center; gap: 16px;
+  height: 24px; min-height: 24px; padding: 0 12px;
+  background: #1a1a1a; border-top: 1px solid #2a2a2a;
+  font-size: 11px; color: #888;
+}
+.status-dot {
+  width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+  background: #555; flex-shrink: 0;
+}
+.status-dot.connected { background: #8ae234; }
+.status-dot.disconnected { background: #ef2929; }
+#status-text { color: #aaa; }
+#term-size, #exit-status { color: #666; margin-left: auto; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Title bar -->
+  <div id="titlebar">
+    <span class="title">ORC</span>
+    <span class="title-status">
+      <span class="status-dot" id="status-indicator"></span>
+      <span id="status-text">Initializing...</span>
+    </span>
+  </div>
+
+  <!-- Main split area -->
+  <div id="main">
+    <div id="terminal-container">
+      <div id="view-label">Viewing: opencode</div>
+      <div id="terminal"></div>
+    </div>
+    <div id="splitter"></div>
+    <div id="right-panel">
+      <div>
+        <div class="section-title">Agent</div>
+        <div class="info-row"><span class="label">Adapter</span><span class="value" id="info-adapter">—</span></div>
+        <div class="info-row"><span class="label">Status</span><span class="value" id="info-status">Connecting</span></div>
+        <div class="info-row"><span class="label">PID</span><span class="value" id="info-pid">—</span></div>
+        <div class="info-row"><span class="label">Size</span><span class="value" id="info-size">—</span></div>
+      </div>
+      <div>
+        <div class="section-title">Events</div>
+        <div id="event-list">
+          <div class="event-entry">› Waiting for connection...</div>
+        </div>
+      </div>
+      <div>
+        <div class="section-title">PTY Sessions</div>
+        <div id="pty-tree"></div>
+      </div>
+      <div>
+        <div class="section-title">Steps</div>
+        <div id="step-tree">
+          <div class="event-entry">› No active run</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Status bar -->
+  <div id="statusbar">
+    <span class="status-dot" id="sb-indicator"></span>
+    <span id="sb-text">Initializing...</span>
+    <span id="term-size"></span>
+    <span id="exit-status"></span>
+  </div>
+
+</div>
+<script src="renderer.js"></script>
+</body>
+</html>
