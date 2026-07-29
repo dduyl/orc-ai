@@ -4,7 +4,7 @@ import { execSync } from 'node:child_process';
 // patched by postinstall (./dist/esm/* → ./dist/esm/*.js), so esbuild resolves
 // our .js extension imports correctly.
 execSync(
-  'npx -y esbuild dist/cli/index.js --bundle --outfile=dist/bundle.js --platform=node --format=cjs --external:better-sqlite3 --external:node-pty',
+  'npx -y esbuild dist/delivery/cli/index.js --bundle --outfile=dist/bundle.js --platform=node --format=cjs --external:better-sqlite3 --external:node-pty',
   { stdio: 'inherit', cwd: process.cwd() }
 );
 

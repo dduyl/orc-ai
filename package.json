@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "postinstall": "node scripts/postinstall.mjs",
-    "build": "tsc && npx -y esbuild src/gui/renderer.ts --bundle --outfile=dist/gui/renderer.js --format=iife --platform=browser && node --input-type=module -e \"import * as fs from 'node:fs'; import { join } from 'node:path'; fs.mkdirSync('dist/gui', { recursive: true }); fs.copyFileSync('src/gui/index.html', 'dist/gui/index.html'); fs.cpSync(join('node_modules/@xterm/xterm/css', 'xterm.css'), join('dist/gui', 'xterm.css')); fs.mkdirSync('dist/workflows', { recursive: true }); for (const f of fs.readdirSync('src/workflows').filter(x => /\\.(yaml|yml)$/i.test(x))) fs.copyFileSync(join('src/workflows', f), join('dist/workflows', f));\"",
+    "build": "tsc && npx -y esbuild src/delivery/gui/renderer.ts --bundle --outfile=dist/gui/renderer.js --format=iife --platform=browser && node --input-type=module -e \"import * as fs from 'node:fs'; import { join } from 'node:path'; fs.mkdirSync('dist/gui', { recursive: true }); fs.copyFileSync('src/delivery/gui/index.html', 'dist/gui/index.html'); fs.cpSync(join('node_modules/@xterm/xterm/css', 'xterm.css'), join('dist/gui', 'xterm.css')); fs.mkdirSync('dist/workflows', { recursive: true }); for (const f of fs.readdirSync('src/workflows').filter(x => /\\.(yaml|yml)$/i.test(x))) fs.copyFileSync(join('src/workflows', f), join('dist/workflows', f));\"",
     "rebuild:native": "node scripts/rebuild-native.mjs",
     "rebuild:host": "node scripts/rebuild-native.mjs --host",
     "build:binary": "npm run build && node scripts/build-binary.mjs",
-    "start:gui": "npm run build && electron dist/gui/main.js",
+    "start:gui": "npm run build && electron dist/delivery/gui/main.js",
     "lint": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
