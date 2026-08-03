@@ -16,8 +16,8 @@ describe("Integration Workflow", () => {
     expect(registry.count()).toBe(0);
 
     const steps: WorkflowStep[] = [
-      { id: "s1", agent: "analyst", depends_on: [], context: [] },
-      { id: "s2", agent: "codegen", depends_on: ["s1"], context: [] },
+      { type: "agent", id: "s1", agent: "analyst", depends_on: [], context: [] },
+      { type: "agent", id: "s2", agent: "codegen", depends_on: ["s1"], context: [] },
     ];
 
     const outcomes = await runWorkflow(

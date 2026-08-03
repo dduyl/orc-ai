@@ -3,7 +3,10 @@ import { readFileSync, existsSync } from "node:fs";
 import { parse as parseToml } from "toml";
 
 export interface ResultGroup {
+  /** Group name (or "inline" for ad-hoc commands). */
   name: string;
+  /** The exact command text whose output this group captures. */
+  command: string;
   exitCode: number;
   stdout: string;
   stderr: string;
@@ -97,7 +100,7 @@ export async function runCommandGroup(
   const groups: ResultGroup[] = [];
   for (const command of commands) {
     const { exitCode, stdout, stderr } = await runCommand(command);
-    groups.push({ name, exitCode, stdout, stderr });
+    groups.push({ name, command, exitCode, stdout, stderr });
     if (exitCode !== 0) break;
   }
   const failed = groups.find(g => g.exitCode !== 0);
@@ -108,6 +111,47 @@ export async function runCommandGroup(
 /** Runs a single inline command as an ad hoc group. */
 export async function runInlineCommand(command: string): Promise<CommandExecutionResult> {
   return runCommandGroup("inline", [command]);
+}
+
+export type RunIntent =
+  | { kind: "cmd"; key: string }
+  | { kind: "exec"; command: string };
+
+// Matches a fully-quoted double-quoted argument that may contain escaped chars.
+// Group 2 = the raw inner content (between the mandatory surrounding quotes).
+const QUOTED = /^(cmd|exec)\s+"((?:\\.|[^"\\])*)"\s*$/;
+
+/**
+ * Parse a script step's `run` expression into a dispatchable intent.
+ * Valid shapes:
+ * - `cmd "group.key"`  — reference a named command group in `commands.toml`
+ * - `exec "literal shell command"` — run a literal shell command string
+ * The argument MUST be a single double-quoted string; escaped chars (`\"`, `\\`)
+ * are honoured. Anything else (bare path, unquoted arg, empty, stray text) → `ok: false`.
+ */
+export function parseRun(run: string): { ok: true; intent: RunIntent } | { ok: false; error: string } {
+  if (!run || run.trim().length === 0) {
+    return { ok: false, error: "empty run expression" };
+  }
+  const m = run.trim().match(QUOTED);
+  const kind = m?.[1] as "cmd" | "exec" | undefined;
+  const raw = m?.[2] ?? "";
+  if (!kind) {
+    return { ok: false, error: `malformed run expression '${run}' — expected cmd "..." or exec "..."` };
+  }
+  if (raw.length === 0) {
+    return { ok: false, error: `run expression '${run}' has an empty argument` };
+  }
+  const argument = unescapeQuoted(raw);
+  if (kind === "exec") {
+    return { ok: true, intent: { kind: "exec", command: argument } };
+  }
+  return { ok: true, intent: { kind: "cmd", key: argument } };
+}
+
+/** Decode the captured body by unescaping `\"` and `\\` (no other escapes). */
+function unescapeQuoted(raw: string): string {
+  return raw.replace(/\\(["\\])/g, "$1");
 }
 
 export class CommandExecutor {
@@ -125,7 +169,7 @@ export class CommandExecutor {
   async run(key: string): Promise<CommandExecutionResult> {
     const commands = this.commands[key];
     if (!commands || commands.length === 0) {
-      return { schemaVersion: 1, passed: false, exitCode: 1, groups: [{ name: key, exitCode: 1, stdout: "", stderr: `Unknown command group: ${key}` }] };
+      return { schemaVersion: 1, passed: false, exitCode: 1, groups: [{ name: key, command: key, exitCode: 1, stdout: "", stderr: `Unknown command group: ${key}` }] };
     }
     return runCommandGroup(key, commands);
   }
@@ -133,8 +177,25 @@ export class CommandExecutor {
   /** Run an inline command (one-off, not from commands.toml). */
   async runInline(command: string): Promise<CommandExecutionResult> {
     if (!command || command.length === 0) {
-      return { schemaVersion: 1, passed: false, exitCode: 1, groups: [{ name: "inline", exitCode: 1, stdout: "", stderr: "Empty inline command" }] };
+      return { schemaVersion: 1, passed: false, exitCode: 1, groups: [{ name: "inline", command: "", exitCode: 1, stdout: "", stderr: "Empty inline command" }] };
     }
     return runCommandGroup("inline", [command]);
+  }
+
+  /**
+   * Dispatch a script step's `run` expression string. Returns `{ ok: false, error }`
+   * for malformed expressions (a config error, hard-fails the step), otherwise the
+   * execution result with a real exit code.
+   */
+  async execute(run: string): Promise<{ ok: false; error: string } | { ok: true; result: CommandExecutionResult }> {
+    const parsed = parseRun(run);
+    if (!parsed.ok) {
+      return { ok: false, error: parsed.error };
+    }
+    const intent = parsed.intent;
+    if (intent.kind === "exec") {
+      return { ok: true, result: await this.runInline(intent.command) };
+    }
+    return { ok: true, result: await this.run(intent.key) };
   }
 }

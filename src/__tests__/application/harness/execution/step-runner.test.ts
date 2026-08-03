@@ -5,8 +5,8 @@ import type { WorkflowStep } from "../../../../core/schemas.js";
 describe("step-runner", () => {
   it("resolves ready steps based on dependencies", () => {
     const steps: WorkflowStep[] = [
-      { id: "s1", agent: "a", depends_on: [], context: [] },
-      { id: "s2", agent: "b", depends_on: ["s1"], context: [] },
+      { type: "agent", id: "s1", agent: "a", depends_on: [], context: [] },
+      { type: "agent", id: "s2", agent: "b", depends_on: ["s1"], context: [] },
     ];
     const ctx: RunContext = {
       workflowId: "wf1",
@@ -25,9 +25,8 @@ describe("step-runner", () => {
 
   it("re-runs target step when signal is false (signal_off) with cascade reset", async () => {
     const steps: WorkflowStep[] = [
-      { id: "spec", agent: "a", depends_on: [], context: [] },
-      {
-        id: "review", agent: "b", depends_on: ["spec"], context: [],
+      { type: "agent", id: "spec", agent: "a", depends_on: [], context: [] },
+      { type: "agent", id: "review", agent: "b", depends_on: ["spec"], context: [],
         signal: { name: "ok", description: "", signal_on: null, signal_off: "spec" },
       },
     ];
@@ -63,9 +62,8 @@ describe("step-runner", () => {
 
   it("does not loop when signal is undefined", async () => {
     const steps: WorkflowStep[] = [
-      { id: "spec", agent: "a", depends_on: [], context: [] },
-      {
-        id: "review", agent: "b", depends_on: ["spec"], context: [],
+      { type: "agent", id: "spec", agent: "a", depends_on: [], context: [] },
+      { type: "agent", id: "review", agent: "b", depends_on: ["spec"], context: [],
         signal: { name: "ok", description: "", signal_on: null, signal_off: "spec" },
       },
     ];
@@ -94,12 +92,11 @@ describe("step-runner", () => {
 
   it("cascade reset clears dependent steps", async () => {
     const steps: WorkflowStep[] = [
-      { id: "spec", agent: "a", depends_on: [], context: [] },
-      {
-        id: "review", agent: "b", depends_on: ["spec"], context: [],
+      { type: "agent", id: "spec", agent: "a", depends_on: [], context: [] },
+      { type: "agent", id: "review", agent: "b", depends_on: ["spec"], context: [],
         signal: { name: "ok", description: "", signal_on: null, signal_off: "spec" },
       },
-      { id: "code", agent: "c", depends_on: ["review"], context: [] },
+      { type: "agent", id: "code", agent: "c", depends_on: ["review"], context: [] },
     ];
 
     let reviewCalls = 0;
@@ -133,11 +130,10 @@ describe("step-runner", () => {
 
   it("runs signal_on target when signal is true", async () => {
     const steps: WorkflowStep[] = [
-      {
-        id: "validate", agent: "a", depends_on: [], context: [],
+      { type: "agent", id: "validate", agent: "a", depends_on: [], context: [],
         signal: { name: "ok", description: "", signal_on: "next", signal_off: null },
       },
-      { id: "next", agent: "b", depends_on: [], context: [] },
+      { type: "agent", id: "next", agent: "b", depends_on: [], context: [] },
     ];
 
     const handler: StepHandler = async (step) => {
@@ -164,8 +160,8 @@ describe("step-runner", () => {
 
   it("signal unset step does not trigger loopback", async () => {
     const steps: WorkflowStep[] = [
-      { id: "spec", agent: "a", depends_on: [], context: [] },
-      { id: "code", agent: "b", depends_on: ["spec"], context: [] },
+      { type: "agent", id: "spec", agent: "a", depends_on: [], context: [] },
+      { type: "agent", id: "code", agent: "b", depends_on: ["spec"], context: [] },
     ];
 
     let codeCalls = 0;

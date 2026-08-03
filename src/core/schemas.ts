@@ -76,6 +76,7 @@ export const BuildResult = z.object({
   exitCode: z.number(),
   groups: z.array(z.object({
     name: z.string(),
+    command: z.string(),
     exitCode: z.number(),
     stdout: z.string(),
     stderr: z.string(),
@@ -97,7 +98,19 @@ export type ReviewResult = z.infer<typeof ReviewResult>;
 
 export const WorkflowStep = z.object({
   id: z.string(),
-  agent: z.string(),
+  type: z.enum(["agent", "script"]).default("agent"),
+  /**
+   * Required for `type: "agent"`. Forbidden for `type: "script"`.
+   * Enforced by the refine below.
+   */
+  agent: z.string().optional(),
+  /**
+   * A single `run` expression for `type: "script"` steps. One of two shapes:
+   * - `cmd "group.key"`  — reference a named command group in `commands.toml`
+   * - `exec "literal shell"` — run a literal shell command string
+   * Exactly one is required and enforced by the refine below.
+   */
+  run: z.string().optional(),
   depends_on: z.array(z.string()).default([]),
   context: z.array(z.string()).optional().default([]),
   task: z.string().optional(),
@@ -107,6 +120,19 @@ export const WorkflowStep = z.object({
     signal_on: z.string().nullable().default(null),
     signal_off: z.string().nullable().default(null),
   }).optional(),
+}).superRefine((step, ctx) => {
+  if (step.type === "script") {
+    if (step.agent) {
+      ctx.addIssue({ code: "custom", message: `script step '${step.id}' must not declare an agent` });
+    }
+    if (!step.run) {
+      ctx.addIssue({ code: "custom", message: `script step '${step.id}' must declare a 'run' expression (cmd "..." or exec "...")` });
+    }
+  } else {
+    if (step.run) {
+      ctx.addIssue({ code: "custom", message: `agent step '${step.id}' must not declare 'run'` });
+    }
+  }
 });
 export type WorkflowStep = z.infer<typeof WorkflowStep>;
 

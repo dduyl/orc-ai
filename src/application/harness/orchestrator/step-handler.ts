@@ -3,9 +3,11 @@ import type { AdapterDef, AgentCallResult } from "../../agents/adapter.js";
 import { callAgentStream } from "../../agents/adapter-pty.js";
 import type { AgentSystemPrompt } from "../../planner/prompt-loader.js";
 import { checkStepBudget, detectLoop } from "../execution/bounding.js";
+import { CommandExecutor } from "../execution/CommandExecutor.js";
+import { commandsTomlPath } from "../persistence/bootstrap.js";
 import { createHookFile, readHookEvents, removeHookFile } from "../../../adapters/hooks/endpoint.js";
 import { registerCompletion } from "../signalling/StepCompletionRegistry.js";
-import type { StepHandler, StepOutcome } from "../execution/step-runner.js";
+import type { StepHandler, StepOutcome, RunContext } from "../execution/step-runner.js";
 import { StreamEmitter } from "../../../adapters/stream/emitter.js";
 import { log } from "../../../core/log.js";
 import { buildStepContext } from "./context-builder.js";
@@ -32,11 +34,53 @@ export function createStepHandler(options: {
   task: string;
   tracker?: RunTracker;
   onProgress?: (event: ProgressEvent) => void;
+  /** Injectable for tests; defaults to a CommandExecutor bound to commandsTomlPath(). */
+  commandExecutor?: CommandExecutor;
 }): StepHandler {
-  const { adapter, agentPrompts, completedSummaries, allOutcomes, emitter, task, tracker, onProgress } = options;
+  const { adapter, agentPrompts, completedSummaries, allOutcomes, emitter, task, tracker, onProgress, commandExecutor } = options;
   const activeAdapter = adapter;
   const forAgent = (_name: string): AdapterDef => activeAdapter;
   const runId = tracker?.runId;
+  const executor = commandExecutor ?? new CommandExecutor(commandsTomlPath());
+
+  async function runScriptStep(
+    step: import("../../../core/schemas.js").WorkflowStep,
+    ctx: RunContext,
+  ): Promise<StepOutcome> {
+    const run = step.run;
+    const exec = run ? await executor.execute(run) : { ok: false as const, error: `script step '${step.id}' has no 'run' expression` };
+
+    if (!exec.ok) {
+      const err = exec.error;
+      const o: StepOutcome = { stepId: step.id, status: "failed", error: err, retries: 0 };
+      tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", err);
+      onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "failed", error: err });
+      emitter.stepFinish(step.id, "error", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
+      return o;
+    }
+
+    const result = exec.result;
+    const annotate = (g: { command: string; stdout?: string; stderr?: string }, pick: "stdout" | "stderr") => {
+      const text = g[pick] ?? "";
+      return text ? `$ ${g.command}\n${text}` : "";
+    };
+    ctx.buildResults.set(step.id, {
+      exitCode: result.exitCode,
+      stdout: result.groups.map(g => annotate(g, "stdout")).filter(Boolean).join("\n"),
+      stderr: result.groups.map(g => annotate(g, "stderr")).filter(Boolean).join("\n"),
+    });
+
+    const o: StepOutcome = {
+      stepId: step.id,
+      status: "completed",
+      signal: result.passed,
+      retries: 0,
+    };
+    tracker?.tracker.setStepCompleted(tracker.runId, step.id, "completed");
+    onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "completed" });
+    emitter.stepFinish(step.id, result.passed ? "stop" : "error", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
+    return o;
+  }
 
   return async (step, ctx) => {
     emitter.stepStart(step.id);
@@ -62,9 +106,20 @@ export function createStepHandler(options: {
     tracker?.tracker.setStepRunning(tracker.runId, step.id);
     onProgress?.({ type: "step_start", runId, stepId: step.id, agent: step.agent, task: step.task });
 
+    if (step.type === "script") {
+      return await runScriptStep(step, ctx);
+    }
+
     for (let attempt = 0; attempt <= ctx.maxRetries; attempt++) {
       try {
         const name = step.agent;
+        if (!name) {
+          const o: StepOutcome = { stepId: step.id, status: "failed", error: `agent step '${step.id}' missing 'agent'`, retries: attempt };
+          tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", `agent step '${step.id}' missing 'agent'`);
+          onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "failed", error: `agent step '${step.id}' missing 'agent'` });
+          emitter.stepFinish(step.id, "error", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
+          return o;
+        }
         const agentInfo = agentPrompts.get(name);
         if (!agentInfo) {
           const o: StepOutcome = { stepId: step.id, status: "failed", error: `Unknown agent: ${name}`, retries: attempt };

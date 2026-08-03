@@ -8,6 +8,7 @@ import {
   resolveDottedKey,
   runCommandGroup,
   runInlineCommand,
+  parseRun,
 } from "../../../../application/harness/execution/CommandExecutor.js";
 import { BuildResult } from "../../../../core/schemas.js";
 
@@ -51,6 +52,43 @@ describe("loadCommandsFile", () => {
 });
 
 describe("CommandExecutor", () => {
+  it("parses exec run expressions into inline intents", () => {
+    expect(parseRun('exec "node --check src/index.js"')).toEqual({
+      ok: true,
+      intent: { kind: "exec", command: "node --check src/index.js" },
+    });
+  });
+
+  it("parses cmd run expressions into group-key intents", () => {
+    expect(parseRun('cmd "test.unit"')).toEqual({
+      ok: true,
+      intent: { kind: "cmd", key: "test.unit" },
+    });
+  });
+
+  it("rejects malformed run expressions", () => {
+    expect(parseRun("test.unit").ok).toBe(false);
+    expect(parseRun('cmd test.unit').ok).toBe(false);
+    expect(parseRun('exec ""').ok).toBe(false);
+    expect(parseRun("").ok).toBe(false);
+  });
+
+  it("executes an exec run expression through runInlineCommand", async () => {
+    const exec = new CommandExecutor(path.join(tmpDir(), "empty.toml"));
+    const r = await exec.execute('exec "exit 0"');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.result.passed).toBe(true);
+  });
+
+  it("executes a cmd run expression through a named group", async () => {
+    const file = path.join(tmpDir(), "commands.toml");
+    fs.writeFileSync(file, `[ok]\ncommands = ["exit 0"]\n`, "utf-8");
+    const exec = new CommandExecutor(file);
+    const r = await exec.execute('cmd "ok"');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.result.passed).toBe(true);
+  });
+
   it("runs a named group and returns its exit code", async () => {
     const file = path.join(tmpDir(), "commands.toml");
     fs.writeFileSync(file, `[ok]\ncommands = ["exit 0"]\n`, "utf-8");
@@ -65,6 +103,7 @@ describe("CommandExecutor", () => {
     expect(res.passed).toBe(false);
     expect(res.exitCode).toBe(7);
     expect(res.groups).toHaveLength(2);
+    expect(res.groups.map(g => g.command)).toEqual(["exit 0", "exit 7"]);
   });
 
   it("returns a failure for an unknown group", async () => {
@@ -85,6 +124,7 @@ describe("CommandExecutor", () => {
     expect(res.passed).toBe(true);
     expect(res.groups[0].stdout).toContain("hi");
     expect(res.groups[0].stderr).toContain("err");
+    expect(res.groups[0].command).toBe("node -e \"console.log('hi'); console.error('err')\"");
   });
 
   it("rejects an empty inline command", async () => {

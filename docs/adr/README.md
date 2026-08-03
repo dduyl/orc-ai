@@ -13,12 +13,12 @@ trusting an "Implemented" mark after further changes.
 
 | # | Title | Decision | Implementation | Notes |
 |---|---|---|---|---|
-| 001 | Deterministic Validation as Ground Truth | Accepted | Not Implemented | Depends on 006/011; test steps currently self-reported by the agent |
+| 001 | Deterministic Validation as Ground Truth | Accepted | Partial | `type: script` steps now gate on a real exit code; built-in workflows still rely on agent-narrated test results (Phase C) |
 | 002 | Code Graph via CodeGraphContext | Accepted | Not Implemented | Not wired into Architecture Agent's tools |
 | 003 | Index File Ownership by Convention | Accepted | Unverified | Whether specs.json/adrs.json/etc. are actually written was not confirmed |
 | 004 | Architecture Gate and Mandatory-Precision Contract | Accepted | Partial | Gate exists via a review step; contract is schema-optional, not enforced as precise |
 | 005 | Test Timing and Target | Accepted | Unverified | Actual agent prompt content not inspected |
-| 006 | Command Execution Model | Accepted | Not Implemented | No CommandExecutor or `type: script` step exists |
+| 006 | Command Execution Model | Accepted | Implemented | CommandExecutor + `type: script` step in the runner gate on a real exit code |
 | 007 | Runtime Substrate: PTY-Driven Coding Agent | Accepted | Implemented | Confirmed: adapter-pty.ts, PTY/MCP race, strategy files |
 | 008 | Bounded Research Tool-Calls per Agent Step | Accepted | Not Implemented | Only the global bound (017) currently applies |
 | 009 | Review Agent | Accepted | Partial | A review step exists; single-parameterized-agent design not confirmed |
