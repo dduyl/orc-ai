@@ -1,6 +1,6 @@
 id: bug_fix_builtin
 name: Bug Fix (Built-in)
-description: "Lightweight fix workflow: requirements analysis, code fix, and review. Use for targeted bug fixes without architectural changes."
+description: "Lightweight fix workflow: requirements analysis, code fix, and review. Use for targeted bug fixes without architectural changes. The fix passes only if the validation gate exits 0 (ADR-001)."
 
 steps:
   - id: spec
@@ -23,13 +23,24 @@ steps:
     needs: [review_spec]
     task: "Generate code"
 
-  - id: review_code
-    agent: review
+  - id: validate
+    type: script
     needs: [code]
-    task: "Review code changes"
+    run: 'cmd "validate"'
     signal:
       name: fix_ok
-      description: "True if the fix correctly addresses the bug and doesn't introduce regressions and all tests pass, false if still broken or tests fail"
+      description: "True if the fix passes validation (exit 0), false if still broken"
+      on: null
+      off: code
+
+  - id: review_code
+    agent: review
+    needs: [validate]
+    task: "Review code changes"
+    context: [code, validate]
+    signal:
+      name: fix_review_ok
+      description: "True if the fix is correct and introduces no regressions, false if issues remain"
       on: null
       off: code
 

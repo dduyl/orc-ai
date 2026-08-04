@@ -76,6 +76,8 @@ src/
     adapter.test.ts        — 5 config loader + adapter constructor tests
     agents.test.ts         — 1 mock adapter tests
     step-runner.test.ts    — 13 workflow topology tests
+    step-handler.test.ts   — 23 gate/repair feedback + prompt tests
+    builtin-workflow-gates.test.ts — 2 builtin script gate wiring tests
     context-overflow.test.ts  — 2 size check tests
     conformance-check.test.ts — 4 signature matching tests
     failure-triage.test.ts    — 2 LLM triage tests

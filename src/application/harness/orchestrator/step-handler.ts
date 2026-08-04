@@ -10,7 +10,7 @@ import { registerCompletion } from "../signalling/StepCompletionRegistry.js";
 import type { StepHandler, StepOutcome, RunContext } from "../execution/step-runner.js";
 import { StreamEmitter } from "../../../adapters/stream/emitter.js";
 import { log } from "../../../core/log.js";
-import { buildStepContext } from "./context-builder.js";
+import { buildStepContext, buildResponseInstructions } from "./context-builder.js";
 import type { OrcReturnResult, ProgressEvent, RunTracker, StepSummary } from "./types.js";
 
 function extractOrcResult(hooks: import("../../../core/hooks.js").HookEvent[]): OrcReturnResult | null {
@@ -23,6 +23,32 @@ function extractOrcResult(hooks: import("../../../core/hooks.js").HookEvent[]): 
     }
   }
   return null;
+}
+
+export function buildRepairPrompt(
+  gateId: string,
+  result: import("../execution/CommandExecutor.js").CommandExecutionResult,
+  step: import("../../../core/schemas.js").WorkflowStep,
+  completionKey?: string,
+): string {
+  const blocks = result.groups.map((g, i) => {
+    const lines = [
+      `--- command ${i + 1}/${result.groups.length} ---`,
+      `command: ${g.command}`,
+      `exit code: ${g.exitCode}`,
+    ];
+    if (g.stdout) lines.push(`stdout:\n${g.stdout}`);
+    if (g.stderr) lines.push(`stderr:\n${g.stderr}`);
+    return lines.join("\n");
+  });
+  return [
+    `=== PREVIOUS VALIDATION FAILURE — FIX REQUIRED ===`,
+    `The '${gateId}' gate failed. Repair the issue, then re-run the validation.`,
+    "",
+    ...blocks,
+    "",
+    buildResponseInstructions(step, completionKey),
+  ].join("\n");
 }
 
 export function createStepHandler(options: {
@@ -42,6 +68,7 @@ export function createStepHandler(options: {
   const forAgent = (_name: string): AdapterDef => activeAdapter;
   const runId = tracker?.runId;
   const executor = commandExecutor ?? new CommandExecutor(commandsTomlPath());
+  const repairFeedbacks = new Map<string, { gateId: string; result: import("../execution/CommandExecutor.js").CommandExecutionResult }>();
 
   async function runScriptStep(
     step: import("../../../core/schemas.js").WorkflowStep,
@@ -64,11 +91,20 @@ export function createStepHandler(options: {
       const text = g[pick] ?? "";
       return text ? `$ ${g.command}\n${text}` : "";
     };
-    ctx.buildResults.set(step.id, {
-      exitCode: result.exitCode,
-      stdout: result.groups.map(g => annotate(g, "stdout")).filter(Boolean).join("\n"),
-      stderr: result.groups.map(g => annotate(g, "stderr")).filter(Boolean).join("\n"),
+    const stdout = result.groups.map(g => annotate(g, "stdout")).filter(Boolean).join("\n");
+    const stderr = result.groups.map(g => annotate(g, "stderr")).filter(Boolean).join("\n");
+    ctx.buildResults.set(step.id, { exitCode: result.exitCode, stdout, stderr });
+    completedSummaries.set(step.id, {
+      summary: result.passed ? `Script gate passed (exit ${result.exitCode})` : `Script gate failed (exit ${result.exitCode})`,
+      artifact: "",
+      affectedFiles: [],
     });
+
+    const producer = step.signal?.signal_off;
+    if (producer) {
+      if (result.passed) repairFeedbacks.delete(producer);
+      else repairFeedbacks.set(producer, { gateId: step.id, result });
+    }
 
     const o: StepOutcome = {
       stepId: step.id,
@@ -130,14 +166,16 @@ export function createStepHandler(options: {
         }
 
         const completionKey = crypto.randomUUID();
-        const context = buildStepContext(step, completedSummaries, task, agentInfo, completionKey);
         const callFor = forAgent(name);
 
         let result: AgentCallResult;
         let hooks: import("../../../core/hooks.js").HookEvent[] = [];
         let orcResult: OrcReturnResult | null = null;
 
-        const combinedPrompt = agentInfo.systemPrompt + "\n\n" + context;
+        const repair = repairFeedbacks.get(step.id);
+        const combinedPrompt = repair
+          ? agentInfo.systemPrompt + "\n\n" + buildRepairPrompt(repair.gateId, repair.result, step, completionKey)
+          : agentInfo.systemPrompt + "\n\n" + buildStepContext(step, completedSummaries, task, agentInfo, completionKey);
         const hookFile = createHookFile(step.id);
         try {
           const handle = callAgentStream(callFor, combinedPrompt, hookFile);

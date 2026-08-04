@@ -1,6 +1,6 @@
 id: feature_implementation_builtin
 name: Feature Implementation (Built-in)
-description: "Full feature lifecycle: requirements analysis, architecture design, code generation, test generation, review, and validation. Best for new features that touch module boundaries."
+description: "Full feature lifecycle: requirements analysis, architecture design, code generation, test generation, review, and validation. Best for new features that touch module boundaries. Pass signals for code and tests are real exit codes from script gates (ADR-001), not agent narration."
 
 steps:
   - id: spec
@@ -39,29 +39,51 @@ steps:
     task: "Generate code"
     context: [spec, architecture]
 
+  - id: validate
+    type: script
+    needs: [code]
+    run: 'cmd "validate"'
+    signal:
+      name: validate_ok
+      description: "True if generated code passes validation (exit 0), false if it fails build/static checks"
+      on: null
+      off: code
+
   - id: test
     agent: test_generation_backend
-    needs: [review_arch]
-    task: "Generate tests then run the full test suite and report results"
+    needs: [validate]
+    task: "Generate tests"
     context: [spec, code]
+
+  - id: test_unit
+    type: script
+    needs: [test]
+    run: 'cmd "test.unit"'
+    signal:
+      name: test_unit_ok
+      description: "True if unit tests pass (exit 0), false if any unit test fails"
+      on: null
+      off: test
 
   - id: review_code
     agent: review
-    needs: [code]
+    needs: [validate]
     task: "Review generated code"
+    context: [code, validate]
     signal:
       name: code_ok
-      description: "True if code quality is acceptable and all tests pass, false if quality is below threshold or tests fail"
+      description: "True if code quality is acceptable, false if quality is below threshold"
       on: null
       off: code
 
   - id: review_test
     agent: review
-    needs: [test]
+    needs: [test_unit]
     task: "Review generated tests"
+    context: [test, test_unit]
     signal:
       name: test_ok
-      description: "True if coverage is adequate and all tests pass, false if quality is below threshold or tests fail"
+      description: "True if coverage is adequate, false if coverage is below threshold"
       on: null
       off: test
 
