@@ -37,6 +37,7 @@ trusting an "Implemented" mark after further changes.
 | 022 | Quota Handling Strategy | Proposed | Not Implemented | New this round |
 | 023 | Terminal Output Compression via RTK | Proposed | Not Implemented | New this round |
 | 024 | Concise Agent-to-Orchestrator Summaries | Proposed | Not Implemented | Prompt-only change, not yet applied to any role's prompt |
+| 025 | Detached Daemon Run Host with Attachable GUI | Accepted | Not Implemented | New this round; daemon survives GUI close, GUI becomes a pipe-client with zero native deps; orthogonal to ADR-010/015 |
 
 ## When a later ADR replaces an earlier one
 
