@@ -10,7 +10,7 @@ export const ORC_INSTRUCTIONS = [
   "- Never embed a workflow definition inside run_workflow. Create it first, then run it.",
   "- Never guess a workflowId \u2014 always get it from list_workflows.",
   "- Agent names in step definitions must match list_prompts output exactly.",
-  "- Root steps have depends_on: [].",
+  "- Every step declares a fixed output vocabulary in \`emits\` (at least one \`name\`+\`description\`) and routes on signal refs: exactly one of \`on\` (ALL) or \`any\` (ANY), each \`stepId.signalName\`. Entry steps listen on \`__start__\`.",
   "- If a registered workflow matches the task but you consider it too complex or token-heavy to run, you MUST NOT bypass it. Present both options (run workflow vs. implement directly) with brief tradeoffs and let the user decide.",
 ].join("\n");
 
@@ -26,18 +26,21 @@ export const GUIDE_TEXT = `# ORC Workflow Guide
 - Never embed a workflow definition in run_workflow
 - create_workflow → run_workflow (always two separate calls)
 - Agent names must match list_prompts output exactly
-- Root steps have depends_on: []
+- Every step emits a fixed vocabulary in emits and routes on signal refs: exactly one of on (ALL) or any (ANY), refs are stepId.signalName. Entry steps listen on __start__.
 - If a registered workflow matches the task but you consider it too complex or token-heavy to run, you MUST NOT bypass it. Present both options (run workflow vs. implement directly) with brief tradeoffs and let the user decide.
 
 ## Step field reference
 | Field | Required | Description |
 |-------|----------|-------------|
 | id | yes | Unique step ID |
-| agent | yes | Name from list_prompts |
-| depends_on | yes | [] for root, ["stepId"] for dependents |
+| type | no | agent (default) or script (runs a run expression, no agent) |
+| agent | yes* | Name from list_prompts. *Required on agent steps, forbidden on script steps |
+| run | no | cmd "group.key" or exec "shell" — required on script steps |
+| emits | yes | Fixed output vocabulary: array of { name, description }. Script steps: exactly 2 (emits[0] fires on exit 0, emits[1] on non-zero) |
+| on | yes* | AND join: run when ALL these stepId.signalName signals have fired. *Exactly one of on/any is required |
+| any | yes* | OR join: run when ANY of these stepId.signalName signals fires. Entry steps use [\"__start__\"] |
 | task | no | What this step does |
 | context | no | Step IDs whose output to inject |
-| signal | no | name + description + optional signal_on/signal_off — agent-decided quality signal. true routes to signal_on; false routes to signal_off with cascade reset |
 
 ## Failure modes
 | Error | Fix |

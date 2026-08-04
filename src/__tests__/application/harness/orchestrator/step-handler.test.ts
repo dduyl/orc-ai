@@ -21,6 +21,8 @@ vi.mock("../../../../application/agents/adapter-pty.js", () => ({
   },
 }));
 
+const sig = (name: string): { name: string; description: string } => ({ name, description: name });
+
 function result(passed: boolean, exitCode: number, stdout = "", stderr = ""): CommandExecutionResult {
   return {
     schemaVersion: 1,
@@ -35,7 +37,8 @@ function emitter(): StreamEmitter {
 }
 
 function step(id: string, extra: Record<string, unknown> = {}): WorkflowStep {
-  return { id, type: "script", depends_on: [], context: [], ...(extra as any) } as WorkflowStep;
+  const base = { id, type: "script", context: [], emits: [sig("sig_pass"), sig("sig_fail")], on: ["__start__"] };
+  return { ...base, ...(extra as any) } as WorkflowStep;
 }
 
 function ctx(): RunContext {
@@ -44,6 +47,7 @@ function ctx(): RunContext {
     stepResults: new Map(),
     buildResults: new Map(),
     maxRetries: 1,
+    repairFeedbacks: new Map(),
   };
 }
 
@@ -54,7 +58,6 @@ function makeHandler(
     adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
     agentPrompts: new Map(),
     completedSummaries: new Map(),
-    allOutcomes: [],
     emitter: emitter(),
     task: "t",
     commandExecutor: { execute } as any,
@@ -89,18 +92,18 @@ describe("parseRun", () => {
 });
 
 describe("step-handler script steps", () => {
-  it("runs an exec and maps exit 0 to completed + signal true", async () => {
+  it("runs an exec and maps exit 0 to emits[0] signal", async () => {
     const handler = makeHandler(async () => ({ ok: true, result: result(true, 0) }));
     const out = await handler(step("s1", { run: 'exec "exit 0"' }), ctx());
     expect(out.status).toBe("completed");
-    expect(out.signal).toBe(true);
+    expect(out.signal).toBe("sig_pass");
   });
 
-  it("maps a failing exec to completed + signal false", async () => {
+  it("maps a failing exec to emits[1] signal", async () => {
     const handler = makeHandler(async () => ({ ok: true, result: result(false, 1, "out", "err") }));
     const out = await handler(step("s1", { run: 'exec "exit 1"' }), ctx());
     expect(out.status).toBe("completed");
-    expect(out.signal).toBe(false);
+    expect(out.signal).toBe("sig_fail");
   });
 
   it("dispatches an exec to the executor", async () => {
@@ -112,7 +115,7 @@ describe("step-handler script steps", () => {
     const out = await handler(step("s1", { run: 'exec "node --check src/index.js"' }), ctx());
     expect(calls).toEqual(['exec "node --check src/index.js"']);
     expect(out.status).toBe("completed");
-    expect(out.signal).toBe(true);
+    expect(out.signal).toBe("sig_pass");
   });
 
   it("records the exit code and annotated output in buildResults", async () => {
@@ -157,8 +160,7 @@ describe("step-handler script summaries", () => {
       adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
       agentPrompts: new Map(),
       completedSummaries: summaries,
-      allOutcomes: [],
-      emitter: emitter(),
+        emitter: emitter(),
       task: "t",
       commandExecutor: {
         execute: async () => ({
@@ -168,7 +170,7 @@ describe("step-handler script summaries", () => {
       } as any,
     });
     const out = await handler(step("s1", { run: 'exec "boom"' }), c);
-    expect(out.signal).toBe(false);
+    expect(out.signal).toBe("sig_fail");
     const s = summaries.get("s1")!;
     expect(s).toEqual({ summary: "Script gate failed (exit 7)", artifact: "", affectedFiles: [] });
     expect("exitCode" in s).toBe(false);
@@ -179,7 +181,7 @@ describe("step-handler script summaries", () => {
 });
 
 describe("buildRepairPrompt", () => {
-  const agentStep: WorkflowStep = { id: "code", type: "agent", agent: "codegen", depends_on: [], context: [] };
+  const agentStep: WorkflowStep = { id: "code", type: "agent", agent: "codegen", emits: [sig("sig_done")], on: ["__start__"], context: [] };
 
   it("renders a single command block for exec", () => {
     const result: CommandExecutionResult = {
@@ -231,16 +233,21 @@ describe("buildRepairPrompt", () => {
 });
 
 describe("step-handler repair feedback", () => {
+  const codeStep = (): WorkflowStep => ({
+    id: "code", type: "agent", agent: "codegen", emits: [sig("sig_done")], any: ["__start__", "validate.sig_fail"], context: [],
+  });
+  const gateStep = (): WorkflowStep => ({
+    id: "validate", type: "script", run: 'cmd "validate"', emits: [sig("sig_pass"), sig("sig_fail")], on: ["code.sig_done"], context: [],
+  });
+
   it("replaces the main prompt with a repair prompt on producer re-run", async () => {
     agentCalls.length = 0;
     const summaries = new Map<string, import("../../../../application/harness/orchestrator/types.js").StepSummary>();
-    const outcomes: import("../../../../application/harness/execution/step-runner.js").StepOutcome[] = [];
     const handler = createStepHandler({
       adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
       agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
       completedSummaries: summaries,
-      allOutcomes: outcomes,
-      emitter: emitter(),
+        emitter: emitter(),
       task: "build feature",
       commandExecutor: {
         execute: async () => ({
@@ -251,14 +258,10 @@ describe("step-handler repair feedback", () => {
     });
 
     const c = ctx();
-    await handler(
-      { id: "validate", type: "script", run: 'cmd "validate"', depends_on: ["code"], context: [], signal: { name: "s", description: "d", signal_on: null, signal_off: "code" } } as WorkflowStep,
-      c,
-    );
-    await handler(
-      { id: "code", type: "agent", agent: "codegen", depends_on: [], context: [] } as WorkflowStep,
-      c,
-    );
+    await handler(gateStep(), c);
+    // The runner attaches the fail-signal feedback to the redo step's dispatch.
+    c.pendingRepair = c.repairFeedbacks.get("validate.sig_fail");
+    await handler(codeStep(), c);
 
     expect(agentCalls.length).toBe(1);
     const prompt = agentCalls[0];
@@ -277,8 +280,7 @@ describe("step-handler repair feedback", () => {
       adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
       agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
       completedSummaries: summaries,
-      allOutcomes: [],
-      emitter: emitter(),
+        emitter: emitter(),
       task: "t",
       commandExecutor: {
         execute: async () => {
@@ -292,15 +294,16 @@ describe("step-handler repair feedback", () => {
     });
 
     const c = ctx();
-    const gate: WorkflowStep = { id: "validate", type: "script", run: 'cmd "validate"', depends_on: ["code"], context: [], signal: { name: "s", description: "d", signal_on: null, signal_off: "code" } } as WorkflowStep;
-    await handler(gate, c);
-    await handler({ id: "code", type: "agent", agent: "codegen", depends_on: [], context: [] } as WorkflowStep, c);
+    await handler(gateStep(), c);
+    c.pendingRepair = c.repairFeedbacks.get("validate.sig_fail");
+    await handler(codeStep(), c);
     expect(agentCalls[0]).toContain("PREVIOUS VALIDATION FAILURE");
 
     agentCalls.length = 0;
     gateFailed = false;
-    await handler(gate, c);
-    await handler({ id: "code", type: "agent", agent: "codegen", depends_on: [], context: [] } as WorkflowStep, c);
+    await handler(gateStep(), c);
+    c.pendingRepair = c.repairFeedbacks.get("validate.sig_fail");
+    await handler(codeStep(), c);
     expect(agentCalls.length).toBe(1);
     expect(agentCalls[0]).not.toContain("PREVIOUS VALIDATION FAILURE");
     expect(agentCalls[0]).toContain("=== Original Request ===");

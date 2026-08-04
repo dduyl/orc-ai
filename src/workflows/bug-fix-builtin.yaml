@@ -1,47 +1,53 @@
 id: bug_fix_builtin
 name: Bug Fix (Built-in)
-description: "Lightweight fix workflow: requirements analysis, code fix, and review. Use for targeted bug fixes without architectural changes. The fix passes only if the validation gate exits 0 (ADR-001)."
+description: "Lightweight fix workflow: requirements analysis, code fix, and review. Use for targeted bug fixes without architectural changes. The fix passes only if the validation gate exits 0 (ADR-001). Step graph routes on emitted signals (ADR-011)."
 
 steps:
   - id: spec
     agent: requirement_analyst
-    needs: []
+    any: ["__start__", "review_spec.sig_fail"]
     task: "Analyze requirements"
+    emits:
+      - name: sig_done
+        description: "Spec is complete"
 
   - id: review_spec
     agent: review
-    needs: [spec]
+    on: ["spec.sig_done"]
     task: "Review requirements spec"
-    signal:
-      name: spec_ok
-      description: "True if bug description is clear and reproduction steps are accurate, false if unclear"
-      on: null
-      off: spec
+    emits:
+      - name: sig_pass
+        description: "Bug description is clear and reproduction steps are accurate"
+      - name: sig_fail
+        description: "Bug description is unclear — spec must re-run with this feedback"
 
   - id: code
     agent: code_generation_backend
-    needs: [review_spec]
+    any: ["review_spec.sig_pass", "validate.sig_fail", "review_code.sig_fail"]
     task: "Generate code"
+    emits:
+      - name: sig_done
+        description: "Code fix is complete"
 
   - id: validate
     type: script
-    needs: [code]
+    on: ["code.sig_done"]
     run: 'cmd "validate"'
-    signal:
-      name: fix_ok
-      description: "True if the fix passes validation (exit 0), false if still broken"
-      on: null
-      off: code
+    emits:
+      - name: sig_pass
+        description: "Fix passes validation (exit 0)"
+      - name: sig_fail
+        description: "Fix still broken (non-zero exit) — code must re-run with the gate output"
 
   - id: review_code
     agent: review
-    needs: [validate]
+    on: ["validate.sig_pass"]
     task: "Review code changes"
     context: [code, validate]
-    signal:
-      name: fix_review_ok
-      description: "True if the fix is correct and introduces no regressions, false if issues remain"
-      on: null
-      off: code
+    emits:
+      - name: sig_pass
+        description: "Fix is correct and introduces no regressions"
+      - name: sig_fail
+        description: "Issues remain — code must re-run with this feedback"
 
 completion: "Bug fixed"

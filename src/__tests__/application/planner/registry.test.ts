@@ -14,7 +14,7 @@ describe("WorkflowRegistry", () => {
       workflow: {
         id: "wf-custom",
         name: "Custom Workflow",
-        steps: [{ id: "step1", agent: "analyst", depends_on: [] }],
+        steps: [{ id: "step1", agent: "analyst", emits: [{ name: "done", description: "done" }], on: ["__start__"] }],
         completion: "Done",
       },
     };

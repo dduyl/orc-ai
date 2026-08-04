@@ -39,7 +39,6 @@ export async function orchestrate(
       adapter: activeAdapter,
       agentPrompts,
       completedSummaries,
-      allOutcomes,
       emitter,
       task,
       tracker,
@@ -51,6 +50,7 @@ export async function orchestrate(
       stepResults: restoredStepResults,
       buildResults: new Map(),
       maxRetries: 2,
+      repairFeedbacks: new Map(),
     };
 
     function collectCheckpoint(): Record<string, StepResumeSnapshot> {

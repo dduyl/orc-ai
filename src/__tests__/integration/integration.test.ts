@@ -16,14 +16,14 @@ describe("Integration Workflow", () => {
     expect(registry.count()).toBe(0);
 
     const steps: WorkflowStep[] = [
-      { type: "agent", id: "s1", agent: "analyst", depends_on: [], context: [] },
-      { type: "agent", id: "s2", agent: "codegen", depends_on: ["s1"], context: [] },
+      { type: "agent", id: "s1", agent: "analyst", emits: [{ name: "done", description: "done" }], on: ["__start__"], context: [] },
+      { type: "agent", id: "s2", agent: "codegen", emits: [{ name: "done", description: "done" }], on: ["s1.done"], context: [] },
     ];
 
     const outcomes = await runWorkflow(
       steps,
-      async (step: WorkflowStep) => ({ stepId: step.id, status: "completed", output: "ok", retries: 0 }),
-      { workflowId: "wf1", stepResults: new Map(), buildResults: new Map(), maxRetries: 1 },
+      async (step: WorkflowStep) => ({ stepId: step.id, status: "completed", signal: step.emits[0].name, output: "ok", retries: 0 }),
+      { workflowId: "wf1", stepResults: new Map(), buildResults: new Map(), maxRetries: 1, repairFeedbacks: new Map() },
     );
 
     expect(outcomes.length).toBe(2);

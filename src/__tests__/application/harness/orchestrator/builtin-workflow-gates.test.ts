@@ -14,10 +14,14 @@ describe("builtin workflow script gates", () => {
     expect(gates.every(g => g.run)).toBe(true);
     const validate = steps.find(s => s.id === "validate")!;
     expect(validate.run).toBe('cmd "validate"');
-    expect(validate.signal?.signal_off).toBe("code");
+    expect(validate.emits.map(e => e.name)).toEqual(["sig_pass", "sig_fail"]);
+    const code = steps.find(s => s.id === "code")!;
+    expect(code.any).toContain("validate.sig_fail");
     const testUnit = steps.find(s => s.id === "test_unit")!;
     expect(testUnit.run).toBe('cmd "test.unit"');
-    expect(testUnit.signal?.signal_off).toBe("test");
+    expect(testUnit.emits.map(e => e.name)).toEqual(["sig_pass", "sig_fail"]);
+    const test = steps.find(s => s.id === "test")!;
+    expect(test.any).toContain("test_unit.sig_fail");
     const reviewCode = steps.find(s => s.id === "review_code")!;
     expect(reviewCode.context).toContain("validate");
     const reviewTest = steps.find(s => s.id === "review_test")!;
@@ -35,7 +39,9 @@ describe("builtin workflow script gates", () => {
     expect(gates.map(g => g.id)).toEqual(["validate"]);
     const validate = steps.find(s => s.id === "validate")!;
     expect(validate.run).toBe('cmd "validate"');
-    expect(validate.signal?.signal_off).toBe("code");
+    expect(validate.emits.map(e => e.name)).toEqual(["sig_pass", "sig_fail"]);
+    const code = steps.find(s => s.id === "code")!;
+    expect(code.any).toContain("validate.sig_fail");
     const reviewCode = steps.find(s => s.id === "review_code")!;
     expect(reviewCode.context).toContain("validate");
   });

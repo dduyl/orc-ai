@@ -23,7 +23,7 @@ trusting an "Implemented" mark after further changes.
 | 008 | Bounded Research Tool-Calls per Agent Step | Accepted | Not Implemented | Only the global bound (017) currently applies |
 | 009 | Review Agent | Accepted | Partial | A review step exists; single-parameterized-agent design not confirmed |
 | 010 | Checkpointing, Crash Recovery, and Session Reuse | Accepted | Partial | Checkpointing confirmed real; session-id reuse extension not built |
-| 011 | Signal-Based Step Graph | Accepted | Not Implemented | Current code uses an older single-target `signal_on`/`signal_off`, not `emits`/`on`/`any` |
+| 011 | Signal-Based Step Graph | Accepted | Implemented | Steps declare `emits`/`on`/`any` signal refs (`stepId.signal`); `__start__` seeds entry steps; script gates emit a pass/fail signal; redo loops via `any` edges with repair feedback; graph validated at load |
 | 012 | Canonical Schemas Enforced at Every Step Boundary | Accepted | Partial | Schemas defined; confirmed NOT validated at the step-completion path |
 | 013 | Conformance Check Across Parallel Artifacts | Accepted | Not Implemented | No such step exists in code |
 | 014 | Planner / Harness / Agents Layering | Accepted | Implemented | Confirmed: matching directory structure exists |

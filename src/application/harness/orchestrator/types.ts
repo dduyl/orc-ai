@@ -39,5 +39,6 @@ export interface OrcReturnResult {
   summary?: string;
   artifact?: string;
   affectedFiles?: string[];
-  signal?: boolean;
+  /** Signal NAME, must be one of the step's `emits` (ADR-011). */
+  signal?: string;
 }

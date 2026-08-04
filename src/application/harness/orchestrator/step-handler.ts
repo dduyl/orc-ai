@@ -2,7 +2,6 @@ import * as crypto from "node:crypto";
 import type { AdapterDef, AgentCallResult } from "../../agents/adapter.js";
 import { callAgentStream } from "../../agents/adapter-pty.js";
 import type { AgentSystemPrompt } from "../../planner/prompt-loader.js";
-import { checkStepBudget, detectLoop } from "../execution/bounding.js";
 import { CommandExecutor } from "../execution/CommandExecutor.js";
 import { commandsTomlPath } from "../persistence/bootstrap.js";
 import { createHookFile, readHookEvents, removeHookFile } from "../../../adapters/hooks/endpoint.js";
@@ -55,7 +54,6 @@ export function createStepHandler(options: {
   adapter: AdapterDef;
   agentPrompts: Map<string, AgentSystemPrompt>;
   completedSummaries: Map<string, StepSummary>;
-  allOutcomes: StepOutcome[];
   emitter: StreamEmitter;
   task: string;
   tracker?: RunTracker;
@@ -63,12 +61,11 @@ export function createStepHandler(options: {
   /** Injectable for tests; defaults to a CommandExecutor bound to commandsTomlPath(). */
   commandExecutor?: CommandExecutor;
 }): StepHandler {
-  const { adapter, agentPrompts, completedSummaries, allOutcomes, emitter, task, tracker, onProgress, commandExecutor } = options;
+  const { adapter, agentPrompts, completedSummaries, emitter, task, tracker, onProgress, commandExecutor } = options;
   const activeAdapter = adapter;
   const forAgent = (_name: string): AdapterDef => activeAdapter;
   const runId = tracker?.runId;
   const executor = commandExecutor ?? new CommandExecutor(commandsTomlPath());
-  const repairFeedbacks = new Map<string, { gateId: string; result: import("../execution/CommandExecutor.js").CommandExecutionResult }>();
 
   async function runScriptStep(
     step: import("../../../core/schemas.js").WorkflowStep,
@@ -100,44 +97,34 @@ export function createStepHandler(options: {
       affectedFiles: [],
     });
 
-    const producer = step.signal?.signal_off;
-    if (producer) {
-      if (result.passed) repairFeedbacks.delete(producer);
-      else repairFeedbacks.set(producer, { gateId: step.id, result });
-    }
+    const passSignal = step.emits[0].name;
+    const failSignal = step.emits[1].name;
+    const failRef = `${step.id}.${failSignal}`;
+    if (result.passed) ctx.repairFeedbacks.delete(failRef);
+    else ctx.repairFeedbacks.set(failRef, { gateId: step.id, result });
 
     const o: StepOutcome = {
       stepId: step.id,
       status: "completed",
-      signal: result.passed,
+      signal: result.passed ? passSignal : failSignal,
       retries: 0,
     };
-    tracker?.tracker.setStepCompleted(tracker.runId, step.id, "completed");
-    onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "completed" });
+    if (result.passed) {
+      tracker?.tracker.setStepCompleted(tracker.runId, step.id, "completed");
+      onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "completed" });
+    } else {
+      // F10: a failing gate stays "completed" for graph routing (its fail signal
+      // triggers a redo), but the report must show WHY instead of a silent pass.
+      o.error = `Script gate '${step.id}' failed (exit ${result.exitCode}) — emitted '${failSignal}'`;
+      tracker?.tracker.setStepCompleted(tracker.runId, step.id, "completed", o.error);
+      onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "completed", error: o.error });
+    }
     emitter.stepFinish(step.id, result.passed ? "stop" : "error", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
     return o;
   }
 
   return async (step, ctx) => {
     emitter.stepStart(step.id);
-
-    const budget = checkStepBudget(ctx.stepResults.size);
-    if (!budget.ok) {
-      const o: StepOutcome = { stepId: step.id, status: "failed", error: budget.error, retries: 0 };
-      tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", budget.error);
-      onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "failed", error: budget.error });
-      emitter.stepFinish(step.id, "budget_exceeded", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
-      return o;
-    }
-
-    const loop = detectLoop(allOutcomes);
-    if (!loop.ok) {
-      const o: StepOutcome = { stepId: step.id, status: "failed", error: loop.error, retries: 0 };
-      tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", loop.error);
-      onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "failed", error: loop.error });
-      emitter.stepFinish(step.id, "loop_detected", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
-      return o;
-    }
 
     tracker?.tracker.setStepRunning(tracker.runId, step.id);
     onProgress?.({ type: "step_start", runId, stepId: step.id, agent: step.agent, task: step.task });
@@ -172,7 +159,7 @@ export function createStepHandler(options: {
         let hooks: import("../../../core/hooks.js").HookEvent[] = [];
         let orcResult: OrcReturnResult | null = null;
 
-        const repair = repairFeedbacks.get(step.id);
+        const repair = ctx.pendingRepair;
         const combinedPrompt = repair
           ? agentInfo.systemPrompt + "\n\n" + buildRepairPrompt(repair.gateId, repair.result, step, completionKey)
           : agentInfo.systemPrompt + "\n\n" + buildStepContext(step, completedSummaries, task, agentInfo, completionKey);

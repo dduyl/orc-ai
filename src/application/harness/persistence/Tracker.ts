@@ -6,7 +6,7 @@ export interface StepStatusRecord {
   stepId: string;
   agent: string | null;
   task: string | null;
-  dependsOn: string[];
+  signals: string[];
   status: "pending" | "running" | "completed" | "failed";
   startedAt: number | null;
   completedAt: number | null;
@@ -64,14 +64,14 @@ export class Tracker {
     workflowName: string,
     task: string,
     adapterId: string,
-    steps: { stepId: string; agent: string | null; task: string | null; dependsOn: string[] }[],
+    steps: { stepId: string; agent: string | null; task: string | null; signals: string[] }[],
   ): RunRecord {
     const now = Date.now();
     const stepStates: StepStatusRecord[] = steps.map(s => ({
       stepId: s.stepId,
       agent: s.agent,
       task: s.task,
-      dependsOn: s.dependsOn,
+      signals: s.signals,
       status: "pending" as const,
       startedAt: null,
       completedAt: null,
