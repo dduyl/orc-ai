@@ -1,23 +1,26 @@
 id: review_cycle
 name: Review Cycle Test
-description: "Signal loopback test: review signals false 2 times to re-run spec, then passes. Verifies the cascade reset + re-execution path."
+description: "Signal loop test: review signals sig_fail 2 times to re-run spec, then sig_pass. Verifies the any-redo + re-execution path (ADR-011)."
 
 steps:
   - id: spec
     agent: requirement_analyst
-    needs: []
+    any: ["__start__", "review.sig_fail"]
     task: "Run return_result right away with no summary!!!"
+    emits:
+      - name: sig_done
+        description: "Spec complete"
 
   - id: review
     agent: review
-    needs: [spec]
+    on: ["spec.sig_done"]
     task: >-
-      Review the spec. Use return_result with signal: false to loop back to spec
-      (do this twice), then signal: true on the third attempt.
-    signal:
-      name: spec_ok
-      description: "False to redo spec, true to complete"
-      on: null
-      off: spec
+      Review the spec. Use return_result with signal: "sig_fail" to loop back to spec
+      (do this twice), then signal: "sig_pass" on the third attempt.
+    emits:
+      - name: sig_pass
+        description: "Spec passed review — workflow complete"
+      - name: sig_fail
+        description: "Redo spec"
 
 completion: "Review cycle complete — spec passed review."

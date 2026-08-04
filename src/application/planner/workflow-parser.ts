@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { basename, extname } from "node:path";
 import { load as parseYaml } from "js-yaml";
 import { WorkflowDefinition, type WorkflowDefinition as WD } from "../../core/schemas.js";
+import { log } from "../../core/log.js";
 
 export function loadYamlFile(filePath: string): WD | null {
   try {
@@ -26,19 +27,26 @@ export function loadJsonFile(filePath: string): WD | null {
   }
 }
 
+/** Old ADR-011 pre-signal edge keys that are silently ignored by the parser. */
+const DEPRECATED_STEP_KEYS = ["needs", "depends_on", "signal"] as const;
+
 export function yamlToWorkflowDef(yaml: any, id?: string): WD | null {
   try {
     const steps = (yaml.steps || []).map((s: any) => {
       const copy: Record<string, any> = { ...s };
-      copy.depends_on = s.needs || s.depends_on || [];
-      delete copy.needs;
-      if (s.signal) {
-        copy.signal = { ...s.signal };
-        copy.signal.signal_on = s.signal.on ?? null;
-        copy.signal.signal_off = s.signal.off ?? null;
-        delete copy.signal.on;
-        delete copy.signal.off;
+      // ADR-011: the YAML *is* the graph — `emits`/`on`/`any` pass through verbatim.
+      // No `needs`→`depends_on` or `signal.on/off` translation remains.
+      const deprecated = DEPRECATED_STEP_KEYS.filter(k => k in s);
+      if (deprecated.length > 0) {
+        // F9: surface the migration instead of dropping the workflow silently.
+        log.warn(
+          `[workflow-parser] workflow '${yaml.id || id || "(unnamed)"}' step '${s.id}' uses deprecated ADR-011 key(s): ${deprecated.join(", ")}. ` +
+          `Migrate to signal refs: define 'emits' and route with 'on' (ALL) or 'any' (ANY) using stepId.signalName.`,
+        );
       }
+      delete copy.needs;
+      delete copy.depends_on;
+      delete copy.signal;
       return copy;
     });
 

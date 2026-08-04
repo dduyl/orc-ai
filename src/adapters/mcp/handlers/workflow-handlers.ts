@@ -3,7 +3,7 @@ import type { JsonRpcResponse } from "./rpc.js";
 import type { PlannerResult } from "../../../application/planner/registry.js";
 import { orchestrate, type ProgressEvent, type RunReport, type RunTracker } from "../../../application/harness/orchestrator/index.js";
 import { Checkpointer } from "../../../application/harness/persistence/Checkpointer.js";
-import { WorkflowDefinition } from "../../../core/schemas.js";
+import { WorkflowDefinition, validateWorkflowGraph } from "../../../core/schemas.js";
 import { hasPtyWriter, notifyMainPty } from "../../../application/harness/signalling/pty-notifier.js";
 import * as crypto from "node:crypto";
 import * as path from "node:path";
@@ -11,6 +11,7 @@ import { log } from "../../../core/log.js";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types";
 import { adapter, registry, tracker, onProgress, bgRuns, projectDir as stateProjectDir } from "./state.js";
 import { getValidAgentNames, buildCompletionPrompt } from "./formatting.js";
+import { validateCreateWorkflowSteps } from "./workflow-validation.js";
 
 export function handleListWorkflowsTool(id: number | string): JsonRpcResponse {
   registry.loadAll();
@@ -41,14 +42,9 @@ export function handleCreateWorkflowTool(id: number | string, args: any): JsonRp
 
   const validAgents = getValidAgentNames();
 
-  for (let i = 0; i < args.steps.length; i++) {
-    const s = args.steps[i];
-    if (!s.agent) {
-      return rpcError(id, -32602, `Step "${s.id}": "agent" field is required`);
-    }
-    if (!validAgents.has(s.agent)) {
-      return rpcError(id, -32602, `Step "${s.id}": unknown agent "${s.agent}". Use list_prompts to see valid names.`);
-    }
+  const stepErr = validateCreateWorkflowSteps(args.steps, validAgents);
+  if (stepErr) {
+    return rpcError(id, -32602, stepErr);
   }
 
   registry.loadAll();
@@ -69,6 +65,13 @@ export function handleCreateWorkflowTool(id: number | string, args: any): JsonRp
   };
 
   const parsed = WorkflowDefinition.parse(definition);
+
+  // F12: an unresolvable signal graph must be rejected here, not at run time.
+  const graphIssues = validateWorkflowGraph(parsed);
+  if (graphIssues.length > 0) {
+    return rpcError(id, -32602, `Workflow "${args.id}" fails signal graph validation: ${graphIssues.map(i => i.message).join("; ")}`);
+  }
+
   registry.saveDynamic(parsed);
 
   return rpcOk(id, {
@@ -106,7 +109,7 @@ export async function handleRunWorkflowSdk(
     stepId: s.id,
     agent: s.agent || null,
     task: s.task || null,
-    dependsOn: s.depends_on || [],
+    signals: [...(s.on || []), ...(s.any || [])],
   }));
 
   const totalSteps = stepEntries.length;
@@ -203,7 +206,7 @@ export async function handleRunWorkflowTool(id: number | string, args: any): Pro
     stepId: s.id,
     agent: s.agent || null,
     task: s.task || null,
-    dependsOn: s.depends_on || [],
+    signals: [...(s.on || []), ...(s.any || [])],
   }));
 
   tracker.createRun(runId, plan.workflow.workflow.id, workflowName, task, adapter.id, stepEntries);
@@ -287,7 +290,7 @@ export async function handleGetRunStatusTool(id: number | string, args: any): Pr
         status: s.status,
         duration: s.duration,
         error: s.error,
-        dependsOn: s.dependsOn,
+        signals: s.signals,
       })),
       createdAt: run.createdAt,
       updatedAt: run.updatedAt,

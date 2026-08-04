@@ -1,68 +1,102 @@
 id: feature_implementation_builtin
 name: Feature Implementation (Built-in)
-description: "Full feature lifecycle: requirements analysis, architecture design, code generation, test generation, review, and validation. Best for new features that touch module boundaries."
+description: "Full feature lifecycle: requirements analysis, architecture design, code generation, test generation, review, and validation. Best for new features that touch module boundaries. Pass signals for code and tests are real exit codes from script gates (ADR-001), not agent narration. Step graph routes on emitted signals (ADR-011)."
 
 steps:
   - id: spec
     agent: requirement_analyst
-    needs: []
+    any: ["__start__", "review_spec.sig_fail"]
     task: "Analyze requirements"
+    emits:
+      - name: sig_done
+        description: "Spec is complete"
 
   - id: review_spec
     agent: review
-    needs: [spec]
+    on: ["spec.sig_done"]
     task: "Review requirements spec"
-    signal:
-      name: spec_ok
-      description: "True if spec is clear and complete, false if ambiguous or missing edge cases"
-      on: null
-      off: spec
+    emits:
+      - name: sig_pass
+        description: "Spec is clear and complete"
+      - name: sig_fail
+        description: "Spec is ambiguous or missing edge cases — spec must re-run with this feedback"
 
   - id: architecture
     agent: architecture_agent
-    needs: [review_spec]
+    any: ["review_spec.sig_pass", "review_arch.sig_fail"]
     task: "Design architecture"
+    emits:
+      - name: sig_done
+        description: "Architecture design is complete"
 
   - id: review_arch
     agent: review
-    needs: [architecture]
+    on: ["architecture.sig_done"]
     task: "Review architecture design"
-    signal:
-      name: arch_ok
-      description: "True if architecture is sound and addresses all concerns, false if design issues found"
-      on: null
-      off: architecture
+    emits:
+      - name: sig_pass
+        description: "Architecture is sound and addresses all concerns"
+      - name: sig_fail
+        description: "Design issues found — architecture must re-run with this feedback"
 
   - id: code
     agent: code_generation_backend
-    needs: [review_arch]
+    any: ["review_arch.sig_pass", "validate.sig_fail", "review_code.sig_fail"]
     task: "Generate code"
     context: [spec, architecture]
+    emits:
+      - name: sig_done
+        description: "Code generation is complete"
+
+  - id: validate
+    type: script
+    on: ["code.sig_done"]
+    run: 'cmd "validate"'
+    emits:
+      - name: sig_pass
+        description: "Validation passed (exit 0)"
+      - name: sig_fail
+        description: "Validation failed (non-zero exit) — code must re-run with the gate output"
 
   - id: test
     agent: test_generation_backend
-    needs: [review_arch]
-    task: "Generate tests then run the full test suite and report results"
+    any: ["validate.sig_pass", "test_unit.sig_fail", "review_test.sig_fail"]
+    task: "Generate tests"
     context: [spec, code]
+    emits:
+      - name: sig_done
+        description: "Test generation is complete"
+
+  - id: test_unit
+    type: script
+    on: ["test.sig_done"]
+    run: 'cmd "test.unit"'
+    emits:
+      - name: sig_pass
+        description: "Unit tests passed (exit 0)"
+      - name: sig_fail
+        description: "Unit tests failed (non-zero exit) — test must re-run with the gate output"
 
   - id: review_code
     agent: review
-    needs: [code]
+    on: ["validate.sig_pass"]
     task: "Review generated code"
-    signal:
-      name: code_ok
-      description: "True if code quality is acceptable and all tests pass, false if quality is below threshold or tests fail"
-      on: null
-      off: code
+    context: [code, validate]
+    emits:
+      - name: sig_pass
+        description: "Code quality is acceptable"
+      - name: sig_fail
+        description: "Code quality is below threshold — code must re-run with this feedback"
 
   - id: review_test
     agent: review
-    needs: [test]
+    on: ["test_unit.sig_pass"]
     task: "Review generated tests"
-    signal:
-      name: test_ok
-      description: "True if coverage is adequate and all tests pass, false if quality is below threshold or tests fail"
-      on: null
-      off: test
+    context: [test, test_unit]
+    emits:
+      - name: sig_pass
+        description: "Test coverage is adequate"
+      - name: sig_fail
+        description: "Test coverage is below threshold — test must re-run with this feedback"
 
 completion: "Feature implementation complete"

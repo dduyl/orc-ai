@@ -13,17 +13,17 @@ trusting an "Implemented" mark after further changes.
 
 | # | Title | Decision | Implementation | Notes |
 |---|---|---|---|---|
-| 001 | Deterministic Validation as Ground Truth | Accepted | Not Implemented | Depends on 006/011; test steps currently self-reported by the agent |
+| 001 | Deterministic Validation as Ground Truth | Accepted | Implemented | `type: script` steps gate on a real exit code; built-in workflows (`feat-impl-builtin`, `bug-fix-builtin`) now gate code + tests through script gates with repair feedback to the producer |
 | 002 | Code Graph via CodeGraphContext | Accepted | Not Implemented | Not wired into Architecture Agent's tools |
 | 003 | Index File Ownership by Convention | Accepted | Unverified | Whether specs.json/adrs.json/etc. are actually written was not confirmed |
 | 004 | Architecture Gate and Mandatory-Precision Contract | Accepted | Partial | Gate exists via a review step; contract is schema-optional, not enforced as precise |
 | 005 | Test Timing and Target | Accepted | Unverified | Actual agent prompt content not inspected |
-| 006 | Command Execution Model | Accepted | Not Implemented | No CommandExecutor or `type: script` step exists |
+| 006 | Command Execution Model | Accepted | Implemented | CommandExecutor + `type: script` step in the runner gate on a real exit code |
 | 007 | Runtime Substrate: PTY-Driven Coding Agent | Accepted | Implemented | Confirmed: adapter-pty.ts, PTY/MCP race, strategy files |
 | 008 | Bounded Research Tool-Calls per Agent Step | Accepted | Not Implemented | Only the global bound (017) currently applies |
 | 009 | Review Agent | Accepted | Partial | A review step exists; single-parameterized-agent design not confirmed |
 | 010 | Checkpointing, Crash Recovery, and Session Reuse | Accepted | Partial | Checkpointing confirmed real; session-id reuse extension not built |
-| 011 | Signal-Based Step Graph | Accepted | Not Implemented | Current code uses an older single-target `signal_on`/`signal_off`, not `emits`/`on`/`any` |
+| 011 | Signal-Based Step Graph | Accepted | Implemented | Steps declare `emits`/`on`/`any` signal refs (`stepId.signal`); `__start__` seeds entry steps; script gates emit a pass/fail signal; redo loops via `any` edges with repair feedback; graph validated at load |
 | 012 | Canonical Schemas Enforced at Every Step Boundary | Accepted | Partial | Schemas defined; confirmed NOT validated at the step-completion path |
 | 013 | Conformance Check Across Parallel Artifacts | Accepted | Not Implemented | No such step exists in code |
 | 014 | Planner / Harness / Agents Layering | Accepted | Implemented | Confirmed: matching directory structure exists |
