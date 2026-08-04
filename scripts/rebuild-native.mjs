@@ -23,10 +23,6 @@ console.log('');
 
 const addons = [
   {
-    name: 'better-sqlite3',
-    dir: 'node_modules/better-sqlite3',
-  },
-  {
     name: 'node-pty',
     dir: 'node_modules/node-pty',
     env: { CL: '/Qspectre-' },

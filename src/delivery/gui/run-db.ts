@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 
 let _projectDir: string | undefined;
 
@@ -12,11 +12,11 @@ function projectDir(): string {
   return _projectDir ?? process.cwd();
 }
 
-export function getRunDb(): Database.Database | null {
+export function getRunDb(): DatabaseSync | null {
   const dbPath = resolve(projectDir(), ".orc", "runs.sqlite");
   if (!existsSync(dbPath)) return null;
   try {
-    return new Database(dbPath, { readonly: true });
+    return new DatabaseSync(dbPath, { readOnly: true });
   } catch {
     return null;
   }

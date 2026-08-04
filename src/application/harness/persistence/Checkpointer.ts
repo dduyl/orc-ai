@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import type { HookEvent } from "../../../core/hooks.js";
@@ -21,14 +21,14 @@ export interface ResumeState {
 }
 
 export class Checkpointer {
-  private db: Database.Database;
+  private db: DatabaseSync;
 
   constructor(dbPath: string) {
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    this.db = new Database(dbPath);
+    this.db = new DatabaseSync(dbPath);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS checkpoints (
         task_id TEXT PRIMARY KEY,

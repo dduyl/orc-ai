@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
@@ -31,7 +31,7 @@ export interface RunRecord {
 }
 
 export class Tracker {
-  private db: Database.Database;
+  private db: DatabaseSync;
 
   constructor(dbPath?: string) {
     const resolved = dbPath || path.join(process.cwd(), ".orc", "runs.sqlite");
@@ -39,8 +39,8 @@ export class Tracker {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    this.db = new Database(resolved);
-    this.db.pragma("journal_mode = WAL");
+    this.db = new DatabaseSync(resolved);
+    this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS runs (
         run_id TEXT PRIMARY KEY,
@@ -133,20 +133,27 @@ export class Tracker {
     finalize?: (steps: StepStatusRecord[], now: number) => void,
   ): void {
     const now = Date.now();
-    this.db.transaction(() => {
+    this.db.exec("BEGIN");
+    try {
       const row = this.db.prepare("SELECT steps_json FROM runs WHERE run_id = ?").get(runId) as any;
-      if (!row) return;
-      const steps: StepStatusRecord[] = JSON.parse(row.steps_json);
-      const step = steps.find(s => s.stepId === stepId);
-      if (!step) return;
-      mutate(step, now);
-      if (finalize) {
-        finalize(steps, now);
-      } else {
-        this.db.prepare("UPDATE runs SET steps_json = ?, updated_at = ? WHERE run_id = ?")
-          .run(JSON.stringify(steps), now, runId);
+      if (row) {
+        const steps: StepStatusRecord[] = JSON.parse(row.steps_json);
+        const step = steps.find(s => s.stepId === stepId);
+        if (step) {
+          mutate(step, now);
+          if (finalize) {
+            finalize(steps, now);
+          } else {
+            this.db.prepare("UPDATE runs SET steps_json = ?, updated_at = ? WHERE run_id = ?")
+              .run(JSON.stringify(steps), now, runId);
+          }
+        }
       }
-    })();
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   close(): void {
