@@ -1,28 +1,54 @@
 import { Server } from "@modelcontextprotocol/sdk/server";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp";
 import {
-  ListToolsRequestSchema,
-  ListResourcesRequestSchema,
-  ReadResourceRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
   CallToolRequestSchema,
+  CallToolResult,
+  ErrorCode,
+  GetPromptRequestSchema,
+  ListPromptsRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  McpError,
+  ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types";
-import type { JsonRpcRequest, JsonRpcResponse } from "./handlers/rpc.js";
 import { ORC_INSTRUCTIONS } from "./handlers/content.js";
 import {
-  handleListTools,
-  handleListResources,
-  handleReadResource,
-  handleListPrompts,
   handleGetPrompt,
+  handleListPrompts,
+  handleListResources,
+  handleListTools,
+  handleReadResource,
 } from "./handlers/capabilities.js";
-import { handleToolCall as execToolCall, handleRunWorkflowSdk } from "./handlers/tool-exec.js";
+import {
+  handleCreateWorkflowTool,
+  handleGetRunStatusTool,
+  handleListRunsTool,
+  handleListWorkflowsTool,
+  handleRunWorkflow,
+  type RunHandlerExtra,
+} from "./handlers/workflow-handlers.js";
+import { handleGuideTool, handleListPromptsTool, handleReturnResult } from "./handlers/result-handlers.js";
 
-export async function createSdkServer(
-  transport: StreamableHTTPServerTransport,
-  onToolCall: (req: JsonRpcRequest) => Promise<JsonRpcResponse>,
-): Promise<Server> {
+export type ToolHandler = (args: any, extra: RunHandlerExtra) => CallToolResult | Promise<CallToolResult>;
+
+export const TOOL_HANDLERS: Record<string, ToolHandler> = {
+  guide: (args) => handleGuideTool(args),
+  list_workflows: () => handleListWorkflowsTool(),
+  list_prompts: () => handleListPromptsTool(),
+  create_workflow: (args) => handleCreateWorkflowTool(args),
+  run_workflow: (args, extra) => handleRunWorkflow(args, extra),
+  get_run_status: (args) => handleGetRunStatusTool(args),
+  list_runs: () => handleListRunsTool(),
+  return_result: (args) => handleReturnResult(args),
+};
+
+export async function executeTool(name: string, args: any, extra: RunHandlerExtra): Promise<CallToolResult> {
+  const handler = TOOL_HANDLERS[name];
+  if (!handler) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+  return handler(args || {}, extra);
+}
+
+export async function createSdkServer(transport: StreamableHTTPServerTransport): Promise<Server> {
   const sdkServer = new Server(
     { name: "orc-server", version: "0.1.0" },
     {
@@ -31,47 +57,12 @@ export async function createSdkServer(
     },
   );
 
-  sdkServer.setRequestHandler(ListToolsRequestSchema, async () => {
-    const resp = handleListTools("sdk" as any);
-    return resp.result as any;
-  });
-
-  sdkServer.setRequestHandler(ListResourcesRequestSchema, async () => {
-    const resp = handleListResources("sdk" as any);
-    return resp.result as any;
-  });
-
-  sdkServer.setRequestHandler(ReadResourceRequestSchema, async (req) => {
-    const resp = handleReadResource("sdk" as any, req.params as any);
-    return resp.result as any;
-  });
-
-  sdkServer.setRequestHandler(ListPromptsRequestSchema, async () => {
-    const resp = handleListPrompts("sdk" as any);
-    return resp.result as any;
-  });
-
-  sdkServer.setRequestHandler(GetPromptRequestSchema, async (req) => {
-    const resp = handleGetPrompt("sdk" as any, req.params as any);
-    return resp.result as any;
-  });
-
-  sdkServer.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
-    const { name, arguments: args } = req.params;
-
-    if (name === "run_workflow") {
-      return await handleRunWorkflowSdk(args || {}, { ...extra, _meta: req.params._meta } as any);
-    }
-
-    const jrpcReq: JsonRpcRequest = {
-      jsonrpc: "2.0",
-      id: "sdk",
-      method: "tools/call",
-      params: { name, arguments: args } as any,
-    };
-    const resp = await onToolCall(jrpcReq);
-    return resp.result as any;
-  });
+  sdkServer.setRequestHandler(ListToolsRequestSchema, () => handleListTools());
+  sdkServer.setRequestHandler(ListResourcesRequestSchema, () => handleListResources());
+  sdkServer.setRequestHandler(ReadResourceRequestSchema, (req) => handleReadResource(req.params));
+  sdkServer.setRequestHandler(ListPromptsRequestSchema, () => handleListPrompts());
+  sdkServer.setRequestHandler(GetPromptRequestSchema, (req) => handleGetPrompt(req.params));
+  sdkServer.setRequestHandler(CallToolRequestSchema, (req, extra) => executeTool(req.params.name, req.params.arguments, extra));
 
   await sdkServer.connect(transport);
   return sdkServer;

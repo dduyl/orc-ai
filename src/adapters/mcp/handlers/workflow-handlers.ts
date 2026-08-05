@@ -1,19 +1,24 @@
-import { rpcOk, rpcError } from "./rpc.js";
-import type { JsonRpcResponse } from "./rpc.js";
-import type { PlannerResult } from "../../../application/planner/registry.js";
-import { orchestrate, type ProgressEvent, type RunReport, type RunTracker } from "../../../application/harness/orchestrator/index.js";
-import { Checkpointer } from "../../../application/harness/persistence/Checkpointer.js";
 import { WorkflowDefinition, validateWorkflowGraph } from "../../../core/schemas.js";
-import { hasPtyWriter, notifyMainPty } from "../../../application/harness/signalling/pty-notifier.js";
-import * as crypto from "node:crypto";
-import * as path from "node:path";
-import { log } from "../../../core/log.js";
-import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types";
-import { adapter, registry, tracker, onProgress, bgRuns, projectDir as stateProjectDir } from "./state.js";
-import { getValidAgentNames, buildCompletionPrompt } from "./formatting.js";
+import { CallToolResult, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types";
+import { startRun } from "../../../application/harness/start-run.js";
+import { hasPtyWriter } from "../../../application/harness/signalling/pty-notifier.js";
+import { host, registry, tracker, bgRuns } from "./state.js";
+import { getValidAgentNames } from "./formatting.js";
 import { validateCreateWorkflowSteps } from "./workflow-validation.js";
 
-export function handleListWorkflowsTool(id: number | string): JsonRpcResponse {
+/**
+ * Structural subset of the SDK's CallTool `extra` consumed by run_workflow.
+ * `sendNotification`/`signal`/`_meta.progressToken` are what the SDK provides
+ * on the request handler; kept structural since `RequestHandlerExtra` is not
+ * part of the SDK's public type surface.
+ */
+export interface RunHandlerExtra {
+  sendNotification: (notification: any) => Promise<void>;
+  _meta?: { progressToken?: string | number };
+  signal: AbortSignal;
+}
+
+export function handleListWorkflowsTool(): CallToolResult {
   registry.loadAll();
   const list = registry.list().map(w => ({
     id: w.id,
@@ -26,31 +31,31 @@ export function handleListWorkflowsTool(id: number | string): JsonRpcResponse {
     })),
     completion: w.definition.workflow.completion,
   }));
-  return rpcOk(id, {
+  return {
     content: [{ type: "text", text: JSON.stringify(list, null, 2) }],
-  });
+  };
 }
 
-export function handleCreateWorkflowTool(id: number | string, args: any): JsonRpcResponse {
+export function handleCreateWorkflowTool(args: any): CallToolResult {
   if (!args.id || !args.name || !args.steps || !args.completion) {
-    return rpcError(id, -32602, "Missing required fields: id, name, steps, completion");
+    throw new McpError(ErrorCode.InvalidParams, "Missing required fields: id, name, steps, completion");
   }
 
   if (!Array.isArray(args.steps) || args.steps.length === 0) {
-    return rpcError(id, -32602, "Steps must be a non-empty array");
+    throw new McpError(ErrorCode.InvalidParams, "Steps must be a non-empty array");
   }
 
   const validAgents = getValidAgentNames();
 
   const stepErr = validateCreateWorkflowSteps(args.steps, validAgents);
   if (stepErr) {
-    return rpcError(id, -32602, stepErr);
+    throw new McpError(ErrorCode.InvalidParams, stepErr);
   }
 
   registry.loadAll();
   const existing = registry.get(args.id);
   if (existing) {
-    return rpcError(id, -32602, `Workflow ID "${args.id}" already exists. Use a different ID.`);
+    throw new McpError(ErrorCode.InvalidParams, `Workflow ID "${args.id}" already exists. Use a different ID.`);
   }
 
   const definition = {
@@ -69,12 +74,12 @@ export function handleCreateWorkflowTool(id: number | string, args: any): JsonRp
   // F12: an unresolvable signal graph must be rejected here, not at run time.
   const graphIssues = validateWorkflowGraph(parsed);
   if (graphIssues.length > 0) {
-    return rpcError(id, -32602, `Workflow "${args.id}" fails signal graph validation: ${graphIssues.map(i => i.message).join("; ")}`);
+    throw new McpError(ErrorCode.InvalidParams, `Workflow "${args.id}" fails signal graph validation: ${graphIssues.map(i => i.message).join("; ")}`);
   }
 
   registry.saveDynamic(parsed);
 
-  return rpcOk(id, {
+  return {
     content: [{ type: "text", text: JSON.stringify({
       id: parsed.workflow.id,
       name: parsed.workflow.name,
@@ -83,13 +88,10 @@ export function handleCreateWorkflowTool(id: number | string, args: any): JsonRp
       status: "created",
       _next: `run_workflow(workflowId="${parsed.workflow.id}", task="<describe what to do>")`,
     }, null, 2) }],
-  });
+  };
 }
 
-export async function handleRunWorkflowSdk(
-  args: any,
-  extra: { sendNotification: (n: any) => Promise<void>; _meta?: { progressToken?: any }; signal: AbortSignal },
-): Promise<{ content: { type: string; text: string }[] }> {
+export async function handleRunWorkflow(args: any, extra: RunHandlerExtra): Promise<CallToolResult> {
   const task = args?.task as string;
   const workflowId = args?.workflowId as string;
 
@@ -100,168 +102,53 @@ export async function handleRunWorkflowSdk(
   const found = registry.get(workflowId);
   if (!found) throw new McpError(ErrorCode.InvalidParams, `Unknown workflowId: ${workflowId}`);
 
-  const resume = args?.resume === true;
-  const plan: PlannerResult = { workflow: found.definition, source: "registered", registration: found };
-  const runId = crypto.randomUUID();
-  const workflowName = plan.workflow.workflow.name;
-
-  const stepEntries = plan.workflow.workflow.steps.map((s: any) => ({
+  const stepEntries = found.definition.workflow.steps.map((s: any) => ({
     stepId: s.id,
     agent: s.agent || null,
     task: s.task || null,
     signals: [...(s.on || []), ...(s.any || [])],
   }));
-
   const totalSteps = stepEntries.length;
-  tracker.createRun(runId, plan.workflow.workflow.id, workflowName, task, adapter.id, stepEntries);
+  const resume = args?.resume === true;
 
-  const runTracker: RunTracker = { runId, tracker };
-  const rootDir = stateProjectDir ?? process.cwd();
-  const checkpointer = new Checkpointer(path.join(rootDir, ".orc", "checkpoints.sqlite"));
+  const run = await startRun(host, task, workflowId, resume, {
+    onEvent: (event) => {
+      if (event.type === "step_pty") return;
 
-  // Fire orchestrate() in the background — do NOT await here.
-  // This lets run_workflow return immediately, avoiding the client-side timeout.
-  const bgPromise = orchestrate(task, adapter, plan, resume, runTracker, checkpointer, (event: ProgressEvent) => {
-    onProgress?.(event);
-
-    if (event.type === "step_pty") return;
-
-    const progress = event.type === "step_start"
-      ? stepEntries.findIndex((s: any) => s.stepId === event.stepId) + 1
-      : event.type === "step_complete"
+      const progress = event.type === "step_start" || event.type === "step_complete"
         ? stepEntries.findIndex((s: any) => s.stepId === event.stepId) + 1
         : totalSteps;
-    const message = event.type === "step_start"
-      ? `Starting: ${event.agent || event.stepId}`
-      : event.type === "step_complete"
-        ? `Step ${event.stepId}: ${event.status}${event.error ? ` — ${event.error}` : ""}`
-        : event.type === "workflow_complete"
-          ? `Workflow: ${event.status}`
-          : `Error: ${event.error || "unknown"}`;
+      const message = event.type === "step_start"
+        ? `Starting: ${event.agent || event.stepId}`
+        : event.type === "step_complete"
+          ? `Step ${event.stepId}: ${event.status}${event.error ? ` — ${event.error}` : ""}`
+          : event.type === "workflow_complete"
+            ? `Workflow: ${event.status}`
+            : `Error: ${event.error || "unknown"}`;
 
-    extra.sendNotification({
-      method: "notifications/progress",
-      params: {
-        progressToken: extra._meta?.progressToken,
-        progress,
-        total: totalSteps,
-        message,
-      },
-    }).catch(() => {});
-  }).then((report) => {
-    bgRuns.delete(runId);
-    log.info(`[run ${runId}] Workflow "${workflowId}" completed: ${report.completed}/${report.totalSteps} completed`);
-    notifyMainPty(buildCompletionPrompt(runId, workflowName, report));
-    return report;
-  }).catch((err: any) => {
-    bgRuns.delete(runId);
-    log.warn(`[run ${runId}] Workflow "${workflowId}" failed: ${err.message}`);
-    try { tracker.updateRunStatus(runId, "failed"); } catch {}
-    // Still notify the PTY so opencode knows the run failed.
-    const failReport: RunReport = {
-      workflowId,
-      source: plan.source,
-      outcomes: [],
-      totalSteps,
-      completed: 0,
-      failed: totalSteps,
-    };
-    onProgress?.({ type: "workflow_complete", runId, status: "failed", report: failReport });
-    notifyMainPty(buildCompletionPrompt(runId, workflowName, failReport));
-    throw err;
+      extra.sendNotification({
+        method: "notifications/progress",
+        params: {
+          progressToken: extra._meta?.progressToken,
+          progress,
+          total: totalSteps,
+          message,
+        },
+      }).catch(() => {});
+    },
   });
 
-  bgRuns.set(runId, bgPromise);
-
   return {
-    content: [{ type: "text", text: JSON.stringify({
-      runId,
-      workflowId,
-      workflowName,
-      status: "running",
-      message: hasPtyWriter()
-        ? "Workflow started in background. You will be notified via the terminal when it completes."
-        : "Workflow started in background. Call get_run_status with this runId to check progress.",
-    }, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify(run, null, 2) }],
   };
 }
 
-export async function handleRunWorkflowTool(id: number | string, args: any): Promise<JsonRpcResponse> {
-  const task = args?.task as string;
-  const workflowId = args?.workflowId as string;
-
-  if (!task) return rpcError(id, -32602, "Missing 'task' argument");
-  if (!workflowId) return rpcError(id, -32602, "Missing 'workflowId' argument");
-
-  registry.loadAll();
-  const found = registry.get(workflowId);
-  if (!found) return rpcError(id, -32602, `Unknown workflowId: ${workflowId}`);
-
-  const resume = args?.resume === true;
-  const plan: PlannerResult = { workflow: found.definition, source: "registered", registration: found };
-  const runId = crypto.randomUUID();
-  const workflowName = plan.workflow.workflow.name;
-
-  const stepEntries = plan.workflow.workflow.steps.map((s: any) => ({
-    stepId: s.id,
-    agent: s.agent || null,
-    task: s.task || null,
-    signals: [...(s.on || []), ...(s.any || [])],
-  }));
-
-  tracker.createRun(runId, plan.workflow.workflow.id, workflowName, task, adapter.id, stepEntries);
-
-  const runTracker: RunTracker = { runId, tracker };
-  const rootDir = stateProjectDir ?? process.cwd();
-  const checkpointer = new Checkpointer(path.join(rootDir, ".orc", "checkpoints.sqlite"));
-
-  // Fire in background — same pattern as handleRunWorkflowSdk.
-  const bgPromise = orchestrate(task, adapter, plan, resume, runTracker, checkpointer)
-    .then((report) => {
-      bgRuns.delete(runId);
-      log.info(`[run ${runId}] Workflow "${workflowId}" completed: ${report.completed}/${report.totalSteps} completed`);
-      onProgress?.({ type: "workflow_complete", runId, status: report.failed > 0 ? "failed" : "completed", report });
-      notifyMainPty(buildCompletionPrompt(runId, workflowName, report));
-      return report;
-    })
-    .catch((err: any) => {
-      bgRuns.delete(runId);
-      log.warn(`[run ${runId}] Workflow "${workflowId}" failed: ${err.message}`);
-      try { tracker.updateRunStatus(runId, "failed"); } catch {}
-      const failReport: RunReport = {
-        workflowId,
-        source: plan.source,
-        outcomes: [],
-        totalSteps: stepEntries.length,
-        completed: 0,
-        failed: stepEntries.length,
-      };
-      onProgress?.({ type: "workflow_complete", runId, status: "failed", report: failReport });
-      notifyMainPty(buildCompletionPrompt(runId, workflowName, failReport));
-      throw err;
-    });
-
-  bgRuns.set(runId, bgPromise);
-
-  return rpcOk(id, {
-    content: [{ type: "text", text: JSON.stringify({
-      runId,
-      workflowId,
-      workflowName,
-      status: "running",
-      message: hasPtyWriter()
-        ? "Workflow started in background. You will be notified via the terminal when it completes."
-        : "Workflow started in background. Call get_run_status with this runId to check progress.",
-    }, null, 2) }],
-  });
-}
-
-export async function handleGetRunStatusTool(id: number | string, args: any): Promise<JsonRpcResponse> {
+export async function handleGetRunStatusTool(args: any): Promise<CallToolResult> {
   const runId = args?.runId as string;
-  if (!runId) return rpcError(id, -32602, "Missing 'runId' argument");
+  if (!runId) throw new McpError(ErrorCode.InvalidParams, "Missing 'runId' argument");
 
   let run = tracker.getRun(runId);
-  if (!run) return rpcError(id, -32602, `Unknown runId: ${runId}`);
+  if (!run) throw new McpError(ErrorCode.InvalidParams, `Unknown runId: ${runId}`);
 
   // Headless fallback: when there is no PTY to push notifications into,
   // block here until the background run finishes so the caller gets a
@@ -274,7 +161,7 @@ export async function handleGetRunStatusTool(id: number | string, args: any): Pr
     }
   }
 
-  return rpcOk(id, {
+  return {
     content: [{ type: "text", text: JSON.stringify({
       runId: run.runId,
       workflowId: run.workflowId,
@@ -296,12 +183,12 @@ export async function handleGetRunStatusTool(id: number | string, args: any): Pr
       updatedAt: run.updatedAt,
       completedAt: run.completedAt,
     }, null, 2) }],
-  });
+  };
 }
 
-export function handleListRunsTool(id: number | string): JsonRpcResponse {
+export function handleListRunsTool(): CallToolResult {
   const runs = tracker.listRuns();
-  return rpcOk(id, {
+  return {
     content: [{ type: "text", text: JSON.stringify(runs.map(r => ({
       runId: r.runId,
       workflowId: r.workflowId,
@@ -316,5 +203,5 @@ export function handleListRunsTool(id: number | string): JsonRpcResponse {
       updatedAt: r.updatedAt,
       completedAt: r.completedAt,
     })), null, 2) }],
-  });
+  };
 }
