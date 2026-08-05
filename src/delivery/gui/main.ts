@@ -3,8 +3,7 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { McpServer } from "../../adapters/mcp/server.js";
-import { WorkflowRegistry } from "../../application/planner/registry.js";
-import type { ProgressEvent } from "../../application/harness/orchestrator/index.js";
+import { RunHost } from "../../application/harness/run-host.js";
 import { setStreamEventHandler } from "../../adapters/stream/emitter.js";
 import { getAdapter, BUILTIN_ADAPTERS, type AdapterDef } from "../../application/agents/adapter.js";
 import { PtyManager, MAIN_STEP_ID } from "./pty-manager.js";
@@ -34,21 +33,18 @@ function send(channel: string, data: unknown): void {
 
 function startEmbeddedMcp(adapter: AdapterDef, projectDir?: string): void {
   try {
-    const registry = new WorkflowRegistry();
-    const server = new McpServer(
-      adapter,
-      registry,
-      (event: ProgressEvent) => {
-        if (event.type === "step_pty" && event.pty && event.stepId) {
-          ptyManager.addSubagentPTY(event.stepId, event.pty, event.agent || event.stepId);
-        }
-        if (event.type === "workflow_complete") {
+    const host = new RunHost(adapter, {
+      projectDir,
+      ptySink: {
+        onStepPty: (stepId, pty, agent) => ptyManager.addSubagentPTY(stepId, pty, agent),
+        onWorkflowComplete: () => {
           ptyManager.removeSubagentPTYs();
           ptyManager.switchToStep(MAIN_STEP_ID);
-        }
+        },
       },
-      projectDir,
-    );
+    });
+
+    const server = new McpServer(host);
 
     server.startHttp(MCP_PORT).then(() => {
       console.log(`[main] Embedded MCP server on http://0.0.0.0:${MCP_PORT}`);

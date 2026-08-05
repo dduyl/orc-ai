@@ -15,8 +15,16 @@ import { validateCreateWorkflowSteps } from "./workflow-validation.js";
 export interface RunHandlerExtra {
   sendNotification: (notification: any) => Promise<void>;
   _meta?: { progressToken?: string | number };
+  /**
+   * Client request abort signal. Deliberately NOT threaded into startRun:
+   * Phase B runs are detached/background, so aborting the client request
+   * must not kill the run.
+   */
   signal: AbortSignal;
 }
+
+/** Bounded wait for a headless (no-PTY) get_run_status block. */
+const HEADLESS_STATUS_WAIT_MS = 120_000;
 
 export function handleListWorkflowsTool(): CallToolResult {
   registry.loadAll();
@@ -112,6 +120,9 @@ export async function handleRunWorkflow(args: any, extra: RunHandlerExtra): Prom
   const resume = args?.resume === true;
 
   const run = await startRun(host, task, workflowId, resume, {
+    // `found` is already loaded from the registry above — skip the second
+    // loadAll()+get() that startRun would otherwise perform.
+    registration: found,
     onEvent: (event) => {
       if (event.type === "step_pty") return;
 
@@ -156,7 +167,15 @@ export async function handleGetRunStatusTool(args: any): Promise<CallToolResult>
   if (!hasPtyWriter() && run.status === "running") {
     const pending = bgRuns.get(runId);
     if (pending) {
-      try { await pending; } catch { /* error already logged & stored */ }
+      try {
+        // Bounded wait so a hung run can't wedge the request forever. On
+        // timeout we return the current snapshot (still "running"); the
+        // caller can poll again.
+        await Promise.race([
+          pending,
+          new Promise((resolve) => setTimeout(resolve, HEADLESS_STATUS_WAIT_MS)),
+        ]);
+      } catch { /* error already logged & stored */ }
       run = tracker.getRun(runId) ?? run;
     }
   }

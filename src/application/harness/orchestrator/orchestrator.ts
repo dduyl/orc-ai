@@ -18,10 +18,11 @@ export async function orchestrate(
   tracker?: RunTracker,
   checkpointer?: Checkpointer,
   onProgress?: (event: ProgressEvent) => void,
+  projectRoot?: string,
 ): Promise<RunReport> {
-  setupProject();
-  const projectRoot = process.cwd();
-  const cp = checkpointer ?? new Checkpointer(path.join(projectRoot, ".orc", "checkpoints.sqlite"));
+  const root = projectRoot ?? process.cwd();
+  setupProject(root);
+  const cp = checkpointer ?? new Checkpointer(path.join(root, ".orc", "checkpoints.sqlite"));
 
   let report: RunReport | undefined;
   try {
