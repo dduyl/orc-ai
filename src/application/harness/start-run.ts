@@ -4,11 +4,20 @@ import type { RunHost } from "./run-host.js";
 import type { PlannerResult, RegisteredWorkflow } from "../planner/registry.js";
 import { orchestrate, type ProgressEvent, type RunReport, type RunTracker } from "./orchestrator/index.js";
 import { Checkpointer } from "./persistence/Checkpointer.js";
+import type { RunRecord } from "./persistence/Tracker.js";
 import { hasPtyWriter, notifyMainPty } from "./signalling/pty-notifier.js";
 import { buildCompletionPrompt } from "./completion.js";
 import { log } from "../../core/log.js";
 
 export interface StartRunOptions {
+  /**
+   * Explicit runId for the new run. Lets callers (e.g. the daemon) register
+   * the run's abort controller / active marker BEFORE the run can complete —
+   * otherwise a fast-finishing workflow can slip past a post-await
+   * registration and leak a permanently-active runId. Defaults to a fresh
+   * randomUUID when omitted.
+   */
+  runId?: string;
   /** Transport-specific observer (e.g. SDK progress notifications). Optional. */
   onEvent?: (event: ProgressEvent) => void;
   /**
@@ -56,7 +65,7 @@ export async function startRun(
   if (!found) throw new Error(`Unknown workflowId: ${workflowId}`);
 
   const plan: PlannerResult = { workflow: found.definition, source: "registered", registration: found };
-  const runId = crypto.randomUUID();
+  const runId = opts?.runId ?? crypto.randomUUID();
   const workflowName = plan.workflow.workflow.name;
 
   const stepEntries = plan.workflow.workflow.steps.map((s: any) => ({
@@ -102,7 +111,11 @@ export async function startRun(
       try { host.tracker.updateRunStatus(runId, "failed"); } catch { /* ignore */ }
       // Build the failure report from the tracker's actual per-step state so
       // steps that already completed before the failure are not miscounted.
-      const snap = host.tracker.getRun(runId);
+      // getRun can throw when the tracker was already closed during shutdown;
+      // default to an empty snapshot so the completion notification below still
+      // fires instead of being swallowed by this catch handler throwing.
+      let snap: RunRecord | null = null;
+      try { snap = host.tracker.getRun(runId); } catch { /* ignore */ }
       const stepStates = snap?.steps ?? [];
       const completed = stepStates.filter(s => s.status === "completed").length;
       const failReport: RunReport = {

@@ -18,6 +18,8 @@ export interface RunHostOptions {
   projectDir?: string;
   tracker?: Tracker;
   ptySink?: PtySink;
+  /** Injectable registry (e.g. a daemon pointed at a custom workflow dir). Defaults to the stock registry. */
+  registry?: WorkflowRegistry;
 }
 
 /**
@@ -45,7 +47,7 @@ export class RunHost {
 
   constructor(adapter: AdapterDef, opts: RunHostOptions = {}) {
     this.adapter = adapter;
-    this.registry = new WorkflowRegistry();
+    this.registry = opts.registry ?? new WorkflowRegistry();
     this.projectDir = opts.projectDir;
     // Default tracker root resolves from projectDir so runs.sqlite lives next to
     // checkpoints.sqlite (<projectDir>/.orc/), matching what the GUI's run-db

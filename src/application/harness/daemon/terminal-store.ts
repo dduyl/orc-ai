@@ -256,6 +256,12 @@ export class TerminalStore {
     this.runs.delete(runId);
   }
 
+  /** Dispose every run terminal (daemon shutdown). */
+  disposeAll(): void {
+    for (const run of this.runs.values()) run.dispose();
+    this.runs.clear();
+  }
+
   get size(): number {
     return this.runs.size;
   }
