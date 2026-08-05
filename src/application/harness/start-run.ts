@@ -16,6 +16,12 @@ export interface StartRunOptions {
    * (e.g. the MCP run_workflow handler). Skips the duplicate loadAll()+get().
    */
   registration?: RegisteredWorkflow;
+  /**
+   * Cooperative cancellation for this run. When aborted, in-flight agent PTYs
+   * are killed and the run resolves with a "cancelled" tracker status. The
+   * caller keeps the controller and aborts it later (e.g. a `run/cancel` RPC).
+   */
+  signal?: AbortSignal;
 }
 
 export interface StartRunResult {
@@ -74,7 +80,16 @@ export async function startRun(
 
   // Fire orchestrate() in the background — do NOT await here.
   // This lets run_workflow return immediately, avoiding the client-side timeout.
-  const bgPromise = orchestrate(task, host.adapter, plan, resume, runTracker, checkpointer, notify, rootDir)
+  const bgPromise = orchestrate(task, {
+    adapter: host.adapter,
+    plan,
+    resume,
+    tracker: runTracker,
+    checkpointer,
+    onProgress: notify,
+    projectRoot: rootDir,
+    signal: opts?.signal,
+  })
     .then((report) => {
       host.bgRuns.delete(runId);
       log.info(`[run ${runId}] Workflow "${workflowId}" completed: ${report.completed}/${report.totalSteps} completed`);

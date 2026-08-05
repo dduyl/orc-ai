@@ -10,16 +10,22 @@ import { restoreSession } from "./resume.js";
 import { createStepHandler } from "./step-handler.js";
 import type { ProgressEvent, RunReport, RunTracker, StepSummary } from "./types.js";
 
+export interface OrchestrateOptions {
+  adapter: AdapterDef;
+  plan: PlannerResult;
+  resume?: boolean;
+  tracker?: RunTracker;
+  checkpointer?: Checkpointer;
+  onProgress?: (event: ProgressEvent) => void;
+  projectRoot?: string;
+  signal?: AbortSignal;
+}
+
 export async function orchestrate(
   task: string,
-  adapter: AdapterDef,
-  plan: PlannerResult,
-  resume?: boolean,
-  tracker?: RunTracker,
-  checkpointer?: Checkpointer,
-  onProgress?: (event: ProgressEvent) => void,
-  projectRoot?: string,
+  options: OrchestrateOptions,
 ): Promise<RunReport> {
+  const { adapter, plan, resume, tracker, checkpointer, onProgress, projectRoot, signal } = options;
   const root = projectRoot ?? process.cwd();
   setupProject(root);
   const cp = checkpointer ?? new Checkpointer(path.join(root, ".orc", "checkpoints.sqlite"));
@@ -52,6 +58,7 @@ export async function orchestrate(
       buildResults: new Map(),
       maxRetries: 2,
       repairFeedbacks: new Map(),
+      signal,
     };
 
     function collectCheckpoint(): Record<string, StepResumeSnapshot> {
@@ -79,6 +86,11 @@ export async function orchestrate(
       (step, outcome) => {
         allOutcomes.push(outcome);
         saveCheckpoint();
+        // Steps the runner fails without dispatching (abort tail in tryFinish,
+        // upstream-failure cascade in propagateFailure) never ran through the
+        // handler, so their tracker rows would otherwise stay "pending". This is
+        // idempotent for steps the handler already marked.
+        tracker?.tracker.setStepCompleted(tracker.runId, step.id, outcome.status, outcome.error);
       },
     );
 
@@ -94,11 +106,13 @@ export async function orchestrate(
     };
 
     if (tracker) {
-      const finalStatus = report.failed > 0 ? "failed" as const : "completed" as const;
+      const finalStatus = signal?.aborted
+        ? "cancelled" as const
+        : report.failed > 0 ? "failed" as const : "completed" as const;
       tracker.tracker.updateRunStatus(tracker.runId, finalStatus);
     }
 
-    onProgress?.({ type: "workflow_complete", runId, status: report.failed > 0 ? "failed" : "completed", report });
+    onProgress?.({ type: "workflow_complete", runId, status: signal?.aborted ? "cancelled" : report.failed > 0 ? "failed" : "completed", report });
 
     return report;
   } finally {

@@ -72,12 +72,14 @@ export function loadCommandsFile(filePath: string): CommandsMap {
 
 const MAX_BUFFER = 16 * 1024 * 1024;
 
-function runCommand(command: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+function runCommand(command: string, signal?: AbortSignal): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   if (!command || command.trim().length === 0) {
     return Promise.resolve({ exitCode: 1, stdout: "", stderr: "Empty command" });
   }
-  return new Promise(resolve => {
-    exec(command, { encoding: "utf-8", maxBuffer: MAX_BUFFER }, (err, stdout, stderr) => {
+  return new Promise((resolve, reject) => {
+    let onAbort: () => void = () => {};
+    const child = exec(command, { encoding: "utf-8", maxBuffer: MAX_BUFFER }, (err, stdout, stderr) => {
+      if (signal) signal.removeEventListener("abort", onAbort);
       const exitCode = err && typeof (err as { code?: unknown }).code === "number"
         ? (err as { code: number }).code
         : err
@@ -85,21 +87,33 @@ function runCommand(command: string): Promise<{ exitCode: number; stdout: string
           : 0;
       resolve({ exitCode, stdout: stdout ?? "", stderr: stderr ?? "" });
     });
+    onAbort = () => {
+      // Best-effort kill of the (shell-wrapped) child. On win32 this
+      // terminates the cmd.exe wrapper; grandchildren may briefly outlive it.
+      child.kill();
+      reject(new Error("cancelled"));
+    };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
   });
 }
 
 /**
  * Executes a command group deterministically from a resolved command list.
  * Runs sequentially and short-circuits on the first non-zero exit,
- * recording every group result encountered.
+ * recording every group result encountered. Rejects on `signal` abort so a
+ * cancelled script step stops promptly instead of running to completion.
  */
 export async function runCommandGroup(
   name: string,
   commands: string[],
+  signal?: AbortSignal,
 ): Promise<CommandExecutionResult> {
   const groups: ResultGroup[] = [];
   for (const command of commands) {
-    const { exitCode, stdout, stderr } = await runCommand(command);
+    const { exitCode, stdout, stderr } = await runCommand(command, signal);
     groups.push({ name, command, exitCode, stdout, stderr });
     if (exitCode !== 0) break;
   }
@@ -109,8 +123,8 @@ export async function runCommandGroup(
 }
 
 /** Runs a single inline command as an ad hoc group. */
-export async function runInlineCommand(command: string): Promise<CommandExecutionResult> {
-  return runCommandGroup("inline", [command]);
+export async function runInlineCommand(command: string, signal?: AbortSignal): Promise<CommandExecutionResult> {
+  return runCommandGroup("inline", [command], signal);
 }
 
 export type RunIntent =
@@ -166,36 +180,36 @@ export class CommandExecutor {
   }
 
   /** Run a named group declared in commands.toml. */
-  async run(key: string): Promise<CommandExecutionResult> {
+  async run(key: string, signal?: AbortSignal): Promise<CommandExecutionResult> {
     const commands = this.commands[key];
     if (!commands || commands.length === 0) {
       return { schemaVersion: 1, passed: false, exitCode: 1, groups: [{ name: key, command: key, exitCode: 1, stdout: "", stderr: `Unknown command group: ${key}` }] };
     }
-    return runCommandGroup(key, commands);
+    return runCommandGroup(key, commands, signal);
   }
 
   /** Run an inline command (one-off, not from commands.toml). */
-  async runInline(command: string): Promise<CommandExecutionResult> {
+  async runInline(command: string, signal?: AbortSignal): Promise<CommandExecutionResult> {
     if (!command || command.length === 0) {
       return { schemaVersion: 1, passed: false, exitCode: 1, groups: [{ name: "inline", command: "", exitCode: 1, stdout: "", stderr: "Empty inline command" }] };
     }
-    return runCommandGroup("inline", [command]);
+    return runCommandGroup("inline", [command], signal);
   }
 
   /**
    * Dispatch a script step's `run` expression string. Returns `{ ok: false, error }`
    * for malformed expressions (a config error, hard-fails the step), otherwise the
-   * execution result with a real exit code.
+   * execution result with a real exit code. Rejects on `signal` abort.
    */
-  async execute(run: string): Promise<{ ok: false; error: string } | { ok: true; result: CommandExecutionResult }> {
+  async execute(run: string, signal?: AbortSignal): Promise<{ ok: false; error: string } | { ok: true; result: CommandExecutionResult }> {
     const parsed = parseRun(run);
     if (!parsed.ok) {
       return { ok: false, error: parsed.error };
     }
     const intent = parsed.intent;
     if (intent.kind === "exec") {
-      return { ok: true, result: await this.runInline(intent.command) };
+      return { ok: true, result: await this.runInline(intent.command, signal) };
     }
-    return { ok: true, result: await this.run(intent.key) };
+    return { ok: true, result: await this.run(intent.key, signal) };
   }
 }
