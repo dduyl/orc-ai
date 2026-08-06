@@ -5,8 +5,20 @@ import { fileURLToPath } from "node:url";
 import { type WorkflowDefinition as WD } from "../../core/schemas.js";
 import { loadYamlFile, loadJsonFile } from "./workflow-parser.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+// Resolve the bundled builtin workflows directory under both environments:
+// - dev / node (ESM): this module sits at dist/application/planner/, so the
+//   builtins are ../../workflows from here.
+// - packaged (pkg): the build copies src/workflows/*.yaml into dist/workflows/
+//   and pkg embeds them as an asset mounted relative to the bundled entry
+//   (dist/bundle.js). process.argv[1] under pkg is the snapshot entry path, so
+//   the sibling workflows dir is reachable via its directory name.
+function resolveBuiltinDir(): string {
+  const isPkg = typeof process !== "undefined" && (process as { pkg?: unknown }).pkg;
+  if (isPkg && typeof process !== "undefined" && process.argv?.[1]) {
+    return join(dirname(process.argv[1]), "workflows");
+  }
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "workflows");
+}
 
 export interface RegisteredWorkflow {
   id: string;
@@ -28,7 +40,7 @@ export class WorkflowRegistry {
 
   constructor(opts?: { userDir?: string; builtinDir?: string }) {
     this.dir = opts?.userDir || join(homedir(), ".orc", "workflows");
-    this.builtinDir = opts?.builtinDir || join(dirname(fileURLToPath(import.meta.url)), "..", "..", "workflows");
+    this.builtinDir = opts?.builtinDir || resolveBuiltinDir();
   }
 
   loadAll(): RegisteredWorkflow[] {

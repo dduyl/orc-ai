@@ -1,34 +1,22 @@
 import { ipcMain } from "electron";
-import type { PtyManager } from "./pty-manager.js";
-import { queryRunStatus, listRunSummaries } from "./run-db.js";
+import type { DaemonBridge } from "./daemon-bridge.js";
 
-export function registerIpcHandlers(ptyManager: PtyManager): void {
-  ipcMain.handle("resize", (_event, cols: number, rows: number) => {
-    ptyManager.resizeActive(cols, rows);
-  });
-
+export function registerIpcHandlers(bridge: DaemonBridge): void {
   ipcMain.on("input", (_event, data: string) => {
-    ptyManager.writeActive(data);
+    void bridge.writeInput(data).catch(() => {});
   });
 
   ipcMain.handle("switch-step", (_event, stepId: string) => {
-    if (!ptyManager.listSteps().some(s => s.id === stepId)) return;
-    ptyManager.switchToStep(stepId);
+    bridge.switchToStep(stepId);
   });
 
-  ipcMain.handle("list-steps", () => {
-    return ptyManager.listSteps();
-  });
+  ipcMain.handle("list-steps", () => bridge.listSteps());
 
-  ipcMain.handle("get-step-output", (_event, stepId: string) => {
-    return ptyManager.getBuffer(stepId);
-  });
+  ipcMain.handle("get-step-output", (_event, stepId: string) => bridge.getStepOutput(stepId));
 
-  ipcMain.handle("get-run-status", (_event, runId: string) => {
-    return queryRunStatus(runId);
-  });
+  ipcMain.handle("start", (_event, task: string, workflowId: string) => bridge.startRun(task, workflowId));
 
-  ipcMain.handle("list-runs", () => {
-    return listRunSummaries();
-  });
+  ipcMain.handle("get-run-status", (_event, runId: string) => bridge.getRunStatus(runId));
+
+  ipcMain.handle("list-runs", () => bridge.listRuns());
 }

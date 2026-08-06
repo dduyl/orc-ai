@@ -1,25 +1,15 @@
 import { execSync } from 'node:child_process';
+import { join } from 'node:path';
 
-const isHost = process.argv.includes('--host');
-let targetFlags = '';
+// Phase D D-5: host-only rebuild.
+//
+// `node-pty` is host-only and daemon-only. The GUI (Electron) is a pure pipe
+// client with zero native addons, so it never needs an Electron-ABI build.
+// The only consumer of `node-pty` is the daemon block, which runs under host
+// Node (dev: spawned via `node`; packaged: the bundled `orc` binary), so the
+// sole rebuild target is the host ABI.
 
-if (isHost) {
-  const nodeVer = process.versions.node;
-  console.log(`[rebuild-native] Host Node.js: v${nodeVer}`);
-} else {
-  const { readFileSync } = await import('node:fs');
-  const { join } = await import('node:path');
-  const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8'));
-  const electronVer = (pkg.devDependencies?.electron || pkg.dependencies?.electron || '').replace(/^\^|~/, '');
-  if (!electronVer) {
-    console.error('[rebuild-native] Electron version not found in package.json');
-    process.exit(1);
-  }
-  targetFlags = `--target=${electronVer} --dist-url=https://electronjs.org/headers`;
-  console.log(`[rebuild-native] Electron target: v${electronVer}`);
-}
-
-console.log('');
+console.log(`[rebuild-native] Host Node.js: v${process.versions.node}`);
 
 const addons = [
   {
@@ -30,15 +20,15 @@ const addons = [
 ];
 
 for (const addon of addons) {
-  const { join } = await import('node:path');
   const dir = join(process.cwd(), addon.dir);
-  console.log(`[rebuild-native] Rebuilding ${addon.name}...`);
+  console.log(`[rebuild-native] Rebuilding ${addon.name} for host ABI...`);
   try {
-    execSync(
-      `npx node-gyp rebuild --arch=x64 --msvs_version=2022 ${targetFlags}`.trim(),
-      { cwd: dir, stdio: 'inherit', env: { ...process.env, ...addon.env } }
-    );
-    console.log(`[rebuild-native] ✅ ${addon.name} rebuilt successfully`);
+    execSync('npx node-gyp rebuild --arch=x64 --msvs_version=2022', {
+      cwd: dir,
+      stdio: 'inherit',
+      env: { ...process.env, ...addon.env },
+    });
+    console.log(`[rebuild-native] ✅ ${addon.name} rebuilt (host ABI)`);
   } catch (err) {
     console.error(`[rebuild-native] ❌ ${addon.name} rebuild failed`);
     process.exit(1);
@@ -46,5 +36,4 @@ for (const addon of addons) {
   console.log('');
 }
 
-const label = isHost ? 'host Node.js' : 'Electron';
-console.log(`[rebuild-native] All native addons rebuilt for ${label}`);
+console.log('[rebuild-native] All native addons rebuilt for host ABI');

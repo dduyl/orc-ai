@@ -2,11 +2,21 @@ import { Transform } from "node:stream";
 import type { Socket } from "node:net";
 
 /**
- * Terminal byte channel framing (ADR-025 Phase C, locked design #6).
+ * Terminal byte channel framing (ADR-025 Phase C locked design #6 + Phase D D-4).
  *
- * Frames are raw length-prefixed: `[uint32 LE payloadLength][payload]`. A
- * zero-length frame is the EOF marker. No JSON escaping — PTY bytes flow
- * through untouched, and the reader is ~15 lines.
+ * Data frames are length-prefixed and carry a step identifier so a client can
+ * demux by origin instead of parsing text markers:
+ *
+ *   `[uint32 LE totalLen][uint16 LE stepIdLen][stepId UTF-8][payload]`
+ *
+ * `totalLen` is the number of bytes following the length field
+ * (2 + stepIdLen + payloadLen). A zero-length frame (`uint32 0`) is the EOF
+ * marker. No JSON escaping — PTY bytes flow through untouched, and the reader
+ * is ~15 lines.
+ *
+ * Reserved step ids: `SCREEN_STEP_ID` = the late-attach screen-snapshot frame
+ * (whole-run replay, not attributed to any step); `MAIN_STEP_ID` = the
+ * daemon-owned main terminal (Phase D D-3).
  *
  * The writer is fire-and-forget: `writeFrame` never backpressures the caller.
  * Backpressure for a slow consumer is provided upstream by the coalescing
@@ -16,27 +26,41 @@ import type { Socket } from "node:net";
 
 export const EOF_FRAME_LENGTH = 0;
 
+/** stepId for the late-attach screen-snapshot frame (whole-run replay). */
+export const SCREEN_STEP_ID = "__screen__";
+/** stepId for the daemon-owned main terminal (Phase D D-3). */
+export const MAIN_STEP_ID = "__main__";
+
 /** Max bytes buffered before a coalesced batch is flushed as one frame. */
 export const DEFAULT_MAX_FRAME_BYTES = 4096;
 /** Max time a batch waits before being flushed (coalescing window). */
 export const DEFAULT_FLUSH_MS = 16;
 
-export function encodeFrame(payload: Buffer | string): Buffer {
+export function encodeFrame(stepId: string, payload: Buffer | string): Buffer {
   const buf = Buffer.isBuffer(payload) ? payload : Buffer.from(payload, "utf8");
-  const header = Buffer.alloc(4);
-  header.writeUInt32LE(buf.length, 0);
-  return Buffer.concat([header, buf]);
+  const step = Buffer.from(stepId, "utf8");
+  const totalLen = 2 + step.length + buf.length;
+  const header = Buffer.alloc(6);
+  header.writeUInt32LE(totalLen, 0);
+  header.writeUInt16LE(step.length, 4);
+  return Buffer.concat([header, step, buf]);
 }
 
-export function writeFrame(sock: Socket, payload: Buffer | string): void {
+export function writeFrame(sock: Socket, stepId: string, payload: Buffer | string): void {
   // A zero-length frame IS the EOF marker (protocol), so an empty payload must
   // never be encoded as one. An empty write carries no information anyway.
   if ((Buffer.isBuffer(payload) ? payload.length : Buffer.byteLength(payload, "utf8")) === 0) return;
-  sock.write(encodeFrame(payload));
+  sock.write(encodeFrame(stepId, payload));
 }
 
 export function writeEofFrame(sock: Socket): void {
   sock.write(Buffer.alloc(4));
+}
+
+/** A decoded terminal frame: payload plus the step that produced it. */
+export interface TerminalFrame {
+  stepId: string;
+  payload: Buffer;
 }
 
 /**
@@ -52,7 +76,7 @@ export class FrameReader {
   private buf: Buffer = Buffer.alloc(0);
   private offset = 0;
   private eof = false;
-  onFrame?: (payload: Buffer) => void;
+  onFrame?: (frame: TerminalFrame) => void;
   onEof?: () => void;
   onError?: (err: Error) => void;
 
@@ -76,21 +100,23 @@ export class FrameReader {
         this.pull(4);
         continue;
       }
-      const len = this.buf.readUInt32LE(this.offset);
-      const need = 4 + len;
+      const totalLen = this.buf.readUInt32LE(this.offset);
+      if (totalLen === EOF_FRAME_LENGTH) {
+        this.eof = true;
+        this.onEof?.();
+        return;
+      }
+      const need = 4 + totalLen;
       if (this.buf.length - this.offset < need) {
         if (this.chunks.length === 0) return;
         this.pull(need);
         continue;
       }
-      const payload = this.buf.subarray(this.offset + 4, this.offset + need);
+      const stepLen = this.buf.readUInt16LE(this.offset + 4);
+      const stepId = this.buf.toString("utf8", this.offset + 6, this.offset + 6 + stepLen);
+      const payload = this.buf.subarray(this.offset + 6 + stepLen, this.offset + need);
       this.offset += need;
-      if (len === EOF_FRAME_LENGTH) {
-        this.eof = true;
-        this.onEof?.();
-        return;
-      }
-      this.onFrame?.(payload);
+      this.onFrame?.({ stepId, payload });
     }
   }
 
@@ -110,27 +136,41 @@ export class FrameReader {
   }
 }
 
+/** A coalesced batch entry: bytes grouped by step, in first-arrival order. */
+interface PendingEntry {
+  stepId: string;
+  bufs: Buffer[];
+}
+
 /**
- * Batching Transform for the terminal byte channel. Accumulates chunks and
- * flushes them as a single length-prefixed frame either when the pending
- * buffer reaches `maxBytes` (immediate) or after `flushMs` of quiet time.
- * Emits the EOF frame on end. Piping this into the client socket gives
- * coalescing + backpressure for free (ADR locked design #6/#8).
+ * Batching Transform for the terminal byte channel. Accepts `{ stepId, data }`
+ * chunks (writableObjectMode) and flushes them as length-prefixed frames,
+ * coalescing contiguous same-step runs so a batch never mixes steps. Flushes
+ * when the pending buffer reaches `maxBytes` (immediate) or after `flushMs` of
+ * quiet time; emits the EOF frame on end. Piping this into the client socket
+ * gives coalescing + backpressure for free (ADR locked design #6/#8).
  */
 export class CoalescingTransform extends Transform {
-  private pending: Buffer = Buffer.alloc(0);
+  private pending: PendingEntry[] = [];
+  private pendingBytes = 0;
   private timer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly flushMs: number = DEFAULT_FLUSH_MS,
     private readonly maxBytes: number = DEFAULT_MAX_FRAME_BYTES,
   ) {
-    super();
+    super({ writableObjectMode: true });
   }
 
-  override _transform(chunk: Buffer, _enc: BufferEncoding, cb: () => void): void {
-    this.pending = this.pending.length === 0 ? chunk : Buffer.concat([this.pending, chunk]);
-    if (this.pending.length >= this.maxBytes) {
+  override _transform(chunk: { stepId: string; data: Buffer }, _enc: BufferEncoding, cb: () => void): void {
+    const last = this.pending[this.pending.length - 1];
+    if (last && last.stepId === chunk.stepId) {
+      last.bufs.push(chunk.data);
+    } else {
+      this.pending.push({ stepId: chunk.stepId, bufs: [chunk.data] });
+    }
+    this.pendingBytes += chunk.data.length;
+    if (this.pendingBytes >= this.maxBytes) {
       this.flushNow();
     } else {
       this.schedule();
@@ -157,15 +197,18 @@ export class CoalescingTransform extends Transform {
     cb(err);
   }
 
-  /** Flush any pending batch immediately (for deterministic tests / shutdown). */
+  /** Flush any pending batches immediately (for deterministic tests / shutdown). */
   flushNow(): void {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
     if (this.pending.length === 0) return;
-    this.push(encodeFrame(this.pending));
-    this.pending = Buffer.alloc(0);
+    for (const entry of this.pending) {
+      this.push(encodeFrame(entry.stepId, Buffer.concat(entry.bufs)));
+    }
+    this.pending = [];
+    this.pendingBytes = 0;
   }
 
   private schedule(): void {

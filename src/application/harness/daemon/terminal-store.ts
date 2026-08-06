@@ -1,17 +1,14 @@
 import { pipeline } from "node:stream";
 import type { Socket } from "node:net";
-import type { Terminal as XTermTerminal } from "@xterm/headless";
+import { Terminal } from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
-import { createRequire } from "node:module";
 import { log } from "../../../core/log.js";
-import { CoalescingTransform, writeEofFrame, writeFrame } from "./frame-transport.js";
+import { CoalescingTransform, SCREEN_STEP_ID, writeEofFrame, writeFrame } from "./frame-transport.js";
 
-// @xterm/headless ships CJS with no ESM wrapper; the TUI uses the same
-// createRequire indirection (src/delivery/tui/output.ts).
-if (false) { require("@xterm/headless"); }
-const _require = createRequire(import.meta.url);
-const HeadlessTerminal: new (opts: Record<string, unknown>) => XTermTerminal =
-  _require("@xterm/headless").Terminal as any;
+// @xterm/headless ships CJS with no ESM wrapper, so it is imported as a CommonJS
+// default and the constructor is extracted here. The bundler (esbuild) inlines
+// the CJS package, keeping the packaged binary free of a runtime require().
+const HeadlessTerminal: new (opts: Record<string, unknown>) => Terminal = Terminal as any;
 
 /**
  * The subset of node-pty's IPty the daemon consumes. Duck-typed so tests can
@@ -50,7 +47,7 @@ interface ClientLink {
  */
 export class RunTerminal {
   readonly runId: string;
-  private xterm: XTermTerminal;
+  private xterm: Terminal;
   private serializer: SerializeAddon;
   private clients = new Set<ClientLink>();
   private done = false;
@@ -91,16 +88,20 @@ export class RunTerminal {
       if (this.done) return;
       if (!markerWritten) {
         markerWritten = true;
-        this.write(dispatch === 1
+        this.write(stepId, dispatch === 1
           ? `\r\n[step: ${stepId}]\r\n`
           : `\r\n[step: ${stepId} (redo ${dispatch - 1})]\r\n`);
       }
-      this.write(data);
+      this.write(stepId, data);
     });
   }
 
-  /** Feed raw terminal bytes (xterm write + fanout to live clients). */
-  write(data: string): void {
+  /**
+   * Feed bytes attributed to `stepId` (xterm write + fanout to live clients).
+   * The step id flows through to attached clients so a GUI demuxes by frame
+   * header rather than parsing `[step: …]` text markers.
+   */
+  write(stepId: string, data: string): void {
     this.hasContent = true;
     this.pendingParses++;
     this.xterm.write(data, () => {
@@ -114,7 +115,7 @@ export class RunTerminal {
     if (this.clients.size === 0) return;
     const buf = Buffer.from(data, "utf8");
     for (const link of this.clients) {
-      link.transform.write(buf);
+      link.transform.write({ stepId, data: buf });
     }
   }
 
@@ -130,10 +131,13 @@ export class RunTerminal {
 
   /**
    * Snapshot of the current screen as ANSI text. Used both for the late-attach
-   * replay frame and by tests to assert on accumulated content.
+   * replay frame and by tests to assert on accumulated content. Scrollback is
+   * included up to this terminal's limit so a client that attaches late (or
+   * after completion) receives real history rather than only the viewport
+   * (Phase D D-6).
    */
   serialize(): string {
-    return this.serializer.serialize();
+    return this.serializer.serialize({ scrollback: 5000 });
   }
 
   get contentSeen(): boolean {
@@ -162,7 +166,7 @@ export class RunTerminal {
     try {
       await this.waitParsed();
       if (this.hasContent) {
-        writeFrame(socket, this.serialize());
+        writeFrame(socket, SCREEN_STEP_ID, this.serialize());
       }
       if (this.done) {
         writeEofFrame(socket);

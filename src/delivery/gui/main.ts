@@ -2,15 +2,17 @@ import { app, BrowserWindow, dialog } from "electron";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
-import { McpServer } from "../../adapters/mcp/server.js";
-import { RunHost } from "../../application/harness/run-host.js";
-import { setStreamEventHandler } from "../../adapters/stream/emitter.js";
-import { getAdapter, BUILTIN_ADAPTERS, type AdapterDef } from "../../application/agents/adapter.js";
-import { PtyManager, MAIN_STEP_ID } from "./pty-manager.js";
+import { DaemonBridge, resolveGuiAdapter } from "./daemon-bridge.js";
 import { registerIpcHandlers } from "./ipc-handlers.js";
-import { setProjectDir } from "./run-db.js";
 
-const MCP_PORT = 3100;
+/**
+ * Electron GUI — pure pipe client (Phase D D-4).
+ *
+ * The GUI owns NO native resources: no embedded MCP server, no node-pty, no
+ * SQLite. It spawns-or-attaches the daemon block over its control pipe and
+ * streams terminal frames + run status back to the renderer. Quitting the GUI
+ * never stops the daemon (D-2); the daemon outlives its clients.
+ */
 
 function getGuiDir(): string {
   const devDir = dirname(fileURLToPath(import.meta.url));
@@ -23,39 +25,15 @@ function getGuiDir(): string {
 const guiDir = getGuiDir();
 
 let win: BrowserWindow | undefined;
-let ptyManager: PtyManager;
+let bridge: DaemonBridge | undefined;
 
 function send(channel: string, data: unknown): void {
-  if (win?.webContents) {
+  if (win?.webContents && !win.webContents.isDestroyed()) {
     win.webContents.send(channel, data);
   }
 }
 
-function startEmbeddedMcp(adapter: AdapterDef, projectDir?: string): void {
-  try {
-    const host = new RunHost(adapter, {
-      projectDir,
-      ptySink: {
-        onStepPty: (stepId, pty, agent) => ptyManager.addSubagentPTY(stepId, pty, agent),
-        onWorkflowComplete: () => {
-          ptyManager.removeSubagentPTYs();
-          ptyManager.switchToStep(MAIN_STEP_ID);
-        },
-      },
-    });
-
-    const server = new McpServer(host);
-
-    server.startHttp(MCP_PORT).then(() => {
-      console.log(`[main] Embedded MCP server on http://0.0.0.0:${MCP_PORT}`);
-      send("log", { text: `MCP server started on port ${MCP_PORT}` });
-    });
-  } catch (err) {
-    console.error("[main] MCP server error:", err);
-  }
-}
-
-function createWindow(adapter: AdapterDef, projectDir?: string): void {
+function createWindow(adapterId: string): BrowserWindow {
   const preloadPath = join(guiDir, "preload.js");
 
   win = new BrowserWindow({
@@ -64,7 +42,7 @@ function createWindow(adapter: AdapterDef, projectDir?: string): void {
     minWidth: 600,
     minHeight: 300,
     backgroundColor: "#0d0d0d",
-    title: `ORC — ${adapter.id}`,
+    title: `ORC — ${adapterId}`,
     show: false,
     webPreferences: {
       preload: preloadPath,
@@ -73,63 +51,48 @@ function createWindow(adapter: AdapterDef, projectDir?: string): void {
     },
   });
 
-  ptyManager = new PtyManager(send, () => win, () => app.quit(), projectDir);
-  registerIpcHandlers(ptyManager);
-
+  bridge = new DaemonBridge(send);
+  registerIpcHandlers(bridge);
   win.loadFile(join(guiDir, "index.html"));
 
-  win.once("ready-to-show", () => {
-    console.log("[main] window ready-to-show, starting PTY + MCP");
-    win?.show();
-    ptyManager.spawnMainPTY(adapter.id);
-    startEmbeddedMcp(adapter, projectDir);
-  });
+  win.once("ready-to-show", () => win?.show());
 
   win.on("closed", () => {
-    ptyManager.killAll();
     win = undefined;
   });
+
+  return win;
 }
 
-app.whenReady().then(() => {
+function parseArg(name: string): string | undefined {
+  const i = process.argv.indexOf(`--${name}`);
+  if (i !== -1 && i + 1 < process.argv.length) return process.argv[i + 1];
+  const eq = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return eq?.split("=").slice(1).join("=");
+}
+
+app.whenReady().then(async () => {
   console.log("[main] app ready, argv:", process.argv);
-  setStreamEventHandler((event) => {
-    send("stream-event", event);
-    send("log", { text: `[stream:${event.type}] ${JSON.stringify(event.part ?? {})}` });
-  });
+  const adapterId = resolveGuiAdapter(parseArg("adapter"));
+  const projectDir = resolve(process.cwd(), parseArg("cwd") ?? "");
 
-  const cwdIndex = process.argv.indexOf("--cwd");
-  const projectDir = cwdIndex !== -1 && cwdIndex + 1 < process.argv.length
-    ? resolve(process.cwd(), process.argv[cwdIndex + 1])
-    : undefined;
-  if (projectDir) {
-    console.log("[main] project dir:", projectDir);
-    setProjectDir(projectDir);
-  }
+  createWindow(adapterId);
 
-  const adapterIndex = process.argv.indexOf("--adapter");
-  const rawAdapterId = process.argv.find((a) => a.startsWith("--adapter="))?.split("=")[1]
-    ?? (adapterIndex !== -1 && adapterIndex + 1 < process.argv.length ? process.argv[adapterIndex + 1] : undefined)
-    ?? "opencode";
-
-  const adapter = getAdapter(rawAdapterId);
-  if (!adapter) {
-    const errorMsg = `Unknown adapter "${rawAdapterId}". Available: ${BUILTIN_ADAPTERS.map((a) => a.id).join(", ")}`;
-    console.error(`[main] ${errorMsg}`);
-    dialog.showErrorBox("ORC Adapter Error", errorMsg);
+  try {
+    await bridge!.connect(projectDir, adapterId);
+    console.log("[main] connected to daemon");
+  } catch (err: any) {
+    console.error("[main] failed to connect to daemon:", err);
+    dialog.showErrorBox("ORC Daemon Error", `Could not reach the run daemon.\n\n${err?.message ?? err}`);
     app.quit();
-    return;
   }
-
-  console.log("[main] adapter:", adapter.id);
-  createWindow(adapter, projectDir);
 });
 
 app.on("window-all-closed", () => {
-  ptyManager?.killAll();
+  bridge?.dispose();
   app.quit();
 });
 
 app.on("before-quit", () => {
-  ptyManager?.killAll();
+  bridge?.dispose();
 });

@@ -43,3 +43,9 @@ export function terminalPipePath(projectDir: string | undefined, runId: string, 
   const base = pipeBase(projectDir, override);
   return process.platform === "win32" ? `${base}-term-${runId}` : `${base}-term-${runId}.sock`;
 }
+
+/** Dedicated main-terminal pipe (Phase D D-3). Serves the daemon-owned main PTY. */
+export function mainPipePath(projectDir: string | undefined, override?: string): string {
+  const base = pipeBase(projectDir, override);
+  return process.platform === "win32" ? `${base}-main` : `${base}-main.sock`;
+}

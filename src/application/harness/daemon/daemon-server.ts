@@ -5,12 +5,16 @@ import { createMessageConnection, type MessageConnection } from "vscode-jsonrpc/
 import type { AdapterDef } from "../../agents/adapter.js";
 import { getAdapter, BUILTIN_ADAPTERS } from "../../agents/adapter.js";
 import { RunHost } from "../run-host.js";
-import { startRun, type StartRunResult } from "../start-run.js";
+import { startRun, reconcileStaleRuns, type StartRunResult } from "../start-run.js";
 import { WorkflowRegistry } from "../../planner/registry.js";
 import type { Tracker, RunRecord } from "../persistence/Tracker.js";
-import { TerminalStore } from "./terminal-store.js";
-import { controlPipePath, terminalPipePath } from "./pipe-name.js";
+import { TerminalStore, type PtyLike } from "./terminal-store.js";
+import { controlPipePath, terminalPipePath, mainPipePath } from "./pipe-name.js";
+import { MAIN_STEP_ID } from "./frame-transport.js";
 import type { ProgressEvent, RunReport } from "../orchestrator/index.js";
+import { McpServer } from "../../../adapters/mcp/server.js";
+import { setupInfrastructure } from "../persistence/bootstrap.js";
+import { registerPtyWriter } from "../signalling/pty-notifier.js";
 import { log } from "../../../core/log.js";
 
 /**
@@ -27,11 +31,13 @@ import { log } from "../../../core/log.js";
  * on separate per-run raw length-prefixed pipes (see TerminalStore + frame
  * transport), created lazily on the first `attach`.
  *
- * The daemon is a RunHost + pipes ONLY — it never binds the MCP HTTP port
- * (the GUI keeps its embedded MCP server). It outlives its clients: a crashed
- * GUI leaves in-flight runs running and terminal pipes reachable. When no
- * control client is connected AND no run is active it auto-exits after
- * `idleMs` (default ~10 min).
+ * The daemon is a RunHost + pipes + (optionally) MCP. By default it hosts no
+ * MCP (pipes-only, `--no-mcp`); with `mcp: { port }` it runs the same
+ * `McpServer` the GUI used to embed, so the coding agent reaches the run host
+ * over `:3100` while the GUI is a pure viewer. It outlives its clients: a
+ * crashed GUI leaves in-flight runs running and terminal pipes reachable. When
+ * no control client is connected AND no run is active AND (when hosting MCP) no
+ * coding agent session is open, it auto-exits after `idleMs` (default ~10 min).
  */
 
 export const DEFAULT_IDLE_MS = 10 * 60 * 1000;
@@ -44,6 +50,8 @@ export const RpcMethod = {
   cancel: "cancel",
   attach: "attach",
   stop: "stop",
+  attachMain: "attachMain",
+  input: "input",
 } as const;
 
 /** Control-plane JSON-RPC notifications (server → client). */
@@ -71,6 +79,24 @@ export interface AttachResult {
   terminalPipe: string;
 }
 
+/** Result of the `attachMain` request: the daemon-owned main terminal pipe. */
+export interface AttachMainResult {
+  terminalPipe: string;
+}
+
+/** Payload for the `input` RPC: write `data` to a PTY by step id. */
+export interface InputParams {
+  /** Omit for the main terminal (`stepId` must be `__main__`). */
+  runId?: string;
+  /** `__main__` → main PTY; otherwise a step id within `runId`. */
+  stepId: string;
+  data: string;
+}
+
+export interface InputResult {
+  ok: true;
+}
+
 export interface CancelParams {
   runId: string;
 }
@@ -94,11 +120,27 @@ export interface DaemonServerOptions {
   projectDir?: string;
   /** Overrides the derived control/terminal pipe base (--pipe / ORC_PIPE). */
   pipeOverride?: string;
+  /**
+   * Host MCP HTTP on the given port (default: no MCP — pipes-only).
+   * `McpServer` is a pure HTTP transport; `setupInfrastructure` +
+   * `reconcileStaleRuns` run exactly once inside `start()` regardless of MCP
+   * mode. `false` is the default; `orc daemon start` passes `{ port }` unless
+   * `--no-mcp`.
+   */
+  mcp?: { port: number } | false;
   adapter?: AdapterDef;
   registry?: WorkflowRegistry;
   tracker?: Tracker;
   terminalStore?: TerminalStore;
   idleMs?: number;
+  /**
+   * Spawn the daemon-owned main interactive PTY (Phase D D-3). Called once inside
+   * `start()`; the returned `PtyLike` is tagged `__main__` and served on the
+   * dedicated main terminal pipe. The CLI supplies a node-pty-backed factory
+   * (with MCP env pointing at `:3100`); tests inject a fake. When omitted the
+   * daemon runs without a main terminal.
+   */
+  spawnMain?: () => PtyLike;
   /** Invoked once after the daemon has fully shut down (tests / CLI exit). */
   onShutdown?: () => void;
 }
@@ -111,7 +153,9 @@ export class DaemonServer {
 
   private readonly projectDir: string;
   private readonly pipeOverride?: string;
+  private readonly mcp?: { port: number } | false;
   private readonly idleMs: number;
+  private readonly spawnMain?: () => PtyLike;
   private readonly onShutdown?: () => void;
   /** True when the daemon (not a caller) created the Tracker, so it closes it. */
   private readonly ownsTracker: boolean;
@@ -126,11 +170,20 @@ export class DaemonServer {
   private idleTimer: NodeJS.Timeout | null = null;
   private stopping = false;
   private shutdownFired = false;
+  /** Present once `start()` hosts MCP (pure transport; setup runs once above). */
+  private mcpServer: McpServer | null = null;
+  /** The daemon-owned main PTY (tagged `__main__`), if `spawnMain` was provided. */
+  private mainPty: PtyLike | null = null;
+  private mainTerminalServer: Server | null = null;
+  /** runId → (stepId → pty) for `input` routing (populated by feedPty). */
+  private stepPtys = new Map<string, Map<string, PtyLike>>();
 
   constructor(opts: DaemonServerOptions = {}) {
     this.projectDir = opts.projectDir ?? process.cwd();
     this.pipeOverride = opts.pipeOverride;
+    this.mcp = opts.mcp ?? false;
     this.idleMs = opts.idleMs ?? DEFAULT_IDLE_MS;
+    this.spawnMain = opts.spawnMain;
     this.onShutdown = opts.onShutdown;
     this.ownsTracker = !opts.tracker;
     this.controlPipe = controlPipePath(this.projectDir, opts.pipeOverride);
@@ -161,8 +214,64 @@ export class DaemonServer {
         resolve();
       });
     });
+    // The daemon is the single owner of infrastructure setup + stale-run
+    // reconciliation, run exactly once regardless of MCP mode (`--no-mcp`
+    // still needs ~/.orc/workflows and orphan cleanup). `McpServer` is a pure
+    // transport and must not re-run these.
+    setupInfrastructure();
+    reconcileStaleRuns(this.host);
+    if (this.mcp) {
+      this.mcpServer = new McpServer(this.host, () => this.touch());
+      await this.mcpServer.startHttp(this.mcp.port);
+    }
+    this.startMain();
     this.touch();
     return this.controlPipe;
+  }
+
+  /**
+   * Spawn and wire the daemon-owned main interactive PTY (`spawnMain`), tagged
+   * `__main__`. Its bytes feed a shared terminal in the store so `attachMain`
+   * clients get replay + live frames. The main PTY is the user's interactive
+   * coding-agent shell; the run host reaches agents via MCP on :3100.
+   */
+  private startMain(): void {
+    if (!this.spawnMain) return;
+    try {
+      this.mainPty = this.spawnMain();
+      this.feedStepPty(MAIN_STEP_ID, MAIN_STEP_ID, this.mainPty);
+      // Phase D D-4: the daemon now owns the main PTY, so it — not the GUI —
+      // becomes the sink for `[ORC]` completion prompts pushed into opencode's
+      // input on workflow completion (start-run → notifyMainPty).
+      registerPtyWriter((text: string) => {
+        const pty = this.mainPty;
+        if (!pty?.write) return;
+        try { pty.write(text); } catch { /* pty may be dead */ }
+      });
+      log.info("[daemon] main terminal on");
+    } catch (err: any) {
+      log.warn(`[daemon] main PTY spawn failed: ${err?.message ?? err}`);
+      this.mainPty = null;
+    }
+  }
+
+  /**
+   * Wire a step's PTY into the terminal store AND register it for `input`
+   * routing. A redo/repair loop re-dispatches the same step id with a fresh
+   * pty, so the map entry is replaced (test seam: tests seed runs this way).
+   */
+  feedStepPty(runId: string, stepId: string, pty: PtyLike): void {
+    this.terminalStore.feedPty(runId, stepId, pty);
+    this.stepPtysFor(runId).set(stepId, pty);
+  }
+
+  private stepPtysFor(runId: string): Map<string, PtyLike> {
+    let m = this.stepPtys.get(runId);
+    if (!m) {
+      m = new Map<string, PtyLike>();
+      this.stepPtys.set(runId, m);
+    }
+    return m;
   }
 
   /** True while the control pipe is bound and the daemon has not stopped. */
@@ -170,8 +279,13 @@ export class DaemonServer {
     return this.controlServer !== null && !this.stopping;
   }
 
+  /** The hosted MCP server, if `start()` enabled MCP (tests / introspection). */
+  getMcpServer(): McpServer | null {
+    return this.mcpServer;
+  }
+
   /** Clean shutdown: abort runs, close pipes, dispose terminals. */
-  async stop(): Promise<void> {
+  async stop(requesterSocket?: Socket): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
     if (this.idleTimer) {
@@ -192,8 +306,19 @@ export class DaemonServer {
     // onDispose cleanup deletes the socket from controlSockets, so disposing
     // connections first leaves an empty set to iterate and server.close() hangs
     // waiting on a live socket.
+    //
+    // Exception: when a stop RPC arrived over `requesterSocket`, that client is
+    // still waiting for its reply. end() (instead of destroy()) flushes the
+    // queued reply bytes and half-closes with FIN so the response makes it
+    // through; every other socket is hard-destroyed.
     const sockets = [...this.controlSockets];
-    for (const sock of sockets) sock.destroy();
+    for (const sock of sockets) {
+      if (sock === requesterSocket) {
+        try { sock.end(); } catch { /* ignore */ }
+      } else {
+        sock.destroy();
+      }
+    }
     this.controlSockets.clear();
     for (const conn of [...this.controlConnections]) {
       try { conn.dispose(); } catch { /* ignore */ }
@@ -208,6 +333,29 @@ export class DaemonServer {
     this.terminalSockets.clear();
     this.terminalStore.disposeAll();
 
+    // Kill the daemon-owned main PTY (if any). `feedPty` holds an onData
+    // reference into the store; disposing the store then killing the pty is the
+    // right order so no callback fires into a disposed terminal.
+    const main = this.mainPty;
+    this.mainPty = null;
+    try { main?.kill?.(); } catch { /* ignore */ }
+    this.stepPtys.clear();
+    if (this.mainTerminalServer) {
+      try { this.mainTerminalServer.close(); } catch { /* ignore */ }
+      this.mainTerminalServer = null;
+    }
+
+    if (this.mcpServer) {
+      const httpServer = this.mcpServer.getHttpServer();
+      if (httpServer) {
+        // MCP sessions hold long-lived SSE streams; force-close them or
+        // server.close() hangs forever waiting on open connections.
+        try { httpServer.closeAllConnections?.(); } catch { /* ignore */ }
+        try { await new Promise<void>((r) => httpServer.close(() => r())); } catch { /* ignore */ }
+      }
+      this.mcpServer = null;
+    }
+
     await new Promise<void>((resolve) => {
       const server = this.controlServer;
       this.controlServer = null;
@@ -216,6 +364,15 @@ export class DaemonServer {
         this.fireShutdown();
         return;
       }
+      // The requester was end()ed (not destroyed) so its reply flushes first,
+      // but server.close() waits for every connection to fully close. If the
+      // client lingers without closing its side, force-destroy the socket after
+      // a short grace period (unref'd so it never keeps the process alive).
+      const grace = setTimeout(() => {
+        if (requesterSocket && !requesterSocket.destroyed) requesterSocket.destroy();
+      }, 1000);
+      grace.unref();
+      requesterSocket?.once("close", () => clearTimeout(grace));
       server.close(() => {
         this.fireShutdown();
         resolve();
@@ -261,7 +418,9 @@ export class DaemonServer {
     conn.onRequest(RpcMethod.status, (params: { runId: string }) => this.handleStatus(params));
     conn.onRequest(RpcMethod.cancel, (params: CancelParams) => this.handleCancel(params));
     conn.onRequest(RpcMethod.attach, (params: AttachParams) => this.handleAttach(params));
-    conn.onRequest(RpcMethod.stop, () => this.handleStop());
+    conn.onRequest(RpcMethod.attachMain, () => this.handleAttachMain());
+    conn.onRequest(RpcMethod.input, (params: InputParams) => this.handleInput(params));
+    conn.onRequest(RpcMethod.stop, () => this.handleStop(sock));
 
     const cleanup = (): void => {
       this.controlConnections.delete(conn);
@@ -289,13 +448,25 @@ export class DaemonServer {
     // cancel would lie {cancelled:true} about an already-finished run.
     this.controllers.set(runId, controller);
     this.activeRunIds.add(runId);
-    const result = await startRun(this.host, task, workflowId, params?.resume === true, {
-      signal: controller.signal,
-      runId,
-      onEvent: (event) => this.onRunEvent(event),
-    });
-    this.touch();
-    return result;
+    try {
+      const result = await startRun(this.host, task, workflowId, params?.resume === true, {
+        signal: controller.signal,
+        runId,
+        onEvent: (event) => this.onRunEvent(event),
+      });
+      this.touch();
+      return result;
+    } catch (err) {
+      // startRun threw before a workflow_complete fan-out could clean up (e.g.
+      // an unknown workflowId fails before any background job starts). Without
+      // this, the pre-registered marker leaks forever: idle auto-exit never
+      // arms (activeRunIds is non-empty) and a later cancel would lie
+      // {cancelled:true} about a run that never started.
+      this.controllers.delete(runId);
+      this.activeRunIds.delete(runId);
+      this.touch();
+      throw err;
+    }
   }
 
   private handleList(): RunRecord[] {
@@ -327,9 +498,41 @@ export class DaemonServer {
     return { runId, terminalPipe: terminalPipePath(this.projectDir, runId, this.pipeOverride) };
   }
 
-  private handleStop(): StopResult {
+  private async handleAttachMain(): Promise<AttachMainResult> {
+    if (!this.spawnMain) throw new Error("daemon has no main terminal");
+    await this.ensureMainTerminalServer();
+    return { terminalPipe: mainPipePath(this.projectDir, this.pipeOverride) };
+  }
+
+  /**
+   * Route an `input` write to the matching PTY. `stepId === __main__` → the
+   * daemon-owned main PTY; otherwise a step PTY within `runId` (registered by
+   * `feedPty` on each `step_pty` event). Unknown targets reject — a client can
+   * never silently write into thin air.
+   */
+  private handleInput(params: InputParams): InputResult {
+    const stepId = params?.stepId;
+    if (!stepId) throw new Error("Missing stepId");
+    if (typeof params?.data !== "string") throw new Error("Missing data");
+    if (stepId === MAIN_STEP_ID) {
+      if (!this.mainPty?.write) throw new Error("Main terminal unavailable");
+      this.mainPty.write(params.data);
+      return { ok: true };
+    }
+    if (!params.runId) throw new Error("Missing runId for step input");
+    const pty = this.stepPtys.get(params.runId)?.get(stepId);
+    if (!pty?.write) throw new Error(`Unknown step: ${params.runId}/${stepId}`);
+    pty.write(params.data);
+    return { ok: true };
+  }
+
+  private handleStop(requesterSocket?: Socket): StopResult {
     // Reply before tearing down, or the client never receives the response.
-    setImmediate(() => { void this.stop(); });
+    // Nested setImmediate: vscode-jsonrpc flushes the reply itself on a single
+    // deferred setImmediate (via its write semaphore), so we must run the
+    // teardown strictly AFTER that — one extra macrotask guarantees the reply
+    // bytes are written to the socket before it is closed.
+    setImmediate(() => { setImmediate(() => { void this.stop(requesterSocket); }); });
     return { ok: true };
   }
 
@@ -338,7 +541,7 @@ export class DaemonServer {
   private onRunEvent(event: ProgressEvent): void {
     if (event.type === "step_pty") {
       if (event.runId && event.stepId && event.pty) {
-        this.terminalStore.feedPty(event.runId, event.stepId, event.pty);
+        this.feedStepPty(event.runId, event.stepId, event.pty);
       }
       return;
     }
@@ -348,6 +551,7 @@ export class DaemonServer {
         // Evict the run's terminal and close its pipe server. Leaving them in
         // place would grow memory/handles without bound on a long-lived daemon.
         this.evictTerminal(event.runId);
+        this.stepPtys.delete(event.runId);
         this.activeRunIds.delete(event.runId);
         this.controllers.delete(event.runId);
       }
@@ -394,6 +598,23 @@ export class DaemonServer {
     this.terminalStore.attach(runId, sock);
   }
 
+  /** Bind the dedicated main-terminal pipe lazily on first `attachMain`. */
+  private async ensureMainTerminalServer(): Promise<void> {
+    if (this.mainTerminalServer) return;
+    const path = mainPipePath(this.projectDir, this.pipeOverride);
+    await new Promise<void>((resolve, reject) => {
+      const server = net.createServer((sock) => this.onTerminalConnection(MAIN_STEP_ID, sock));
+      server.once("error", reject);
+      server.listen(path, () => {
+        server.removeListener("error", reject);
+        server.on("error", (err) => log.warn(`[daemon] main terminal pipe error: ${err.message}`));
+        this.mainTerminalServer = server;
+        log.debug(`[daemon] main terminal pipe on ${path}`);
+        resolve();
+      });
+    });
+  }
+
   /**
    * Release a run's terminal resources once it completes: close its pipe
    * server (freeing the bound name/handle) and evict the terminal from the
@@ -413,10 +634,15 @@ export class DaemonServer {
 
   /**
    * (Re)arm the idle auto-exit. A timer is only scheduled when no control
-   * client is connected AND no run is active; any client, in-flight run, or
-   * explicit stop clears it. `unref()` keeps the timer from holding the
-   * process open in CLI mode, but the bound control pipe keeps it alive until
-   * the daemon decides to stop.
+   * client is connected AND no run is active AND (when hosting MCP) no coding
+   * agent holds a session on :3100; any such activity, or an explicit stop,
+   * clears it. `unref()` keeps the timer from holding the process open in CLI
+   * mode, but the bound control pipe keeps it alive until the daemon decides
+   * to stop.
+   *
+   * MCP sessions are checked so a *standalone* `orc mcp` (a coding agent
+   * attached over HTTP) is not mistaken for idle and killed after the grace
+   * period — idle-exit only fires when genuinely abandoned.
    */
   private touch(): void {
     if (this.idleTimer) {
@@ -425,6 +651,7 @@ export class DaemonServer {
     }
     if (this.stopping) return;
     if (this.controlConnections.size > 0 || this.activeRunIds.size > 0) return;
+    if (this.mcpServer && this.mcpServer.getActiveSessionCount() > 0) return;
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
       log.info("[daemon] idle — shutting down");

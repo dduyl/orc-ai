@@ -27,7 +27,7 @@ export function collectFrames(sock: net.Socket): {
 } {
   const reader = new FrameReader();
   const frames: Buffer[] = [];
-  reader.onFrame = (p) => frames.push(p);
+  reader.onFrame = (f) => frames.push(f.payload);
   const eof = new Promise<void>((resolve) => { reader.onEof = () => resolve(); });
   sock.on("data", (c) => reader.feed(c));
   return {
@@ -54,16 +54,20 @@ export function fakePty(): {
   pty: PtyLike;
   emitData: (d: string) => void;
   emitExit: (code?: number) => void;
+  writes: string[];
 } {
   let onData: ((d: string) => void) | undefined;
   let onExit: ((e: { exitCode: number; signal?: number }) => void) | undefined;
+  const writes: string[] = [];
   return {
     pty: {
       onData: (cb: (d: string) => void) => { onData = cb; },
       onExit: (cb: (e: { exitCode: number; signal?: number }) => void) => { onExit = cb; },
+      write: (d: string) => { writes.push(d); },
       kill: () => {},
     },
     emitData: (d: string) => { onData?.(d); },
     emitExit: (code = 0) => { onExit?.({ exitCode: code }); },
+    writes,
   };
 }

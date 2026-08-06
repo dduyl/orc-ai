@@ -1,17 +1,36 @@
 import { Command } from "commander";
 import { DaemonServer } from "../../../application/harness/daemon/daemon-server.js";
 import { PipeClient } from "../../../application/harness/daemon/pipe-client.js";
-import { setupInfrastructure } from "../../../application/harness/persistence/bootstrap.js";
+import { spawnMainPty } from "../main-pty.js";
 
 /** Resolve the pipe override from the CLI option or ORC_PIPE env. */
 export function resolvePipeOverride(optPipe?: string): string | undefined {
   return optPipe || process.env["ORC_PIPE"];
 }
 
+const DEFAULT_MCP_PORT = 3100;
+
+/**
+ * Resolve the MCP hosting option: `--no-mcp` → false (pipes-only); otherwise
+ * host MCP on the given port (default 3100, overridable via MCP_PORT).
+ */
+export function resolveMcpOption(noMcp: boolean, optPort?: string): { port: number } | false {
+  if (noMcp) return false;
+  const portStr = optPort || process.env["MCP_PORT"] || String(DEFAULT_MCP_PORT);
+  const port = parseInt(portStr, 10);
+  if (Number.isNaN(port)) throw new Error(`Invalid MCP_PORT: ${optPort}`);
+  return { port };
+}
+
 /** `orc daemon start` — bind the control pipe and serve runs until stopped. */
-export async function daemonStart(pipe?: string): Promise<void> {
-  setupInfrastructure();
-  const daemon = new DaemonServer({ pipeOverride: pipe });
+export async function daemonStart(pipe?: string, mcp: { port: number } | false = { port: DEFAULT_MCP_PORT }): Promise<void> {
+  // setupInfrastructure + reconcileStaleRuns run once inside DaemonServer.start().
+  const mcpPort = mcp ? mcp.port : undefined;
+  const daemon = new DaemonServer({
+    pipeOverride: pipe,
+    mcp,
+    spawnMain: () => spawnMainPty("opencode", { mcpPort }),
+  });
   let started = false;
   try {
     await daemon.start();
@@ -84,8 +103,11 @@ export function registerDaemonCommands(parent: Command): void {
   daemon
     .command("start")
     .option("--pipe <path>", "override the control pipe path")
-    .description("Start the daemon in the foreground")
-    .action((opts: { pipe?: string }) => daemonStart(resolvePipeOverride(opts.pipe)));
+    .option("--mcp-port <port>", "port for the hosted MCP HTTP server (default 3100)")
+    .option("--no-mcp", "run pipes-only, without hosting MCP HTTP")
+    .description("Start the daemon in the foreground (control pipe + optional MCP :3100)")
+    .action((opts: { pipe?: string; mcpPort?: string; mcp?: boolean }) =>
+      daemonStart(resolvePipeOverride(opts.pipe), resolveMcpOption(opts.mcp === false, opts.mcpPort)));
   daemon
     .command("attach")
     .option("--pipe <path>", "override the control pipe path")

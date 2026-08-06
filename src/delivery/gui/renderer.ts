@@ -9,8 +9,8 @@ const api = (window as any).electronAPI as {
   onStatus: (cb: (data: Record<string, unknown>) => void) => void;
   onLog: (cb: (data: { text: string }) => void) => void;
   onStepActivated: (cb: (data: { stepId: string }) => void) => void;
+  onRunActive: (cb: (data: { runId: string }) => void) => void;
   write: (data: string) => void;
-  resize: (cols: number, rows: number) => void;
   switchStep: (stepId: string) => Promise<void>;
   listSteps: () => Promise<StepInfo[]>;
   getStepOutput: (stepId: string) => Promise<string>;
@@ -52,7 +52,6 @@ function fitTerm(): void {
     fitTermBase();
     const { cols, rows } = term;
     if (cols > 0 && rows > 0) {
-      api.resize(cols, rows);
       const size = `${cols}×${rows}`;
       refs.termSize.textContent = size;
       refs.infoSize.textContent = size;
@@ -111,12 +110,11 @@ api.onStatus((data: Record<string, unknown>) => {
 
 api.onLog((data: { text: string }) => {
   addEvent(data.text, refs.eventList);
+});
 
-  const m = data.text.match(/\[run ([0-9a-f-]+)\]/);
-  if (m) {
-    latestRunId = m[1];
-    pollRunStatus();
-  }
+api.onRunActive((data: { runId: string }) => {
+  latestRunId = data.runId;
+  pollRunStatus();
 });
 
 api.onStepActivated(async (data: { stepId: string }) => {

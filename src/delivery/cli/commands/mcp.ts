@@ -1,28 +1,24 @@
-import { McpServer } from "../../../adapters/mcp/server.js";
-import { RunHost } from "../../../application/harness/run-host.js";
-import { getAdapter, BUILTIN_ADAPTERS } from "../../../application/agents/adapter.js";
+import { DaemonServer } from "../../../application/harness/daemon/daemon-server.js";
 import { log } from "../../../core/log.js";
 
-export async function startMcp(): Promise<void> {
-  const portStr = process.env["MCP_PORT"] || "3100";
-  const port = parseInt(portStr, 10);
-
-  const adapter = getAdapter("opencode") ?? BUILTIN_ADAPTERS[0];
-  const host = new RunHost(adapter, { projectDir: process.cwd() });
-  const server = new McpServer(host);
-
-  await server.startHttp(port);
+/**
+ * `orc mcp` — backward-compatible alias for the daemon block hosting MCP.
+ *
+ * Since D-2 (ADR-025), the canonical run host is `orc daemon start` (control
+ * pipe + MCP + runs in one process). `orc mcp`'s historic behavior — an MCP
+ * HTTP server on :3100 that lives until SIGINT — is exactly what a daemon
+ * running with `mcp: { port }` provides, so this starts that same block. No
+ * standalone MCP-only process remains.
+ */
+export async function startMcp(port = parseInt(process.env["MCP_PORT"] || "3100", 10)): Promise<void> {
+  const daemon = new DaemonServer({ mcp: { port } });
+  await daemon.start();
 
   process.on("SIGINT", () => {
     log.info("[MCP] Shutting down");
-    const httpServer = server.getHttpServer();
-    if (httpServer) httpServer.close();
-    process.exit(0);
+    void daemon.stop();
   });
-
   process.on("SIGTERM", () => {
-    const httpServer = server.getHttpServer();
-    if (httpServer) httpServer.close();
-    process.exit(0);
+    void daemon.stop();
   });
 }

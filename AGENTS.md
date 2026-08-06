@@ -4,10 +4,10 @@
 
 ```bash
 npm run build                # tsc + GUI renderer bundle + asset copies
-npm run start:gui           # launch the Electron GUI (PTY + embedded MCP server)
-.\dist\orc.exe mcp          # start headless MCP server (no GUI)
+npm run start:gui           # launch the Electron GUI (pure pipe client; spawns-or-attaches the daemon)
+.\dist\orc.exe mcp          # start the daemon block hosting MCP (no GUI)
 npm run build:binary        # build standalone dist/orc.exe
-npm test                    # run the full vitest suite (92 tests)
+npm test                    # run the full vitest suite (151 tests)
 ```
 
 Notes:
@@ -20,12 +20,10 @@ Notes:
 1. `npm run build` — tsc + GUI renderer esbuild bundle + asset/workflow copies
 2. `node scripts/build-binary.mjs` — esbuild-bundles `dist/delivery/cli/index.js` → `dist/bundle.js` (resolves SDK exports map), then pkg packages → `dist/orc.exe`
 
-Native addons (`better-sqlite3`, `node-pty`) are esbuild-external and resolved by pkg as separate assets.
-Run `npm run rebuild:native` standalone after `npm install` if you only need to refresh native addons without a full build.
+Native addon `node-pty` is esbuild-external and resolved by pkg as a separate asset.
+Run `npm run rebuild:host` standalone after `npm install` if you only need to refresh native addons without a full build.
 
-**ABI strategy:** Default target is **Electron** (NODE_MODULE_VERSION 148). Use `npm run rebuild:native` for the GUI. Use `npm run rebuild:host` if you need host Node.js ABI for the pkg binary (`orc.exe mcp`).
-
-**Important:** Only one ABI can occupy `node_modules/` at a time.
+**ABI strategy:** `node-pty` is **host-only, daemon-only**. `npm run rebuild:host` is the sole native rebuild script (targets the host ABI). The GUI (Electron) is a pure pipe client with zero native addons — it spawns-or-attaches the daemon and never loads `node-pty` or `better-sqlite3` itself, so no Electron-ABI rebuild is ever needed. The daemon block runs under host Node (dev: spawned via `node`; packaged: the bundled `orc` binary), so host ABI always matches.
 
 ## Project Structure
 
@@ -55,14 +53,19 @@ src/
         resume.ts, types.ts
         index.ts
       persistence/
-        Checkpointer.ts       — SQLite save/load/prune per thread
+        Checkpointer.ts       — node:sqlite save/load/prune per thread
         Tracker.ts             — session/step tracking feed
         bootstrap.ts
       signalling/
         StepCompletionRegistry.ts — MCP bridge: completionKey → deferred resolution
         pty-notifier.ts
         index.ts
-      index.ts
+      daemon/
+        daemon-server.ts       — named-pipe run daemon (control pipe + MCP + main PTY)
+        frame-transport.ts     — length-prefixed terminal frame codec (step-id demux)
+        terminal-store.ts      — headless run terminals + replay/live fan-out
+        pipe-client.ts, pipe-name.ts
+      run-host.ts, start-run.ts, index.ts
     planner/
       registry.ts           — WorkflowRegistry: loads ~/.orc/workflows/*.yaml + builtins
       workflow-parser.ts    — YAML → WorkflowDefinition
@@ -82,9 +85,11 @@ src/
     hooks/                  — lifecycle hooks (endpoint.ts, types.ts, index.ts)
     stream/                 — typed event stream (emitter.ts, types.ts, index.ts)
   delivery/                 — user-facing entry points
-    cli/index.ts            — commander CLI (currently: `orc mcp`)
-    cli/commands/mcp.ts     — headless MCP start
-    gui/                    — Electron main/preload/renderer + PTY manager + run DB
+    cli/index.ts            — commander CLI (`orc daemon start|attach|stop`, `orc mcp`)
+    cli/commands/daemon.ts  — daemon start/attach/stop
+    cli/commands/mcp.ts     — `orc mcp` alias → the daemon block hosting MCP
+    cli/main-pty.ts         — spawnMainPty (node-pty, daemon-owned main terminal)
+    gui/                    — pure pipe client: main.ts + daemon-bridge.ts + preload/renderer
     tui/                    — terminal UI (tree view, status bar, stream handler)
   workflows/                — builtin YAML workflow definitions:
     feat-impl-builtin.yaml  — full: spec → arch → code → test → review → validate
@@ -96,6 +101,7 @@ src/
     application/agents/*.test.ts                  — adapter, adapter-pty, agents, coding-agent
     application/harness/execution/*.test.ts      — CommandExecutor (16), step-runner (13), bounding (2)
     application/harness/orchestrator/*.test.ts   — step-handler (23), builtin-workflow-gates (2), orchestrator
+    application/harness/daemon/pipe-transport.test.ts — control/terminal pipes + MCP + idle-exit
     application/harness/persistence/Checkpointer.test.ts
     application/planner/*.test.ts                — registry, prompt-loader
     adapters/mcp/                                — mcp-server (protocol smoke), handlers/workflow-validation (6)
@@ -106,13 +112,13 @@ src/
 ## Test
 
 ```bash
-npm test              # run all tests (vitest) — 92 tests
+npm test              # run all tests (vitest) — 151 tests
 npm run test:watch    # watch mode
 npm run build         # TypeScript compile + assets
 npm run lint          # type-check only (tsc --noEmit)
 ```
 
-**Known pre-existing failures:** `Checkpointer.test.ts` and `mcp-server.test.ts` fail to load under the default Electron ABI because the native `better-sqlite3` binary in `node_modules/` targets `NODE_MODULE_VERSION 148` while the test runner runs on the host Node ABI. These are ABI artifacts of the current `node_modules/` state and are unrelated to engine logic. Run `npm run rebuild:host` if you need those tests green locally.
+**Native addons:** `node_modules/` targets the host ABI only (see ABI strategy above). A fresh `npm install` ships prebuilt host binaries; `npm run rebuild:host` recompiles them from source if a prebuilt one is missing or mismatched.
 
 ## Architecture
 
