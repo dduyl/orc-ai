@@ -29,11 +29,13 @@ export async function orchestrate(
   const root = projectRoot ?? process.cwd();
   setupProject(root);
   const cp = checkpointer ?? new Checkpointer(path.join(root, ".orc", "checkpoints.sqlite"));
+  // Hoisted: needed both by per-step checkpoint saves and the success prune in
+  // `finally`. Runs are tracked per runId; "" when no tracker is supplied.
+  const runId = tracker?.runId ?? "";
 
   let report: RunReport | undefined;
   try {
     const activeAdapter = adapter;
-    const runId = tracker?.runId;
 
     const { sessionId, restoredStepResults } = restoreSession(task, resume, cp, tracker, onProgress);
 
@@ -76,7 +78,7 @@ export async function orchestrate(
         agentId: activeAdapter.id,
         stepResults: collectCheckpoint(),
         context: { task },
-      });
+      }, runId);
     }
 
     const outcomes = await runWorkflow(
@@ -117,7 +119,9 @@ export async function orchestrate(
     return report;
   } finally {
     if (report && report.failed === 0) {
-      cp.prune(task);
+      // Owner-scoped: only removes this run's own checkpoint, so a concurrent
+      // same-task run's live row survives.
+      cp.prune(task, runId);
     }
     cp.close();
   }

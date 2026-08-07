@@ -250,10 +250,16 @@ export class DaemonBridge {
 
   private onRunFrame(stepId: string, payload: Buffer): void {
     const text = payload.toString("utf8");
-    // The `__screen__` replay frame is the run's combined scrollback; per-step
-    // live frames (which the GUI attaches to at run start) carry the demuxed
-    // step streams. Combined-view replay for late attach is future work.
-    if (stepId === SCREEN_STEP_ID) return;
+    // The `__screen__` replay frame carries a finished run's combined scrollback
+    // (reconstructed from its disk log on re-attach, ADR-025 Phase E #16). Surface
+    // it as the run's combined view rather than dropping it: a run that already
+    // completed before attach has no per-step live frames, so the whole-history
+    // replay is the only content the client sees.
+    if (stepId === SCREEN_STEP_ID) {
+      this.stepBuffers.set(SCREEN_STEP_ID, (this.stepBuffers.get(SCREEN_STEP_ID) ?? "") + text);
+      this.send("output", text);
+      return;
+    }
     this.stepBuffers.set(stepId, (this.stepBuffers.get(stepId) ?? "") + text);
     if (this.activeStepId === stepId) this.send("output", text);
   }
@@ -275,8 +281,10 @@ export class DaemonBridge {
   private onWorkflowComplete(info: WorkflowCompleteInfo): void {
     if (info.runId) {
       this.send("log", { text: `[run ${info.runId}] workflow complete (${info.status ?? "?"})` });
-      this.stepBuffers.clear();
-      this.switchToStep(MAIN_STEP_ID);
+      // Do NOT clear stepBuffers here: the combined `__screen__` replay and per-step
+      // buffers keep the finished run viewable after completion (Phase E). Clearing
+      // would wipe the history a toasted run is about to show.
+      if (this.latestRunId === info.runId) this.switchToStep(MAIN_STEP_ID);
     }
   }
 

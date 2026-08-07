@@ -4,6 +4,7 @@ import { Terminal } from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { log } from "../../../core/log.js";
 import { CoalescingTransform, SCREEN_STEP_ID, writeEofFrame, writeFrame } from "./frame-transport.js";
+import type { RunLog, RunLogStore } from "./run-log.js";
 
 // @xterm/headless ships CJS with no ESM wrapper, so it is imported as a CommonJS
 // default and the constructor is extracted here. The bundler (esbuild) inlines
@@ -27,6 +28,9 @@ export interface RunTerminalOptions {
   rows?: number;
   coalesceMs?: number;
   maxFrameBytes?: number;
+  /** Optional disk-log sink: every frame is appended so a finished run can be
+   *  re-attached from disk after daemon restart (ADR-025 Phase E #16). */
+  log?: RunLog;
 }
 
 interface ClientLink {
@@ -58,12 +62,14 @@ export class RunTerminal {
   private drainWaiters: (() => void)[] = [];
   private readonly coalesceMs: number;
   private readonly maxFrameBytes: number;
+  private readonly log?: RunLog;
 
   constructor(runId: string, opts: RunTerminalOptions = {}) {
     this.runId = runId;
     this.coalesceMs = opts.coalesceMs ?? 16;
     this.maxFrameBytes = opts.maxFrameBytes ?? 4096;
-    this.xterm = new HeadlessTerminal({
+    this.log = opts.log;
+    this.xterm = new Terminal({
       cols: opts.cols ?? 120,
       rows: opts.rows ?? 40,
       scrollback: 5000,
@@ -112,6 +118,11 @@ export class RunTerminal {
         for (const w of waiters) w();
       }
     });
+    // Durable disk log (E1): persist the attributed frame so a finished/evicted
+    // run can be replayed after restart. The `[step: …]` marker is written via
+    // this.write below too, so the log preserves the same ordered, attributed
+    // stream the live channel saw.
+    this.log?.append(stepId, data);
     if (this.clients.size === 0) return;
     const buf = Buffer.from(data, "utf8");
     for (const link of this.clients) {
@@ -199,6 +210,11 @@ export class RunTerminal {
     }
   }
 
+  /** Mark done without touching clients (used for a reconstructed terminal). */
+  markDone(): void {
+    this.done = true;
+  }
+
   dispose(): void {
     // Mark done first so late PTY data callbacks no-op instead of writing into
     // a disposed xterm; and resolve any waitParsed() waiters so they can't hang.
@@ -222,14 +238,27 @@ export class RunTerminal {
  * Registry of per-run terminals keyed by runId, created lazily. The daemon
  * (Phase C step 3) calls `ensure` on run/attach and `feedPty`/`complete` from
  * its progress fan-out.
+ *
+ * When given a `RunLogStore` (Phase E #16), each run's terminal lazily opens a
+ * durable disk log and every frame is appended to it, so a finished/evicted
+ * run can be re-attached after daemon restart.
  */
 export class TerminalStore {
   private runs = new Map<string, RunTerminal>();
+  private replays = new Map<string, RunTerminal>();
+  private readonly runStore: RunLogStore | undefined;
+  /** Bound on cached reconstructed terminals; oldest is evicted on overflow. */
+  private static readonly MAX_REPLAYS = 32;
+
+  constructor(opts: { runLogStore?: RunLogStore } = {}) {
+    this.runStore = opts.runLogStore;
+  }
 
   ensure(runId: string, opts: RunTerminalOptions = {}): RunTerminal {
     let run = this.runs.get(runId);
     if (!run) {
-      run = new RunTerminal(runId, opts);
+      const log = this.runStore?.runLog(runId);
+      run = new RunTerminal(runId, { ...opts, log });
       this.runs.set(runId, run);
     }
     return run;
@@ -245,10 +274,48 @@ export class TerminalStore {
 
   /** Attach a terminal-pipe client to a run's live/replay stream. */
   attach(runId: string, socket: Socket): void {
-    this.ensure(runId).attach(socket).catch((err: any) => {
+    const run = this.runs.get(runId) ?? this.replays.get(runId) ?? this.reconstruct(runId);
+    run.attach(socket).catch((err: any) => {
       log.debug(`[terminal ${runId}] attach rejected: ${err?.message ?? err}`);
       socket.destroy();
     });
+  }
+
+  /**
+   * Reconstruct a run's terminal from its durable disk log (ADR-025 Phase E
+   * #16) when it is no longer live in memory — i.e. a finished/evicted run
+   * being re-attached. Replays every persisted frame into a fresh headless
+   * terminal and marks it done, so the client receives the whole `__screen__`
+   * replay + EOF. Returns an empty live terminal when no log exists.
+   *
+   * Results are cached in `replays` (bounded LRU) so repeated re-attaches of
+   * the same finished run reuse the terminal instead of re-decoding the log
+   * and allocating a fresh headless screen each time.
+   */
+  private reconstruct(runId: string): RunTerminal {
+    const cached = this.replays.get(runId);
+    if (cached) return cached;
+    const hasLog = this.runStore?.exists(runId) === true;
+    const terminal = new RunTerminal(runId, {}); // no log sink: frames are replayed to a client, not re-persisted
+    if (hasLog) {
+      for (const frame of this.runStore!.runLog(runId).decode()) {
+        if (frame.stepId === SCREEN_STEP_ID) continue;
+        terminal.write(frame.stepId, frame.payload.toString("utf8"));
+      }
+      terminal.markDone();
+      this.replays.set(runId, terminal);
+      this.evictReplayOverflow();
+    }
+    return terminal;
+  }
+
+  /** Evict the oldest replay terminal once the cache exceeds its bound. */
+  private evictReplayOverflow(): void {
+    if (this.replays.size <= TerminalStore.MAX_REPLAYS) return;
+    // Maps preserve insertion order → oldest is the first key.
+    const oldestRunId = this.replays.keys().next().value as string;
+    this.replays.get(oldestRunId)?.dispose();
+    this.replays.delete(oldestRunId);
   }
 
   complete(runId: string): void {
@@ -264,6 +331,8 @@ export class TerminalStore {
   disposeAll(): void {
     for (const run of this.runs.values()) run.dispose();
     this.runs.clear();
+    for (const run of this.replays.values()) run.dispose();
+    this.replays.clear();
   }
 
   get size(): number {

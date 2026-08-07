@@ -9,8 +9,10 @@ import { startRun, reconcileStaleRuns, type StartRunResult } from "../start-run.
 import { WorkflowRegistry } from "../../planner/registry.js";
 import type { Tracker, RunRecord } from "../persistence/Tracker.js";
 import { TerminalStore, type PtyLike } from "./terminal-store.js";
+import { RunLogStore } from "./run-log.js";
 import { controlPipePath, terminalPipePath, mainPipePath } from "./pipe-name.js";
 import { MAIN_STEP_ID } from "./frame-transport.js";
+import { join } from "node:path";
 import type { ProgressEvent, RunReport } from "../orchestrator/index.js";
 import { McpServer } from "../../../adapters/mcp/server.js";
 import { setupInfrastructure } from "../persistence/bootstrap.js";
@@ -132,6 +134,10 @@ export interface DaemonServerOptions {
   registry?: WorkflowRegistry;
   tracker?: Tracker;
   terminalStore?: TerminalStore;
+  /** Override the disk-log store for finished-run re-attach (Phase E #16).
+   *  Defaults to `<projectDir>/.orc/runs` with standard caps. Pass `false` to
+   *  disable disk logging entirely. */
+  runLogStore?: RunLogStore | false;
   idleMs?: number;
   /**
    * Spawn the daemon-owned main interactive PTY (Phase D D-3). Called once inside
@@ -157,6 +163,8 @@ export class DaemonServer {
   private readonly idleMs: number;
   private readonly spawnMain?: () => PtyLike;
   private readonly onShutdown?: () => void;
+  /** Owned disk-log store for finished-run re-attach (undefined if disabled). */
+  private readonly runLogStore: RunLogStore | undefined;
   /** True when the daemon (not a caller) created the Tracker, so it closes it. */
   private readonly ownsTracker: boolean;
 
@@ -187,7 +195,13 @@ export class DaemonServer {
     this.onShutdown = opts.onShutdown;
     this.ownsTracker = !opts.tracker;
     this.controlPipe = controlPipePath(this.projectDir, opts.pipeOverride);
-    this.terminalStore = opts.terminalStore ?? new TerminalStore();
+    this.runLogStore =
+      opts.runLogStore === undefined
+        ? new RunLogStore(join(this.projectDir, ".orc", "runs"))
+        : (opts.runLogStore || undefined);
+    this.terminalStore =
+      opts.terminalStore ??
+      new TerminalStore(this.runLogStore ? { runLogStore: this.runLogStore } : undefined);
 
     const adapter = opts.adapter ?? getAdapter("opencode") ?? BUILTIN_ADAPTERS[0];
     this.host = new RunHost(adapter, {
@@ -554,6 +568,10 @@ export class DaemonServer {
         this.stepPtys.delete(event.runId);
         this.activeRunIds.delete(event.runId);
         this.controllers.delete(event.runId);
+        // Apply the disk-log caps now that the run's log is final (LRU evicts
+        // oldest logs once the total store exceeds ~50MB or ~100 runs). Live
+        // runs' logs are excluded so a concurrent run is never clipped mid-run.
+        this.runLogStore?.enforceTotal(this.activeRunIds);
       }
       this.broadcast(RpcNotification.workflowComplete, {
         runId: event.runId,

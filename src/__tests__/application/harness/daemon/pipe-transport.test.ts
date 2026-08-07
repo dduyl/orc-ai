@@ -211,6 +211,64 @@ describe("DaemonServer control pipe", () => {
   });
 });
 
+describe("DaemonServer concurrent runs (E0)", () => {
+  /** Write a smoke workflow under a non-default id so a dir can hold several. */
+  function writeWorkflowNamed(dir: string, id: string, runExpr: string): void {
+    const def = smokeWorkflow(runExpr) as any;
+    def.workflow.id = id;
+    def.workflow.name = id;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify(def));
+  }
+
+  it("runs two concurrent start() calls with different tasks; both complete", async () => {
+    writeWorkflowNamed(path.join(tmpBase, "workflows"), "daemon_smoke", 'exec "echo concurrent-a"');
+    const daemon = makeDaemon(uniqueOverride("conc-a"));
+    await daemon.start();
+    const client = await PipeClient.connect({ pipeOverride: daemon.controlPipe });
+
+    const [a, b] = await Promise.all([
+      client.start({ task: "task-a", workflowId: "daemon_smoke" }),
+      client.start({ task: "task-b", workflowId: "daemon_smoke" }),
+    ]);
+    expect(a.runId).not.toBe(b.runId);
+
+    const [ra, rb] = await Promise.all([
+      pollStatus(client, a.runId, "completed"),
+      pollStatus(client, b.runId, "completed"),
+    ]);
+    expect(ra.status).toBe("completed");
+    expect(rb.status).toBe("completed");
+    client.dispose();
+  });
+
+  it("a new run does not disturb an in-flight run; the in-flight run is still cancellable", async () => {
+    const wfDir = path.join(tmpBase, "workflows");
+    writeWorkflowNamed(wfDir, "daemon_smoke", `exec "${BLOCK_CMD}"`);
+    writeWorkflowNamed(wfDir, "daemon_smoke_quick", 'exec "echo quick"');
+    const daemon = makeDaemon(uniqueOverride("conc-b"));
+    await daemon.start();
+    const client = await PipeClient.connect({ pipeOverride: daemon.controlPipe });
+
+    // A blocks; B is a quick script that starts while A is mid-flight.
+    const a = await client.start({ task: "block-a", workflowId: "daemon_smoke" });
+    await pollStatus(client, a.runId, "running");
+
+    const b = await client.start({ task: "quick-b", workflowId: "daemon_smoke_quick" });
+    const rb = await pollStatus(client, b.runId, "completed");
+    expect(rb.status).toBe("completed");
+
+    // A is untouched by B's completion — still in flight and cancellable.
+    const ra = await client.status(a.runId);
+    expect(ra.status).toBe("running");
+
+    const cancel = await client.cancel(a.runId);
+    expect(cancel.cancelled).toBe(true);
+    await pollStatus(client, a.runId, "cancelled");
+    client.dispose();
+  });
+});
+
 describe("terminal pipes", () => {
   function seedRun(daemon: DaemonServer, runId: string): void {
     daemon.host.tracker.createRun(

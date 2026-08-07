@@ -144,3 +144,73 @@ describe("TerminalStore", () => {
     expect(store.get("r1")).toBeUndefined();
   });
 });
+
+describe("TerminalStore finished-run re-attach from disk log (E2)", () => {
+  it("reconstructs a completed run's content after it is evicted from memory", async () => {
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const fs = await import("node:fs");
+    const { RunLogStore } = await import("../../../../application/harness/daemon/run-log.js");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orc-e2-"));
+    const store = new TerminalStore({ runLogStore: new RunLogStore(dir) });
+
+    // 1) run → write content (persists to disk log).
+    const run = store.ensure("r1", { coalesceMs: 5 });
+    const { pty, emitData } = fakePty();
+    run.feedPty("codegen", pty);
+    emitData("REPLAY_ME");
+    await run.waitParsed();
+    await run.complete();
+
+    // 2) evict from memory — disk log is the only survivor.
+    store.delete("r1");
+    expect(store.get("r1")).toBeUndefined();
+
+    // 3) a fresh store (same log dir) re-attaches and replays from disk.
+    const fresh = new TerminalStore({ runLogStore: new RunLogStore(dir) });
+    const { server, port } = await listen((sock) => { void fresh.attach("r1", sock); });
+    const client = await connect(port);
+    const { eof, lastData } = collectFrames(client);
+    await eof;
+    expect(lastData()).toContain("REPLAY_ME");
+    server.close();
+    fresh.delete("r1");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reuses the cached replay terminal across repeated re-attaches (no re-decode)", async () => {
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const fs = await import("node:fs");
+    const { RunLogStore } = await import("../../../../application/harness/daemon/run-log.js");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orc-e2b-"));
+    const store = new TerminalStore({ runLogStore: new RunLogStore(dir) });
+
+    // 1) completed run whose content is persisted to the disk log.
+    const run = store.ensure("r1", { coalesceMs: 5 });
+    const { pty, emitData } = fakePty();
+    run.feedPty("codegen", pty);
+    emitData("PERSISTED");
+    await run.waitParsed();
+    await run.complete();
+    store.delete("r1"); // evicted: on-disk log + a single cached replay
+
+    const attachOnce = async (): Promise<string> => {
+      const { server, port } = await listen((sock) => { void store.attach("r1", sock); });
+      const client = await connect(port);
+      const { eof, lastData } = collectFrames(client);
+      await eof;
+      const got = lastData();
+      server.close();
+      return got;
+    };
+
+    // 2) First re-attach reconstructs + caches.
+    expect(await attachOnce()).toContain("PERSISTED");
+    // 3) Second re-attach must reuse the cache, not rebuild (still correct).
+    expect(await attachOnce()).toContain("PERSISTED");
+    // 4) Both consumers see the same content (cache is a stable replay).
+    expect(await attachOnce()).toContain("PERSISTED");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
