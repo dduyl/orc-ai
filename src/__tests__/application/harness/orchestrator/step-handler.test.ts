@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { StreamEmitter } from "../../../../adapters/stream/emitter.js";
 import { parseRun } from "../../../../application/harness/execution/CommandExecutor.js";
 import type { CommandExecutionResult } from "../../../../application/harness/execution/CommandExecutor.js";
@@ -6,17 +6,35 @@ import type { RunContext } from "../../../../application/harness/execution/step-
 import { createStepHandler, buildRepairPrompt } from "../../../../application/harness/orchestrator/step-handler.js";
 import type { WorkflowStep } from "../../../../core/schemas.js";
 
-const { agentCalls } = vi.hoisted(() => ({ agentCalls: [] as string[] }));
+const { agentCalls, mockState } = vi.hoisted(() => {
+  const mockState: {
+    killed: number;
+    pending: boolean;
+    killSettles: boolean;
+    resolve?: (v?: unknown) => void;
+  } = { killed: 0, pending: false, killSettles: true };
+  return { agentCalls: [] as string[], mockState };
+});
 
 vi.mock("../../../../application/agents/adapter-pty.js", () => ({
   callAgentStream: (_adapter: unknown, prompt: string) => {
     agentCalls.push(prompt);
-    return {
-      pty: {
-        onData: () => {}, onExit: () => {}, write: () => {}, resize: () => {},
-        kill: () => {}, pid: 1, cols: 120, rows: 40,
+    const pty = {
+      onData: () => {}, onExit: () => {}, write: () => {}, resize: () => {},
+      kill: () => {
+        mockState.killed++;
+        // Like the real node-pty onExit path: killing settles the call. When
+        // killSettles is false we emulate a win32 bash-wrapped spawn where kill
+        // never fires onExit — only the completion rejection can settle the race.
+        if (mockState.pending && mockState.killSettles) mockState.resolve?.({ content: "partial", model: "mock", tokensUsed: 0, duration: 0 });
       },
-      promise: Promise.resolve({ content: "mock", model: "mock", tokensUsed: 0, duration: 0 }),
+      pid: 1, cols: 120, rows: 40,
+    };
+    return {
+      pty,
+      promise: mockState.pending
+        ? new Promise(resolve => { mockState.resolve = resolve; })
+        : Promise.resolve({ content: "mock", model: "mock", tokensUsed: 0, duration: 0 }),
     };
   },
 }));
@@ -307,5 +325,91 @@ describe("step-handler repair feedback", () => {
     expect(agentCalls.length).toBe(1);
     expect(agentCalls[0]).not.toContain("PREVIOUS VALIDATION FAILURE");
     expect(agentCalls[0]).toContain("=== Original Request ===");
+  });
+});
+
+describe("step-handler abort", () => {
+  beforeEach(() => {
+    agentCalls.length = 0;
+    mockState.killed = 0;
+    mockState.pending = false;
+    mockState.killSettles = true;
+    mockState.resolve = undefined;
+  });
+
+  it("kills the in-flight PTY and returns a cancelled outcome on abort", async () => {
+    mockState.pending = true;
+    const ctrl = new AbortController();
+    const c = ctx();
+    c.signal = ctrl.signal;
+    const agentStep: WorkflowStep = {
+      id: "code", type: "agent", agent: "codegen", emits: [sig("sig_done")], on: ["__start__"], context: [],
+    };
+    const handler = createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: emitter(),
+      task: "t",
+    });
+
+    const p = handler(agentStep, c);
+    await new Promise(r => setTimeout(r, 0));
+    expect(mockState.killed).toBe(0);
+    ctrl.abort();
+    const out = await p;
+
+    expect(mockState.killed).toBe(1);
+    expect(out.status).toBe("failed");
+    expect(out.error).toBe("cancelled");
+  });
+
+  it("does not retry or run an agent step once the signal has aborted", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const c = ctx();
+    c.signal = ctrl.signal;
+    const agentStep: WorkflowStep = {
+      id: "code", type: "agent", agent: "codegen", emits: [sig("sig_done")], on: ["__start__"], context: [],
+    };
+    const handler = createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: emitter(),
+      task: "t",
+    });
+    const out = await handler(agentStep, c);
+    expect(agentCalls.length).toBe(0);
+    expect(out.status).toBe("failed");
+    expect(out.error).toBe("cancelled");
+  });
+
+  it("settles via completion rejection even when killing never fires onExit", async () => {
+    mockState.pending = true;
+    mockState.killSettles = false;
+    const ctrl = new AbortController();
+    const c = ctx();
+    c.signal = ctrl.signal;
+    const agentStep: WorkflowStep = {
+      id: "code", type: "agent", agent: "codegen", emits: [sig("sig_done")], on: ["__start__"], context: [],
+    };
+    const handler = createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: emitter(),
+      task: "t",
+    });
+
+    const p = handler(agentStep, c);
+    await new Promise(r => setTimeout(r, 0));
+    expect(mockState.killed).toBe(0);
+    ctrl.abort();
+    const out = await p;
+
+    expect(mockState.killed).toBe(1);
+    expect(out.status).toBe("failed");
+    expect(out.error).toBe("cancelled");
   });
 });

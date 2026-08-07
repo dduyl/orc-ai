@@ -16,14 +16,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onStepActivated: (cb: (data: { stepId: string }) => void) => {
     ipcRenderer.on("step-activated", (_event, data) => cb(data));
   },
-  onStreamEvent: (cb: (data: unknown) => void) => {
-    ipcRenderer.on("stream-event", (_event, data) => cb(data));
+  onRunActive: (cb: (data: { runId: string }) => void) => {
+    ipcRenderer.on("run-active", (_event, data) => cb(data));
   },
   write: (data: string) => ipcRenderer.send("input", data),
-  resize: (cols: number, rows: number) => ipcRenderer.invoke("resize", cols, rows),
   switchStep: (stepId: string) => ipcRenderer.invoke("switch-step", stepId),
   listSteps: () => ipcRenderer.invoke("list-steps"),
   getStepOutput: (stepId: string) => ipcRenderer.invoke("get-step-output", stepId),
+  start: (task: string, workflowId: string) => ipcRenderer.invoke("start", task, workflowId),
   getRunStatus: (runId: string) => ipcRenderer.invoke("get-run-status", runId),
   listRuns: () => ipcRenderer.invoke("list-runs"),
 });

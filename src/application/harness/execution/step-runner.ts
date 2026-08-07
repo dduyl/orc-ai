@@ -15,6 +15,12 @@ export interface RunContext {
   repairFeedbacks: Map<string, RepairFeedback>;
   /** Transient: the repair feedback attached to the step's current dispatch. */
   pendingRepair?: RepairFeedback;
+  /**
+   * Cooperative cancellation. When aborted the scheduler stops dispatching
+   * new steps; in-flight steps settle via the handler (agent calls kill their
+   * PTY), then the run resolves. Un-run steps are marked failed "cancelled".
+   */
+  signal?: AbortSignal;
 }
 
 export interface RepairFeedback {
@@ -192,6 +198,7 @@ export async function runWorkflow(
   }
 
   async function maybeRun(s: WorkflowStep) {
+    if (ctx.signal?.aborted) return;
     if (running.has(s.id)) return;
     if (!isReady(s)) return;
 
@@ -298,8 +305,21 @@ export async function runWorkflow(
   function tryFinish() {
     if (finished) return;
     if (running.size > 0) return;
-    if (steps.some(s => isReady(s))) return;
+    if (!ctx.signal?.aborted && steps.some(s => isReady(s))) return;
     finished = true;
+    if (ctx.signal?.aborted) {
+      // Cancel the run cleanly: every step that will never dispatch is failed
+      // "cancelled" so the report and checkpoints reflect the full workflow
+      // instead of silently dropping the un-run tail.
+      for (const s of steps) {
+        if (terminal.has(s.id)) continue;
+        if (ctx.stepResults.has(s.id)) continue;
+        const o: StepOutcome = { stepId: s.id, status: "failed", error: "cancelled", retries: 0 };
+        ctx.stepResults.set(s.id, o);
+        upsertOutcome(o);
+        onStepComplete?.(s, o);
+      }
+    }
     resolvePromise(outcomes);
   }
 

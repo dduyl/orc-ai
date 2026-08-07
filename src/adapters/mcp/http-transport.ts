@@ -11,7 +11,11 @@ export interface McpSession {
 }
 
 export class McpHttpTransport {
-  constructor(private sessions: Map<string, McpSession>) {}
+  constructor(
+    private sessions: Map<string, McpSession>,
+    /** Invoked whenever the live session count changes (idle-gate hook). */
+    private readonly onSessionChange?: (count: number) => void,
+  ) {}
 
   getSessionId(req: http.IncomingMessage): string | null {
     const header = req.headers["mcp-session-id"] as string
@@ -60,7 +64,9 @@ export class McpHttpTransport {
           this.sessions.set(newId, entry);
           transport.onclose = () => {
             this.sessions.delete(newId);
+            this.onSessionChange?.(this.sessions.size);
           };
+          this.onSessionChange?.(this.sessions.size);
         }
       } catch (err: any) {
         log.warn(`[MCP] HTTP error: ${err.message}`);

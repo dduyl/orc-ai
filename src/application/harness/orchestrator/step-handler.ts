@@ -2,11 +2,12 @@ import * as crypto from "node:crypto";
 import type { AdapterDef, AgentCallResult } from "../../agents/adapter.js";
 import { callAgentStream } from "../../agents/adapter-pty.js";
 import type { AgentSystemPrompt } from "../../planner/prompt-loader.js";
-import { CommandExecutor } from "../execution/CommandExecutor.js";
+import { CommandExecutor, type CommandExecutionResult } from "../execution/CommandExecutor.js";
 import { commandsTomlPath } from "../persistence/bootstrap.js";
 import { createHookFile, readHookEvents, removeHookFile } from "../../../adapters/hooks/endpoint.js";
-import { registerCompletion } from "../signalling/StepCompletionRegistry.js";
+import { registerCompletion, rejectCompletion, completionKeyExists } from "../signalling/StepCompletionRegistry.js";
 import type { StepHandler, StepOutcome, RunContext } from "../execution/step-runner.js";
+import type { WorkflowStep } from "../../../core/schemas.js";
 import { StreamEmitter } from "../../../adapters/stream/emitter.js";
 import { log } from "../../../core/log.js";
 import { buildStepContext, buildResponseInstructions } from "./context-builder.js";
@@ -26,8 +27,8 @@ function extractOrcResult(hooks: import("../../../core/hooks.js").HookEvent[]): 
 
 export function buildRepairPrompt(
   gateId: string,
-  result: import("../execution/CommandExecutor.js").CommandExecutionResult,
-  step: import("../../../core/schemas.js").WorkflowStep,
+  result: CommandExecutionResult,
+  step: WorkflowStep,
   completionKey?: string,
 ): string {
   const blocks = result.groups.map((g, i) => {
@@ -67,12 +68,37 @@ export function createStepHandler(options: {
   const runId = tracker?.runId;
   const executor = commandExecutor ?? new CommandExecutor(commandsTomlPath());
 
+  /**
+   * Emit the "cancelled" failure record for a step after an abort. Used by the
+   * in-flight abort path and the retry catch (both already emitted stepStart).
+   * The pre-dispatch abort check calls `cancelled` with `emitStream: false` —
+   * no stepStart was emitted for that step, so a stepFinish would be a phantom.
+   */
+  function cancelled(stepId: string, attempt: number, emitStream: boolean): StepOutcome {
+    const o: StepOutcome = { stepId, status: "failed", error: "cancelled", retries: attempt };
+    tracker?.tracker.setStepCompleted(tracker.runId, stepId, "failed", "cancelled");
+    onProgress?.({ type: "step_complete", runId, stepId, status: "failed", error: "cancelled" });
+    if (emitStream) {
+      emitter.stepFinish(stepId, "error", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
+    }
+    return o;
+  }
+
   async function runScriptStep(
-    step: import("../../../core/schemas.js").WorkflowStep,
+    step: WorkflowStep,
     ctx: RunContext,
   ): Promise<StepOutcome> {
     const run = step.run;
-    const exec = run ? await executor.execute(run) : { ok: false as const, error: `script step '${step.id}' has no 'run' expression` };
+    let exec: { ok: false; error: string } | { ok: true; result: CommandExecutionResult };
+    try {
+      exec = run ? await executor.execute(run, ctx.signal) : { ok: false as const, error: `script step '${step.id}' has no 'run' expression` };
+    } catch (err: any) {
+      // The executor rejects with "cancelled" when the signal aborts mid-run.
+      // stepStart was already emitted, so emit the stream finish ("cancelled"
+      // failure) and a completed tracker row so the step isn't left "running".
+      if (ctx.signal?.aborted) return cancelled(step.id, 0, true);
+      throw err;
+    }
 
     if (!exec.ok) {
       const err = exec.error;
@@ -124,6 +150,13 @@ export function createStepHandler(options: {
   }
 
   return async (step, ctx) => {
+    if (ctx.signal?.aborted) {
+      // Cancelled before this step started: no stepStart was emitted, so mark
+      // the tracker/feed only and skip the stream finish. The runner's
+      // tryFinish marks the remaining un-run tail the same way.
+      return cancelled(step.id, 0, false);
+    }
+
     emitter.stepStart(step.id);
 
     tracker?.tracker.setStepRunning(tracker.runId, step.id);
@@ -167,20 +200,46 @@ export function createStepHandler(options: {
         try {
           const handle = callAgentStream(callFor, combinedPrompt, hookFile);
           onProgress?.({ type: "step_pty", runId, stepId: step.id, pty: handle.pty });
+          const abortSignal = ctx.signal;
+          // Register before attaching the abort listener: the sync aborted
+          // check + addEventListener below leave no await window where an
+          // abort could be missed after the key exists.
           const mcpDone = registerCompletion(completionKey);
-          const raceResult = await Promise.race([handle.promise, mcpDone]);
-          if (typeof (raceResult as any).content !== "string") {
-            const mcpData = raceResult as OrcReturnResult;
-            const mcpOutput = JSON.stringify(mcpData);
-            result = { content: mcpOutput, model: activeAdapter.id, tokensUsed: 0, duration: 0 };
-            orcResult = mcpData;
-            handle.promise.catch(() => {});
-          } else {
-            result = raceResult as AgentCallResult;
+          const onAbort = () => {
+            try { handle.pty.kill(); } catch { /* ignore */ }
+            // H1/H2: settle the Promise.race even if node-pty never fires
+            // onExit after kill() (e.g. win32 bash.exe-wrapped spawn). This
+            // deletes the registry entry (no leak) and rejects the MCP bridge
+            // so a cancelled step can't hang the run forever.
+            if (completionKeyExists(completionKey)) {
+              rejectCompletion(completionKey, new Error("cancelled"));
+            }
+          };
+          if (abortSignal?.aborted) onAbort();
+          else abortSignal?.addEventListener("abort", onAbort, { once: true });
+          try {
+            const raceResult = await Promise.race([handle.promise, mcpDone]);
+            if (typeof (raceResult as any).content !== "string") {
+              const mcpData = raceResult as OrcReturnResult;
+              const mcpOutput = JSON.stringify(mcpData);
+              result = { content: mcpOutput, model: activeAdapter.id, tokensUsed: 0, duration: 0 };
+              orcResult = mcpData;
+              handle.promise.catch(() => {});
+            } else {
+              result = raceResult as AgentCallResult;
+            }
+          } finally {
+            if (abortSignal && !abortSignal.aborted) abortSignal.removeEventListener("abort", onAbort);
           }
         } finally {
           hooks = readHookEvents(hookFile);
           removeHookFile(hookFile);
+        }
+        if (ctx.signal?.aborted) {
+          // Cancelled mid-call: the PTY was killed and the completion deferred
+          // rejected above; never treat the partial output as a completed step
+          // or let it emit a signal.
+          return cancelled(step.id, attempt, true);
         }
         if (!orcResult) orcResult = extractOrcResult(hooks);
         const output = result.content;
@@ -210,6 +269,11 @@ export function createStepHandler(options: {
         emitter.stepFinish(step.id, "stop", "", { total: 0, input: 0, output: output.length, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
         return o;
       } catch (err: any) {
+        if (ctx.signal?.aborted) {
+          // Includes the rejectCompletion("cancelled") path from onAbort —
+          // the race rejected before handle.promise settled, so bail cleanly.
+          return cancelled(step.id, attempt, true);
+        }
         if (attempt < ctx.maxRetries) continue;
         const o: StepOutcome = { stepId: step.id, status: "failed", error: err.message, retries: attempt };
         tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", err.message);

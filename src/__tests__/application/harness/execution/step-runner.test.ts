@@ -259,4 +259,63 @@ describe("step-runner", () => {
     // redo #2 is genuinely triggered by gate2.sig_fail_b -> its feedback attaches.
     expect(seenPending[1]).toBe(staleFeedback);
   });
+
+  it("abort before dispatch runs no steps and marks every step cancelled", async () => {
+    const steps: WorkflowStep[] = [
+      { type: "agent", id: "a", agent: "a1", emits: [sig("done")], on: ["__start__"], context: [] },
+      { type: "agent", id: "b", agent: "b1", emits: [sig("done")], on: ["a.done"], context: [] },
+    ];
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const ctx = mkCtx();
+    ctx.signal = ctrl.signal;
+    let calls = 0;
+    const handler: StepHandler = async (step) => {
+      calls++;
+      return { stepId: step.id, status: "completed", signal: step.emits[0].name, retries: 0 };
+    };
+    const outcomes = await runWorkflow(steps, handler, ctx);
+    expect(calls).toBe(0);
+    expect(outcomes.map(o => o.error)).toEqual(["cancelled", "cancelled"]);
+  });
+
+  it("abort mid-run stops new dispatches and marks the un-run tail cancelled", async () => {
+    const steps: WorkflowStep[] = [
+      { type: "agent", id: "a", agent: "a1", emits: [sig("done")], on: ["__start__"], context: [] },
+      { type: "agent", id: "b", agent: "b1", emits: [sig("done")], on: ["a.done"], context: [] },
+      { type: "agent", id: "c", agent: "c1", emits: [sig("done")], on: ["b.done"], context: [] },
+    ];
+    const ctrl = new AbortController();
+    const ctx = mkCtx();
+    ctx.signal = ctrl.signal;
+    let aCalls = 0;
+    let bCalls = 0;
+    let resolveA!: () => void;
+    const gateA = new Promise<void>(r => { resolveA = r; });
+    const handler: StepHandler = async (step) => {
+      if (step.id === "a") {
+        aCalls++;
+        await gateA;
+        return { stepId: "a", status: "completed", signal: "done", retries: 0 };
+      }
+      bCalls++;
+      return { stepId: step.id, status: "completed", signal: step.emits[0].name, retries: 0 };
+    };
+
+    const p = runWorkflow(steps, handler, ctx);
+    await Promise.resolve();
+    expect(aCalls).toBe(1);
+    ctrl.abort();
+    resolveA();
+    const outcomes = await p;
+
+    expect(bCalls).toBe(0);
+    // a settled as completed (test handler ignores the signal); b/c never
+    // dispatched and are failed "cancelled" so the report shows the full tail.
+    expect(ctx.stepResults.get("b")?.status).toBe("failed");
+    expect(ctx.stepResults.get("b")?.error).toBe("cancelled");
+    expect(ctx.stepResults.get("c")?.status).toBe("failed");
+    expect(ctx.stepResults.get("c")?.error).toBe("cancelled");
+    expect(outcomes.filter(o => o.status === "failed").length).toBe(2);
+  });
 });

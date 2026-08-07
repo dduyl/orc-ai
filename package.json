@@ -6,24 +6,24 @@
   "scripts": {
     "postinstall": "node scripts/postinstall.mjs",
     "build": "tsc && npx -y esbuild src/delivery/gui/renderer.ts --bundle --outfile=dist/delivery/gui/renderer.js --format=iife --platform=browser && node --input-type=module -e \"import * as fs from 'node:fs'; import { join } from 'node:path'; fs.mkdirSync('dist/delivery/gui', { recursive: true }); fs.copyFileSync('src/delivery/gui/index.html', 'dist/delivery/gui/index.html'); fs.cpSync(join('node_modules/@xterm/xterm/css', 'xterm.css'), join('dist/delivery/gui', 'xterm.css')); fs.mkdirSync('dist/workflows', { recursive: true }); for (const f of fs.readdirSync('src/workflows').filter(x => /\\.(yaml|yml)$/i.test(x))) fs.copyFileSync(join('src/workflows', f), join('dist/workflows', f));\"",
-    "rebuild:native": "node scripts/rebuild-native.mjs",
-    "rebuild:host": "node scripts/rebuild-native.mjs --host",
+    "rebuild:host": "node scripts/rebuild-native.mjs",
     "build:binary": "npm run build && node scripts/build-binary.mjs",
     "start:gui": "npm run build && electron dist/delivery/gui/main.js",
     "lint": "tsc --noEmit",
     "test": "vitest run",
+    "bench": "vitest bench",
     "test:watch": "vitest"
   },
   "pkg": {
     "assets": [
-      "node_modules/better-sqlite3/build/Release/better_sqlite3.node",
       "node_modules/blessed/usr/xterm",
       "node_modules/blessed/usr/xterm-256color",
       "node_modules/blessed/usr/linux",
       "node_modules/blessed/usr/windows-ansi",
       "node_modules/blessed/usr/xterm.termcap",
       "node_modules/blessed/usr/xterm.terminfo",
-      "node_modules/node-pty/build/Release/*.node"
+      "node_modules/node-pty/build/Release/*.node",
+      "dist/workflows/**/*.yaml"
     ],
     "targets": [
       "node24-win-x64"
@@ -35,7 +35,6 @@
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
     "@xterm/xterm": "^6.0.0",
-    "better-sqlite3": "^12.11.1",
     "blessed": "^0.1.81",
     "commander": "^15.0.0",
     "js-yaml": "^5.2.2",
@@ -43,10 +42,10 @@
     "smol-toml": "^1.7.0",
     "term.js": "^0.0.7",
     "toml": "^3.0.0",
+    "vscode-jsonrpc": "^9.0.1",
     "zod": "^3.25.32"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/blessed": "^0.1.27",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.14.1",

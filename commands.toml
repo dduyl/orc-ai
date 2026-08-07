@@ -1,0 +1,12 @@
+# Project-local validation gates (ADR-006).
+# Owned and updated by the Architecture Agent at init and on structural change.
+# Values are literal shell commands; a workflow `type: script` step resolves a
+# key here or declares an inline command.
+[validate]
+commands = ["echo 'no validate command configured'"]
+
+[test.unit]
+commands = ["echo 'no unit test command configured'"]
+
+[test.integration]
+commands = ["echo 'no integration test command configured'"]

@@ -144,4 +144,20 @@ describe("CommandExecutor", () => {
     const res = await runInlineCommand("exit 0");
     expect(BuildResult.parse(res)).toEqual(res);
   });
+
+  it("kills an in-flight command when the signal aborts", async () => {
+    const ctrl = new AbortController();
+    const p = runInlineCommand('node -e "setTimeout(() => {}, 5000)"', ctrl.signal);
+    await new Promise(r => setTimeout(r, 150));
+    const start = Date.now();
+    ctrl.abort();
+    await expect(p).rejects.toThrow("cancelled");
+    expect(Date.now() - start).toBeLessThan(5000);
+  });
+
+  it("rejects immediately when the signal is already aborted", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    await expect(runInlineCommand("exit 0", ctrl.signal)).rejects.toThrow("cancelled");
+  });
 });

@@ -1,19 +1,15 @@
-import { rpcOk, rpcError, type JsonRpcResponse } from "./rpc.js";
-import { GUIDE_TEXT, ORC_INSTRUCTIONS } from "./content.js";
-import { log } from "../../../core/log.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types";
+import type {
+  GetPromptResult,
+  ListPromptsResult,
+  ListResourcesResult,
+  ListToolsResult,
+  ReadResourceResult,
+} from "@modelcontextprotocol/sdk/types";
+import { GUIDE_TEXT } from "./content.js";
 
-export function handleInitialize(id: number | string, params: any): JsonRpcResponse {
-  const clientVersion = params?.protocolVersion || "2024-11-05";
-  return rpcOk(id, {
-    protocolVersion: clientVersion,
-    capabilities: { prompts: {}, tools: {}, resources: {} },
-    serverInfo: { name: "orc-server", version: "0.1.0" },
-    instructions: ORC_INSTRUCTIONS,
-  });
-}
-
-export function handleListTools(id: number | string, _params?: any): JsonRpcResponse {
-  return rpcOk(id, {
+export function handleListTools(): ListToolsResult {
+  return {
     tools: [
       {
         name: "guide",
@@ -124,52 +120,46 @@ export function handleListTools(id: number | string, _params?: any): JsonRpcResp
         },
       },
     ],
-  });
+  };
 }
 
-export function handleListResources(id: number | string, _params?: any): JsonRpcResponse {
-  return rpcOk(id, {
+export function handleListResources(): ListResourcesResult {
+  return {
     resources: [{
       uri: "orc://guide",
       name: "ORC MCP Guide",
       description: "Instructions for using ORC MCP tools",
       mimeType: "text/markdown",
     }],
-  });
+  };
 }
 
-export function handleReadResource(id: number | string, params: any): JsonRpcResponse {
+export function handleReadResource(params: any): ReadResourceResult {
   const uri = params?.uri || params?.resource || "";
   if (uri === "orc://guide") {
-    return rpcOk(id, {
+    return {
       contents: [{ uri: "orc://guide", mimeType: "text/markdown", text: GUIDE_TEXT }],
-    });
+    };
   }
-  return rpcError(id, -32602, `Unknown resource: ${uri}`);
+  throw new McpError(ErrorCode.InvalidParams, `Unknown resource: ${uri}`);
 }
 
-export function handleListPrompts(id: number | string, _params?: any): JsonRpcResponse {
-  return rpcOk(id, {
+export function handleListPrompts(): ListPromptsResult {
+  return {
     prompts: [{
       name: "guide",
       description: "Read the ORC guide for using code generation workflows",
     }],
-  });
+  };
 }
 
-export function handleGetPrompt(id: number | string, params: any): JsonRpcResponse {
+export function handleGetPrompt(params: any): GetPromptResult {
   const name = params?.name || "";
   if (name === "guide") {
-    return rpcOk(id, {
+    return {
       description: "ORC Workflow Guide",
       messages: [{ role: "user", content: { type: "text", text: GUIDE_TEXT } }],
-    });
+    };
   }
-  return rpcError(id, -32602, `No prompt: ${name}`);
-}
-
-export function handleCancel(id: number | string | null, params?: any): null {
-  const cancelledId = params?.requestId;
-  log.info(`[MCP] Client cancelled request ${cancelledId} (${params?.reason || "no reason"})`);
-  return null;
+  throw new McpError(ErrorCode.InvalidParams, `No prompt: ${name}`);
 }

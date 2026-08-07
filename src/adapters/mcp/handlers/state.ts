@@ -1,25 +1,27 @@
 import type { AdapterDef } from "../../../application/agents/adapter.js";
-import type { ProgressEvent, RunReport } from "../../../application/harness/orchestrator/index.js";
-import { Tracker } from "../../../application/harness/persistence/Tracker.js";
-import { WorkflowRegistry } from "../../../application/planner/registry.js";
+import type { RunReport } from "../../../application/harness/orchestrator/index.js";
+import type { Tracker } from "../../../application/harness/persistence/Tracker.js";
+import type { WorkflowRegistry } from "../../../application/planner/registry.js";
+import type { RunHost } from "../../../application/harness/run-host.js";
+
+/**
+ * Thin binding to the active `RunHost`. The harness owns the single source of
+ * truth (adapter, registry, tracker, projectDir, bgRuns); this module just
+ * re-exports them so MCP handlers keep their existing imports.
+ */
+export let host: RunHost;
 
 export let registry: WorkflowRegistry;
 export let adapter: AdapterDef;
 export let tracker: Tracker;
-export let onProgress: ((event: ProgressEvent) => void) | undefined;
 export let projectDir: string | undefined;
+export let bgRuns: Map<string, Promise<RunReport>>;
 
-/**
- * Keeps background orchestrate() Promises referenced so they are not
- * garbage-collected before they resolve.  Also used by get_run_status
- * to await completion in headless (no-PTY) mode.
- */
-export const bgRuns = new Map<string, Promise<RunReport>>();
-
-export function init(adapterDef: AdapterDef, registryOpt?: WorkflowRegistry, onProgressOpt?: (event: ProgressEvent) => void, projectDirOpt?: string) {
-  adapter = adapterDef;
-  registry = registryOpt || new WorkflowRegistry();
-  tracker = new Tracker();
-  onProgress = onProgressOpt;
-  projectDir = projectDirOpt;
+export function init(hostInstance: RunHost): void {
+  host = hostInstance;
+  adapter = hostInstance.adapter;
+  registry = hostInstance.registry;
+  tracker = hostInstance.tracker;
+  projectDir = hostInstance.projectDir;
+  bgRuns = hostInstance.bgRuns;
 }
