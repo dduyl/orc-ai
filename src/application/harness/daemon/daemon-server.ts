@@ -559,12 +559,23 @@ export class DaemonServer {
       }
       return;
     }
+    if (event.type === "step_start") {
+      // Ensure a tracked terminal exists and carry its identity marker. Script/
+      // exec gates emit no step_pty, so without this a script-only run has no
+      // terminal at all: an attached client would never receive content or EOF
+      // (F2). PTY-backed steps get a deduped marker via feedPty's own logic.
+      if (event.runId && event.stepId) {
+        this.terminalStore.ensure(event.runId).noteStart(event.stepId);
+      }
+    }
     if (event.type === "workflow_complete") {
       if (event.runId) {
-        this.terminalStore.complete(event.runId);
-        // Evict the run's terminal and close its pipe server. Leaving them in
-        // place would grow memory/handles without bound on a long-lived daemon.
-        this.evictTerminal(event.runId);
+        // Flush the terminal to its live clients (remaining frames + EOF) BEFORE
+        // evicting/disposing it. A fire-and-forget complete() lets the sync
+        // evictTerminal()->delete()->dispose() destroy client sockets before the
+        // async flush delivers EOF, so an attached client never sees the final
+        // data / EOF (F2 race). Eviction is deferred behind that flush.
+        void this.finalizeRun(event.runId);
         this.stepPtys.delete(event.runId);
         this.activeRunIds.delete(event.runId);
         this.controllers.delete(event.runId);
@@ -582,6 +593,21 @@ export class DaemonServer {
       return;
     }
     this.broadcast(RpcNotification.progress, event);
+  }
+
+  /**
+   * Flush a completing run's terminal to its live clients (remaining frames +
+   * EOF) and only then evict/dispose it. Running this after the sync portion of
+   * onRunEvent keeps the daemon responsive while guaranteeing an attached
+   * client receives the terminal's final data and EOF before its socket is
+   * torn down (fixes the complete-vs-evict race).
+   */
+  private async finalizeRun(runId: string): Promise<void> {
+    log.debug(`[daemon] finalizeRun(${runId}) start`);
+    await this.terminalStore.complete(runId).catch(() => {});
+    log.debug(`[daemon] finalizeRun(${runId}) complete awaited`);
+    this.evictTerminal(runId);
+    this.touch();
   }
 
   private broadcast(method: string, params: unknown): void {

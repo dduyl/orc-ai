@@ -36,6 +36,8 @@ export interface RunTerminalOptions {
 interface ClientLink {
   socket: Socket;
   transform: CoalescingTransform;
+  /** Resolves once this client's pipeline has fully flushed (EOF handed to socket). */
+  pipelineDone: Promise<void>;
 }
 
 /**
@@ -58,6 +60,8 @@ export class RunTerminal {
   private hasContent = false;
   /** stepId -> dispatch count, so a redo/repair-loop dispatch gets its own marker. */
   private stepDispatches = new Map<string, number>();
+  /** stepId -> dispatch whose marker has already been written (dedupes noteStart + feedPty). */
+  private stepMarked = new Map<string, number>();
   private pendingParses = 0;
   private drainWaiters: (() => void)[] = [];
   private readonly coalesceMs: number;
@@ -79,25 +83,51 @@ export class RunTerminal {
     this.xterm.loadAddon(this.serializer);
   }
 
+/** Register the next dispatch round for `stepId` and return its dispatch number. */
+  private beginStep(stepId: string): number {
+    const dispatch = (this.stepDispatches.get(stepId) ?? 0) + 1;
+    this.stepDispatches.set(stepId, dispatch);
+    return dispatch;
+  }
+
+  /** Write the `[step: <id>]` / `[step: <id> (redo N)]` marker, once per dispatch. */
+  private writeStepMarker(stepId: string, dispatch: number): void {
+    if (this.stepMarked.get(stepId) === dispatch) return;
+    this.stepMarked.set(stepId, dispatch);
+    this.write(stepId, dispatch === 1
+      ? `\r\n[step: ${stepId}]\r\n`
+      : `\r\n[step: ${stepId} (redo ${dispatch - 1})]\r\n`);
+  }
+
+  /**
+   * Mark a step's start in the combined stream. Used by the daemon for
+   * non-PTY steps (script/exec gates) whose raw bytes never flow through a
+   * PTY — so a script-only run still produces a tracked, visible terminal
+   * (ADR Phase F: F2 needs the terminal to carry content and be completable).
+   * A redundant `feedPty` for the same step won't emit a second marker.
+   */
+  noteStart(stepId: string): void {
+    if (this.done) return;
+    const dispatch = this.beginStep(stepId);
+    this.writeStepMarker(stepId, dispatch);
+  }
+
   /**
    * Wire a step's PTY into this run's terminal. On the step's first byte a
-   * `[step: <id>]` marker is written so the combined stream shows transitions.
-   * A subsequent dispatch of the same id (a redo/repair loop) writes a distinct
-   * `[step: <id> (redo N)]` marker so gate-failure boundaries stay visible.
+   * `[step: <id>]` marker is written so the combined stream shows transitions
+   * (skipped if `noteStart` already wrote it). A subsequent dispatch of the
+   * same id (a redo/repair loop) writes a distinct `[step: <id> (redo N)]`
+   * marker so gate-failure boundaries stay visible.
    */
   feedPty(stepId: string, pty: PtyLike): void {
     if (this.done) return;
-    const dispatch = (this.stepDispatches.get(stepId) ?? 0) + 1;
-    this.stepDispatches.set(stepId, dispatch);
-    let markerWritten = false;
+    const dispatch = this.beginStep(stepId);
     pty.onData((data: string) => {
-      if (this.done) return;
-      if (!markerWritten) {
-        markerWritten = true;
-        this.write(stepId, dispatch === 1
-          ? `\r\n[step: ${stepId}]\r\n`
-          : `\r\n[step: ${stepId} (redo ${dispatch - 1})]\r\n`);
+      if (this.done) {
+        log.debug(`[terminal ${this.runId}] complete() early-return (already done)`);
+        return;
       }
+      this.writeStepMarker(stepId, dispatch);
       this.write(stepId, data);
     });
   }
@@ -185,13 +215,16 @@ export class RunTerminal {
         return;
       }
       const transform = new CoalescingTransform(this.coalesceMs, this.maxFrameBytes);
-      const link: ClientLink = { socket, transform };
+      let resolvePipeline: () => void = () => {};
+      const pipelineDone = new Promise<void>((r) => { resolvePipeline = r; });
+      const link: ClientLink = { socket, transform, pipelineDone };
       this.clients.add(link);
       const cleanup = () => this.removeClient(link);
       socket.on("close", cleanup);
       socket.on("error", cleanup);
       pipeline(transform, socket, (err) => {
         cleanup();
+        resolvePipeline();
         if (err) log.debug(`[terminal ${this.runId}] client pipeline error: ${err.message}`);
       });
     } catch (err: any) {
@@ -205,9 +238,13 @@ export class RunTerminal {
     if (this.done) return;
     await this.waitParsed();
     this.done = true;
-    for (const link of [...this.clients]) {
+    const links = [...this.clients];
+    log.debug(`[terminal ${this.runId}] complete(): ${links.length} live client(s)`);
+    for (const link of links) {
       link.transform.end(); // flushes remaining + EOF frame; pipeline closes socket
     }
+    await Promise.all(links.map((l) => l.pipelineDone));
+    log.debug(`[terminal ${this.runId}] complete(): pipelines flushed (${links.length})`);
   }
 
   /** Mark done without touching clients (used for a reconstructed terminal). */
@@ -318,8 +355,13 @@ export class TerminalStore {
     this.replays.delete(oldestRunId);
   }
 
-  complete(runId: string): void {
-    void this.runs.get(runId)?.complete();
+  complete(runId: string): Promise<void> {
+    const run = this.runs.get(runId);
+    if (!run) {
+      log.debug(`[terminalstore] complete(${runId}): run NOT in map (size=${this.runs.size})`);
+      return Promise.resolve();
+    }
+    return run.complete();
   }
 
   delete(runId: string): void {

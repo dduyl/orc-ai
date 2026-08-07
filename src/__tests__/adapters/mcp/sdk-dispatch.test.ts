@@ -36,8 +36,14 @@ function tmpDir(label: string): string {
   return path.join(os.tmpdir(), `orc-sdk-dispatch-${label}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 }
 
-/** Cross-platform command that blocks long enough for concurrency to be observable. */
-const BLOCK_CMD = process.platform === "win32" ? "ping -n 4 127.0.0.1 >nul" : "sleep 3";
+/**
+ * Cross-platform command that blocks long enough for concurrency to be
+ * observable. A plain `ping` is network-dependent (a blocked/filtered loopback
+ * makes `ping -n 4` wait ~19s in timeouts), so a Node sleep is used instead —
+ * deterministic on every platform. The \\" are escape quotes that
+ * parseRun/unescapeQuoted turn back into real quotes around the node -e arg.
+ */
+const BLOCK_CMD = `node -e \\"setTimeout(() => {}, 3000)\\"`;
 
 /** Single script gate workflow; `runExpr` is the script step's `run` value. */
 function scriptWorkflow(id: string, runExpr: string): object {
