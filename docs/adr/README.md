@@ -19,7 +19,7 @@ trusting an "Implemented" mark after further changes.
 | 004 | Architecture Gate and Mandatory-Precision Contract | Accepted | Partial | Gate exists via a review step; contract is schema-optional, not enforced as precise |
 | 005 | Test Timing and Target | Accepted | Unverified | Actual agent prompt content not inspected |
 | 006 | Command Execution Model | Accepted | Implemented | CommandExecutor + `type: script` step in the runner gate on a real exit code |
-| 007 | Runtime Substrate: PTY-Driven Coding Agent | Accepted | Implemented | Confirmed: adapter-pty.ts, PTY/MCP race, strategy files |
+| 007 | Runtime Substrate: PTY-Driven Coding Agent | Deprecated (see ADR-026) | Implemented | Confirmed: adapter-pty.ts, PTY/MCP race, strategy files. Superseded by ADR-026 — the code still works, but the substrate decision is replaced |
 | 008 | Bounded Research Tool-Calls per Agent Step | Accepted | Not Implemented | Only the global bound (017) currently applies |
 | 009 | Review Agent | Accepted | Partial | A review step exists; single-parameterized-agent design not confirmed |
 | 010 | Checkpointing, Crash Recovery, and Session Reuse | Accepted | Partial | Checkpointing confirmed real; session-id reuse extension not built |
@@ -38,6 +38,7 @@ trusting an "Implemented" mark after further changes.
 | 023 | Terminal Output Compression via RTK | Proposed | Not Implemented | New this round |
 | 024 | Concise Agent-to-Orchestrator Summaries | Proposed | Not Implemented | Prompt-only change, not yet applied to any role's prompt |
 | 025 | Detached Daemon Run Host with Attachable GUI | Accepted | Implemented | Phase A: migrated all 3 consumers to `node:sqlite` (Checkpointer/Tracker/run-db). Phase B/C: frame transport + TerminalStore + daemon control protocol. Phase D: daemon hosts MCP :3100 (`orc mcp`), owns main terminal + `input` RPC, GUI is a pure `PipeClient` (`daemon-bridge.ts`, `pty-manager.ts`/`run-db.ts` deleted, zero native deps), `node-pty` host-only ABI; daemon survives GUI close |
+| 026 | Runtime Substrate: ACP-Driven Coding Agent | Accepted | Not Implemented | Supersedes ADR-007 (PTY) and ADR-025 D-3 (main PTY passthrough). Covers both step subagents and the main interactive session. Plan at ADR-026-ROLLOUT.md |
 
 ## When a later ADR replaces an earlier one
 
