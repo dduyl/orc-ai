@@ -2,20 +2,12 @@ import { spawn, type IPty } from "node-pty";
 import type { AdapterDef, AgentCallResult } from "./adapter.js";
 import { HOOK_FILE_ENV } from "../../core/hooks.js";
 import { getStrategy } from "./strategy.js";
+import { acpEnabledFor, callAcpAgentStream } from "./adapter-acp.js";
+import { getAgentCwd } from "./agent-cwd.js";
 import { createHookFile, readHookEvents, removeHookFile } from "../../adapters/hooks/endpoint.js";
 import { log } from "../../core/log.js";
 
 const POLL_INTERVAL_MS = 500;
-
-let _agentCwd: string | undefined;
-
-export function setAgentCwd(dir: string): void {
-  _agentCwd = dir;
-}
-
-function agentCwd(): string {
-  return _agentCwd ?? process.cwd();
-}
 
 export interface AgentPTYStreamHandle {
   pty: IPty;
@@ -36,6 +28,10 @@ export function callAgentStream(
   prompt: string,
   hookFilePath?: string,
 ): AgentPTYStreamHandle {
+  if (acpEnabledFor(adapter.id)) {
+    return callAcpAgentStream(adapter, prompt, hookFilePath);
+  }
+
   const start = Date.now();
   const strat = getStrategy(adapter.id);
   const hookFile = hookFilePath || createHookFile("unknown");
@@ -53,7 +49,7 @@ export function callAgentStream(
     if (process.platform === "win32" && strat.id === "opencode") {
       log.info("Spawning opencode via bash.exe");
       pty = spawn("bash.exe", [], {
-        cols, rows, name: "xterm-256color", cwd: agentCwd(), env,
+        cols, rows, name: "xterm-256color", cwd: getAgentCwd(), env,
       });
       pty.write(`PROMPT=$(cat << 'EOF'\r`);
       for (const line of prompt.split(/\r?\n/)) {
@@ -63,7 +59,7 @@ export function callAgentStream(
       pty.write(`${adapter.command} --pure --prompt "$PROMPT"\r`);
     } else {
       pty = spawn(adapter.command, args, {
-        cols, rows, name: "xterm-256color", cwd: agentCwd(), env,
+        cols, rows, name: "xterm-256color", cwd: getAgentCwd(), env,
       });
     }
   } catch (err: any) {

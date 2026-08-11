@@ -1,6 +1,6 @@
 import * as http from "node:http";
 import type { RunHost } from "../../application/harness/run-host.js";
-import { setAgentCwd } from "../../application/agents/adapter-pty.js";
+import { setAgentCwd } from "../../application/agents/agent-cwd.js";
 import { McpHttpTransport, type McpSession } from "./http-transport.js";
 import { createSdkServer } from "./sdk-server-factory.js";
 import { init as initState } from "./handlers/state.js";

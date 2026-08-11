@@ -1,3 +1,5 @@
+import type { AgentUsage } from "./acp/types.js";
+
 export type AgentMode = "interactive" | "headless";
 
 export interface AgentCallResult {
@@ -5,6 +7,8 @@ export interface AgentCallResult {
   model: string;
   tokensUsed: number;
   duration: number;
+  /** Detailed token breakdown when the call produced usage telemetry (ACP). */
+  usage?: AgentUsage;
 }
 
 export interface AdapterDef {
