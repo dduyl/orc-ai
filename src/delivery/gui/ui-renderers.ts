@@ -5,6 +5,17 @@ export interface StepInfo {
   isMain: boolean;
 }
 
+/** Token colors mirrored from DESIGN.md (also see xterm theme in terminal.ts). */
+const TOK = {
+  ok: "#58d68d",
+  err: "#ff6b6b",
+  warn: "#ffb454",
+  info: "#6bc9ff",
+  faint: "#5d6b7a",
+  text: "#e6edf3",
+  secondary: "#9aa7b4",
+} as const;
+
 export function addEvent(text: string, container: HTMLElement): void {
   const entry = document.createElement("div");
   entry.className = "event-entry";
@@ -13,9 +24,14 @@ export function addEvent(text: string, container: HTMLElement): void {
   entry.scrollIntoView({ behavior: "smooth", block: "end" });
 }
 
-export function setViewLabel(stepId: string, name: string, label: HTMLElement): void {
-  const prefix = stepId === "__main__" ? "" : "🔹 ";
-  label.textContent = `Viewing: ${prefix}${name}`;
+/** Split the terminal view label into a fixed tag and a live step context. */
+export function setViewLabel(stepId: string, name: string, labelText: HTMLElement, labelStep: HTMLElement): void {
+  labelText.textContent = "TERMINAL";
+  if (stepId === "__main__") {
+    labelStep.textContent = "· main";
+  } else {
+    labelStep.textContent = `· ${name}`;
+  }
 }
 
 export function renderPTYTree(
@@ -26,15 +42,15 @@ export function renderPTYTree(
 ): void {
   container.innerHTML = "";
   if (!steps.length) {
-    container.innerHTML = '<div class="event-entry">› No sessions</div>';
+    container.innerHTML = '<div class="muted-empty">› No sessions</div>';
     return;
   }
 
   for (const s of steps) {
     const el = document.createElement("div");
     el.className = "step-entry" + (s.id === activeId ? " active" : "");
-    const dotClass = s.isMain ? "main" : (s.id === activeId ? "active" : "child");
-    el.innerHTML = `<span class="step-dot ${dotClass}"></span><span class="step-label">${s.name}</span>`;
+    const dotClass = s.isMain ? "main" : s.id === activeId ? "active" : "child";
+    el.innerHTML = `<span class="step-dot ${dotClass}"></span><span class="step-label">${escapeHtml(s.name)}</span>`;
     el.addEventListener("click", () => onSelect(s.id));
     container.appendChild(el);
   }
@@ -43,48 +59,63 @@ export function renderPTYTree(
 export function renderStepTree(run: any, container: HTMLElement): void {
   container.innerHTML = "";
   if (!run || !run.steps) {
-    container.innerHTML = '<div class="event-entry">› No active run</div>';
+    container.innerHTML = '<div class="muted-empty">› No active run</div>';
     return;
   }
 
-  const total = run.steps.length;
-  const completed = run.steps.filter((s: any) => s.status === "completed").length;
-  const failed = run.steps.filter((s: any) => s.status === "failed").length;
-  const running = run.steps.filter((s: any) => s.status === "running").length;
-  const pending = run.steps.filter((s: any) => s.status === "pending").length;
+  const steps: any[] = run.steps;
+  const completed = steps.filter((s: any) => s.status === "completed").length;
+  const failed = steps.filter((s: any) => s.status === "failed").length;
+  const running = steps.filter((s: any) => s.status === "running").length;
+  const pending = steps.filter((s: any) => s.status === "pending").length;
 
   const summary = document.createElement("div");
   summary.className = "info-row";
   summary.style.marginBottom = "6px";
-  summary.style.fontSize = "11px";
-  summary.innerHTML = `<span class="label">${run.status}</span><span class="value">${completed}✓ ${failed}✗ ${running}▶ ${pending}○</span>`;
+  summary.innerHTML =
+    `<span class="label">${escapeHtml(String(run.status))}</span>` +
+    `<span class="value">${completed}✓ ${failed}✗ ${running}▶ ${pending}○</span>`;
   container.appendChild(summary);
 
-  for (const step of run.steps) {
+  for (const step of steps) {
     const el = document.createElement("div");
     el.className = "info-row";
     el.style.fontSize = "11px";
     el.style.paddingLeft = "8px";
 
-    let dot = "○";
-    let color = "#555";
-    if (step.status === "completed") { dot = "✓"; color = "#8ae234"; }
-    else if (step.status === "failed") { dot = "✗"; color = "#ef2929"; }
-    else if (step.status === "running") { dot = "▶"; color = "#729fcf"; }
+    let dot: string;
+    let color: string = TOK.faint;
+    switch (step.status) {
+      case "completed": dot = "✓"; color = TOK.ok; break;
+      case "failed": dot = "✗"; color = TOK.err; break;
+      case "running": dot = "▶"; color = TOK.warn; break;
+      case "skipped": dot = "–"; color = TOK.faint; break;
+      default: dot = "○"; color = TOK.info; break;
+    }
 
     const label = step.agent ? `${step.stepId} (${step.agent})` : step.stepId;
     const duration = step.duration ? `${step.duration}s` : "";
-    el.innerHTML = `<span class="label"><span style="color:${color}">${dot}</span> ${label}</span><span class="value">${duration}</span>`;
+    el.innerHTML =
+      `<span class="label"><span style="color:${color}">${dot}</span> ${escapeHtml(label)}</span>` +
+      `<span class="value">${duration}</span>`;
 
     if (step.error) {
       const errEl = document.createElement("div");
       errEl.className = "event-entry";
       errEl.style.paddingLeft = "16px";
-      errEl.style.color = "#ef2929";
+      errEl.style.color = TOK.err;
       errEl.textContent = step.error;
       container.appendChild(errEl);
     }
 
     container.appendChild(el);
   }
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }

@@ -5,8 +5,11 @@ import { fileURLToPath } from "node:url";
 import { PipeClient, type TerminalStream } from "../../application/harness/daemon/pipe-client.js";
 import { MAIN_STEP_ID, SCREEN_STEP_ID } from "../../application/harness/daemon/frame-transport.js";
 import type { WorkflowCompleteInfo } from "../../application/harness/daemon/daemon-server.js";
+import { decodeMainFrame, type MainFrame } from "../../application/harness/daemon/main-frame-codec.js";
 import type { ProgressEvent } from "../../application/harness/orchestrator/index.js";
 import type { RunRecord } from "../../application/harness/persistence/Tracker.js";
+import type { PermissionRequest } from "../../application/agents/acp/permission.js";
+import type { PermissionAnswerKind } from "../../application/agents/acp/types.js";
 import { getAdapter } from "../../application/agents/adapter.js";
 
 /**
@@ -30,6 +33,15 @@ export interface StepInfo {
   isMain: boolean;
 }
 
+/**
+ * Structured chat event for the renderer's DOM chat panel.
+ *
+ * The main session's ACP frames are forwarded verbatim (kinds: text, tool,
+ * tool_update, usage, turn, error); `user` is synthesized locally so the panel
+ * shows composed prompts the same way the wire stream does.
+ */
+export type ChatFrame = MainFrame | { kind: "user"; text: string };
+
 export class DaemonBridge {
   private client: PipeClient | null = null;
   private daemonChild: ChildProcess | null = null;
@@ -41,6 +53,8 @@ export class DaemonBridge {
 
   private mainBuffer = "";
   private stepBuffers = new Map<string, string>();
+  /** `pty` → raw ANSI bytes on the main pipe; `acp` → structured `MainFrame`s. */
+  private mainMode: "pty" | "acp" = "pty";
   private activeStepId = MAIN_STEP_ID;
   private latestRunId: string | null = null;
   private mainExited = false;
@@ -100,11 +114,33 @@ export class DaemonBridge {
   async writeInput(data: string): Promise<void> {
     const client = this.requireClient();
     if (this.activeStepId === MAIN_STEP_ID) {
+      // In ACP mode the main terminal is a chat session, not a PTY: a keystroke
+      // is not bytes-for-a-tty, it is a whole prompt line.
+      if (this.mainMode === "acp") {
+        await client.prompt(data);
+        return;
+      }
       await client.writeInput({ stepId: MAIN_STEP_ID, data });
       return;
     }
     if (!this.latestRunId) throw new Error("no active run for step input");
     await client.writeInput({ runId: this.latestRunId, stepId: this.activeStepId, data });
+  }
+
+  /** Submit a whole prompt turn to the ACP main session (chat mode). */
+  async prompt(text: string): Promise<void> {
+    if (this.mainMode !== "acp") throw new Error("main terminal is not an ACP session");
+    await this.requireClient().prompt(text);
+  }
+
+  /** Cancel the ACP main session's in-flight turn. */
+  async cancelMain(): Promise<void> {
+    await this.requireClient().cancelMain();
+  }
+
+  /** Answer the ACP main session's pending permission request. */
+  async answerPermission(kind: PermissionAnswerKind): Promise<void> {
+    await this.requireClient().answerPermission(kind);
   }
 
   dispose(): void {    this.mainStream?.close();
@@ -152,6 +188,7 @@ export class DaemonBridge {
           projectDir,
           onProgress: (e) => this.onProgress(e),
           onWorkflowComplete: (i) => this.onWorkflowComplete(i),
+          onPermissionRequested: (request) => this.onPermissionRequested(request),
         })
           .then(resolve)
           .catch(() => setTimeout(attempt, 100));
@@ -167,19 +204,25 @@ export class DaemonBridge {
     // the Electron ABI and fail to load the host-rebuilt addon).
     let command: string;
     let args: string[];
+    const mainArgs = this.isAcpMode(env) ? ["--main", "acp"] : [];
     if (env["ORC_DAEMON_BIN"]) {
       command = env["ORC_DAEMON_BIN"];
-      args = ["daemon", "start"];
+      args = ["daemon", "start", ...mainArgs];
     } else if (this.isPackagedApp) {
       command = this.resolveBundledOrc();
-      args = ["daemon", "start"];
+      args = ["daemon", "start", ...mainArgs];
     } else {
       // Dev: root the CLI from the compiled output and run it with the host
       // `node` on PATH (the same runtime the rebuild targets).
       command = "node";
-      args = [join(dirname(fileURLToPath(import.meta.url)), "../cli/index.js"), "daemon", "start"];
+      args = [join(dirname(fileURLToPath(import.meta.url)), "../cli/index.js"), "daemon", "start", ...mainArgs];
     }
     return spawn(command, args, { cwd: projectDir, env, stdio: ["ignore", "pipe", "pipe"] });
+  }
+
+  /** `ORC_MAIN_MODE=acp` (or a binary expecting ACP) drives the main session over ACP. */
+  private isAcpMode(env: Record<string, string>): boolean {
+    return env["ORC_MAIN_MODE"] === "acp";
   }
 
   private get isPackagedApp(): boolean {
@@ -198,14 +241,19 @@ export class DaemonBridge {
 
   private async attachMain(): Promise<void> {
     const client = this.requireClient();
-    await client.attachMain();
+    const res = await client.attachMain();
+    this.mainMode = res.mode;
     this.mainExited = false;
     this.mainStream = await client.attachMainStream(
       (stepId, payload) => {
         if (stepId !== MAIN_STEP_ID) return;
-        const text = payload.toString("utf8");
-        this.mainBuffer += text;
-        if (this.activeStepId === MAIN_STEP_ID) this.send("output", text);
+        if (this.mainMode === "acp") {
+          this.onMainFrame(payload);
+        } else {
+          const text = payload.toString("utf8");
+          this.mainBuffer += text;
+          if (this.activeStepId === MAIN_STEP_ID) this.send("output", text);
+        }
       },
       () => {
         if (this.mainExited) return;
@@ -213,9 +261,44 @@ export class DaemonBridge {
         this.send("exit", 0);
       },
     );
-    this.send("status", { type: "spawned", pid: this.daemonPid, adapter: this.adapterId });
+    this.send("status", {
+      type: "spawned",
+      pid: this.daemonPid,
+      adapter: this.adapterId,
+      mode: this.mainMode,
+    });
     this.send("log", { text: "attached to daemon main terminal" });
     this.switchToStep(MAIN_STEP_ID);
+  }
+
+  /**
+   * ACP main frames are structured JSON envelopes, not tty bytes. They drive
+   * two surfaces:
+   *
+   * - a structured `chat-frame` event → the renderer's DOM chat panel (D-7);
+   * - a human-readable ANSI line (same rendering the daemon CLI uses) so the
+   *   xterm Terminal view stays coherent on re-attach / step switching.
+   */
+  private onMainFrame(payload: Buffer): void {
+    let frame: MainFrame;
+    try {
+      frame = decodeMainFrame(payload);
+    } catch {
+      return; // not a MainFrame (stale PTY bytes) — drop
+    }
+    this.send("chat-frame", { frame });
+    const text = renderMainFrame(frame);
+    if (!text) return;
+    this.mainBuffer += text;
+    if (this.activeStepId === MAIN_STEP_ID) this.send("output", text);
+  }
+
+  private onPermissionRequested(request: PermissionRequest): void {
+    this.send("permission-requested", request);
+    const label = request.toolCall.title ?? request.toolCall.name ?? "tool";
+    this.send("log", {
+      text: `[permission] ${label} — waiting for your decision`,
+    });
   }
 
   private async attachRunTerminal(runId: string): Promise<void> {
@@ -309,4 +392,28 @@ export class DaemonBridge {
 export function resolveGuiAdapter(rawAdapterId: string | undefined): string {
   const adapter = getAdapter(rawAdapterId ?? "opencode");
   return adapter?.id ?? rawAdapterId ?? "opencode";
+}
+
+/**
+ * Translate one ACP main frame into a human-readable ANSI line for the xterm
+ * view. Text chunks stream as-is (so the reply reads naturally); every other
+ * kind becomes a single labeled line so the chat stays scannable.
+ */
+export function renderMainFrame(frame: MainFrame): string {
+  switch (frame.kind) {
+    case "text":
+      return frame.text;
+    case "tool":
+      return `\r\n\x1b[1;36m[tool] ${frame.call.title ?? frame.call.name ?? "tool"}\x1b[0m\r\n`;
+    case "tool_update":
+      return `\r\n\x1b[2m[tool update] ${frame.update.title ?? frame.update.name ?? "tool"}\x1b[0m\r\n`;
+    case "usage":
+      return `\r\n\x1b[2m[tokens ${frame.usage.totalTokens} (in ${frame.usage.inputTokens} / out ${frame.usage.outputTokens})]\x1b[0m\r\n`;
+    case "turn":
+      return `\r\n\x1b[1;32m[turn end: ${frame.stopReason}]\x1b[0m\r\n`;
+    case "error":
+      return `\r\n\x1b[1;31m[error] ${frame.message}\x1b[0m\r\n`;
+    default:
+      return "";
+  }
 }

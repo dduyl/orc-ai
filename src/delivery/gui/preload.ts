@@ -19,7 +19,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onRunActive: (cb: (data: { runId: string }) => void) => {
     ipcRenderer.on("run-active", (_event, data) => cb(data));
   },
+  onPermissionRequested: (cb: (data: { toolCall: { title?: string | null; name?: string | null }; options: { kind: string; name: string; optionId: string }[] }) => void) => {
+    ipcRenderer.on("permission-requested", (_event, data) => cb(data));
+  },
+  onChatFrame: (cb: (data: { frame: { kind: string } }) => void) => {
+    ipcRenderer.on("chat-frame", (_event, data) => cb(data));
+  },
   write: (data: string) => ipcRenderer.send("input", data),
+  prompt: (text: string) => ipcRenderer.send("prompt", text),
+  cancelMain: () => ipcRenderer.send("cancel-main"),
+  answerPermission: (kind: string) => ipcRenderer.send("answer-permission", kind),
   switchStep: (stepId: string) => ipcRenderer.invoke("switch-step", stepId),
   listSteps: () => ipcRenderer.invoke("list-steps"),
   getStepOutput: (stepId: string) => ipcRenderer.invoke("get-step-output", stepId),

@@ -1,44 +1,87 @@
 export interface DomRefs {
+  // status + terminal
   termContainer: HTMLElement;
-  viewLabel: HTMLElement;
+  viewLabelText: HTMLElement;
+  viewLabelStep: HTMLElement;
   statusIndicator: HTMLElement;
   statusText: HTMLElement;
   sbIndicator: HTMLElement;
   sbText: HTMLElement;
   termSize: HTMLElement;
   exitStatus: HTMLElement;
+  // inspector
   infoAdapter: HTMLElement;
   infoStatus: HTMLElement;
+  infoMode: HTMLElement;
   infoPid: HTMLElement;
   infoSize: HTMLElement;
   eventList: HTMLElement;
   stepTree: HTMLElement;
   ptyTree: HTMLElement;
+  // layout
   splitter: HTMLElement;
   rightPanel: HTMLElement;
+  // views + navigation
+  chatView: HTMLElement;
+  terminalView: HTMLElement;
+  tabChat: HTMLButtonElement;
+  tabTerminal: HTMLButtonElement;
+  // chat panel
+  chatList: HTMLElement;
+  chatInput: HTMLInputElement;
+  chatSend: HTMLButtonElement;
+  chatBusy: HTMLElement;
+  chatBusyText: HTMLElement;
+  chatCancel: HTMLButtonElement;
+  // permission dialog
+  permissionDialog: HTMLElement;
+  permissionText: HTMLElement;
+  permissionHint: HTMLElement;
+  permissionActions: HTMLElement;
+  brandAdapter: HTMLElement;
+}
+
+function req(id: string): HTMLElement {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`missing #${id} element`);
+  return el;
 }
 
 export function getDomRefs(): DomRefs {
-  const termContainer = document.getElementById("terminal");
-  if (!termContainer) throw new Error("missing #terminal element");
-
   return {
-    termContainer,
-    viewLabel: document.getElementById("view-label")!,
-    statusIndicator: document.getElementById("status-indicator")!,
-    statusText: document.getElementById("status-text")!,
-    sbIndicator: document.getElementById("sb-indicator")!,
-    sbText: document.getElementById("sb-text")!,
-    termSize: document.getElementById("term-size")!,
-    exitStatus: document.getElementById("exit-status")!,
-    infoAdapter: document.getElementById("info-adapter")!,
-    infoStatus: document.getElementById("info-status")!,
-    infoPid: document.getElementById("info-pid")!,
-    infoSize: document.getElementById("info-size")!,
-    eventList: document.getElementById("event-list")!,
-    stepTree: document.getElementById("step-tree")!,
-    ptyTree: document.getElementById("pty-tree")!,
-    splitter: document.getElementById("splitter")!,
-    rightPanel: document.getElementById("right-panel")!,
+    termContainer: req("terminal"),
+    viewLabelText: req("view-label-text"),
+    viewLabelStep: req("view-label-step"),
+    statusIndicator: req("status-indicator"),
+    statusText: req("status-text"),
+    sbIndicator: req("sb-indicator"),
+    sbText: req("sb-text"),
+    termSize: req("term-size"),
+    exitStatus: req("exit-status"),
+    infoAdapter: req("info-adapter"),
+    infoStatus: req("info-status"),
+    infoMode: req("info-mode"),
+    infoPid: req("info-pid"),
+    infoSize: req("info-size"),
+    eventList: req("event-list"),
+    stepTree: req("step-tree"),
+    ptyTree: req("pty-tree"),
+    splitter: req("splitter"),
+    rightPanel: req("right-panel"),
+    chatView: req("chat-view"),
+    terminalView: req("terminal-view"),
+    tabChat: req("tab-chat") as HTMLButtonElement,
+    tabTerminal: req("tab-terminal") as HTMLButtonElement,
+    chatList: req("chat-list"),
+    chatInput: req("chat-input") as HTMLInputElement,
+    chatSend: req("chat-send") as HTMLButtonElement,
+    chatBusy: req("chat-busy"),
+    chatBusyText: req("chat-busy-text"),
+    chatCancel: req("chat-cancel") as HTMLButtonElement,
+    permissionDialog: req("permission-dialog"),
+    permissionText: req("permission-text"),
+    permissionHint: req("permission-hint"),
+    permissionActions: req("permission-actions"),
+    brandAdapter: req("brand-adapter"),
   };
 }

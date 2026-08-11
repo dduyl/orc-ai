@@ -41,7 +41,7 @@ function createWindow(adapterId: string): BrowserWindow {
     height: 800,
     minWidth: 600,
     minHeight: 300,
-    backgroundColor: "#0d0d0d",
+    backgroundColor: "#0b0e11",
     title: `ORC — ${adapterId}`,
     show: false,
     webPreferences: {
