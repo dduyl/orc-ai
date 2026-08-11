@@ -6,13 +6,18 @@ import { FrameReader } from "./frame-transport.js";
 import {
   RpcMethod,
   RpcNotification,
+  type AnswerPermissionParams,
+  type AnswerPermissionResult,
   type AttachParams,
   type AttachResult,
   type AttachMainResult,
+  type CancelMainResult,
   type CancelParams,
   type CancelResult,
   type InputParams,
   type InputResult,
+  type PromptParams,
+  type PromptResult,
   type StartParams,
   type StartResult,
   type StopResult,
@@ -20,6 +25,8 @@ import {
 } from "./daemon-server.js";
 import type { RunRecord } from "../persistence/Tracker.js";
 import type { ProgressEvent, RunReport } from "../orchestrator/index.js";
+import type { PermissionRequest } from "../../agents/acp/permission.js";
+import type { PermissionAnswerKind } from "../../agents/acp/types.js";
 
 /**
  * Client for the daemon's control pipe (ADR-025 Phase C step 3).
@@ -37,6 +44,8 @@ export interface PipeClientOptions {
   onProgress?: (event: ProgressEvent) => void;
   /** Receives the `workflowComplete` notification. */
   onWorkflowComplete?: (info: WorkflowCompleteInfo) => void;
+  /** Receives the ACP main session's `permissionRequested` notifications. */
+  onPermissionRequested?: (request: PermissionRequest) => void;
 }
 
 export interface TerminalStream {
@@ -82,6 +91,11 @@ export class PipeClient {
     if (opts.onWorkflowComplete) {
       conn.onNotification(RpcNotification.workflowComplete, (e: WorkflowCompleteInfo) => opts.onWorkflowComplete?.(e));
     }
+    if (opts.onPermissionRequested) {
+      conn.onNotification(RpcNotification.permissionRequested, (e: PermissionRequest) =>
+        opts.onPermissionRequested?.(e),
+      );
+    }
     conn.listen();
     sock.on("close", () => client.dispose());
     return client;
@@ -120,6 +134,24 @@ export class PipeClient {
   /** Route keyboard input to a PTY: `__main__` or a step within a run. */
   async writeInput(params: InputParams): Promise<InputResult> {
     return this.conn.sendRequest(RpcMethod.input, params satisfies InputParams) as Promise<InputResult>;
+  }
+
+  /** Queue a user prompt turn on the ACP main session. */
+  async prompt(text: string): Promise<PromptResult> {
+    return this.conn.sendRequest(RpcMethod.prompt, { text } satisfies PromptParams) as Promise<PromptResult>;
+  }
+
+  /** Cancel the ACP main session's in-flight turn. */
+  async cancelMain(): Promise<CancelMainResult> {
+    return this.conn.sendRequest(RpcMethod.cancelMain) as Promise<CancelMainResult>;
+  }
+
+  /** Answer the ACP main session's pending permission request. */
+  async answerPermission(kind: PermissionAnswerKind): Promise<AnswerPermissionResult> {
+    return this.conn.sendRequest(
+      RpcMethod.answerPermission,
+      { kind } satisfies AnswerPermissionParams,
+    ) as Promise<AnswerPermissionResult>;
   }
 
   /**

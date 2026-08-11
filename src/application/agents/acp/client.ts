@@ -34,7 +34,7 @@ export interface AcpTurnOptions {
   signal?: AbortSignal;
 }
 
-function normalizeUsage(input?: Usage | null): AgentUsage {
+export function normalizeUsage(input?: Usage | null): AgentUsage {
   return {
     totalTokens: input?.totalTokens ?? 0,
     inputTokens: input?.inputTokens ?? 0,
