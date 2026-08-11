@@ -25,6 +25,9 @@ export interface ToolCallUpdateView extends ToolCallView {
  * - usage lines, turn dividers, and errors are scannable single-line tokens.
  */
 export class ChatView {
+  /** Pixels above the bottom below which auto-scroll stays engaged. */
+  static readonly SCROLL_THRESHOLD = 80;
+
   private openText: { msg: HTMLElement; body: HTMLElement } | null = null;
   private lastToolEl: HTMLElement | null = null;
   private turnSeq = 0;
@@ -126,8 +129,12 @@ export class ChatView {
     this.turnSeq += 1;
     const el = document.createElement("div");
     el.className = "turn-end";
-    const label = turnLabel(stopReason);
-    el.innerHTML = `<span>end turn</span><b>${label}</b><span></span>`;
+    const left = document.createElement("span");
+    left.textContent = "end turn";
+    const label = document.createElement("b");
+    label.textContent = turnLabel(stopReason);
+    const right = document.createElement("span");
+    el.append(left, label, right);
     this.append(el);
   }
 
@@ -141,7 +148,10 @@ export class ChatView {
 
   scrollBottom(): void {
     const scroll = this.list.parentElement;
-    if (scroll) scroll.scrollTop = scroll.scrollHeight;
+    if (!scroll) return;
+    const nearBottom =
+      scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < ChatView.SCROLL_THRESHOLD;
+    if (nearBottom) scroll.scrollTop = scroll.scrollHeight;
   }
 
   // ── internals ────────────────────────────────────────────────────────────

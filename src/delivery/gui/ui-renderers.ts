@@ -16,12 +16,17 @@ const TOK = {
   secondary: "#9aa7b4",
 } as const;
 
+/** Threshold in px: while the user stays within this of the bottom, keep scrolling. */
+const SCROLL_THRESHOLD = 80;
+
 export function addEvent(text: string, container: HTMLElement): void {
   const entry = document.createElement("div");
   entry.className = "event-entry";
   entry.textContent = `› ${text}`;
   container.appendChild(entry);
-  entry.scrollIntoView({ behavior: "smooth", block: "end" });
+  const nearBottom =
+    container.scrollHeight - container.scrollTop - container.clientHeight < SCROLL_THRESHOLD;
+  if (nearBottom) container.scrollTop = container.scrollHeight;
 }
 
 /** Split the terminal view label into a fixed tag and a live step context. */
