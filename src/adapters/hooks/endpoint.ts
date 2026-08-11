@@ -1,5 +1,5 @@
 import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, rmSync, existsSync, appendFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import type { HookEvent } from "../../core/hooks.js";
 import { log } from "../../core/log.js";
@@ -10,6 +10,30 @@ export function createHookFile(stepId: string): string {
   writeFileSync(filePath, "", "utf-8");
   log.debug(`[Hooks] Created hook file: ${filePath}`);
   return filePath;
+}
+
+/** Append a single hook event (JSONL) to an existing hook file. */
+export function appendHookEvent(filePath: string, event: HookEvent): void {
+  try {
+    appendFileSync(filePath, JSON.stringify(event) + "\n", "utf-8");
+  } catch (err: any) {
+    log.warn(`[Hooks] Failed to append hook event: ${err.message}`);
+  }
+}
+
+/**
+ * Recover the stepId a hook file was created for, from its path
+ * (`<tmp>/orc-hook-<stepId>-<random>/events.jsonl`). Returns "unknown" when
+ * the path doesn't match the format `createHookFile` produces.
+ */
+export function stepIdFromHookFile(filePath: string): string {
+  const dir = basename(dirname(filePath));
+  const PREFIX = "orc-hook-";
+  if (!dir.startsWith(PREFIX)) return "unknown";
+  // mkdtempSync replaces the trailing "XXXXXX" (6 chars) with randomness, so
+  // stripping the trailing `-<6 chars>` yields exactly the stepId.
+  const rest = dir.slice(PREFIX.length);
+  return rest.length > 7 ? rest.slice(0, rest.length - 7) : "unknown";
 }
 
 export function readHookEvents(filePath: string): HookEvent[] {

@@ -9,6 +9,12 @@ import { registerAcpStrategy, getAcpStrategy, registerStrategy } from "../../../
 import { callAgentStream } from "../../../../application/agents/adapter-pty.js";
 import type { AdapterDef } from "../../../../application/agents/adapter.js";
 import type { AcpStrategy } from "../../../../application/agents/acp/types.js";
+import {
+  createHookFile,
+  removeHookFile,
+  readHookEvents,
+  stepIdFromHookFile,
+} from "../../../../adapters/hooks/endpoint.js";
 
 const MOCK_SCRIPT = `
 const readline = require('readline');
@@ -28,6 +34,25 @@ rl.on('line', (line) => {
 });
 `;
 
+const MOCK_SCRIPT_WITH_TOOL = `
+const readline = require('readline');
+const rl = readline.createInterface({ input: process.stdin });
+function send(msg) { process.stdout.write(JSON.stringify(msg) + '\\n'); }
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  const { id, method } = msg;
+  if (method === 'initialize') {
+    send({ jsonrpc:'2.0', id, result:{ protocolVersion:1, agentCapabilities:{}, agentInfo:{ name:'mock', version:'1' } } });
+  } else if (method === 'session/new') {
+    send({ jsonrpc:'2.0', id, result:{ sessionId:'sess-1' } });
+    send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'agent_message_chunk', content:{ type:'text', text:'mock reply' } } } });
+    send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'tool_call', toolCallId:'tc-1', title:'Mock Write', name:'write_file', kind:'edit', status:'in_progress', locations:[{ path:'/tmp/mock.txt', line:1 }], rawInput:{ path:'/tmp/mock.txt' } } } });
+  } else if (method === 'session/prompt') {
+    send({ jsonrpc:'2.0', id, result:{ stopReason:'end_turn', usage:{ totalTokens:7, inputTokens:2, outputTokens:5 } } });
+  }
+});
+`;
+
 const origEnv = { ...process.env };
 
 afterEach(() => {
@@ -40,6 +65,15 @@ function fakeAcpStrategy(id: string, available = true): AcpStrategy {
     available,
     label: "mock-acp",
     buildSpawn: () => ({ command: process.execPath, args: ["-e", MOCK_SCRIPT] }),
+  };
+}
+
+function fakeAcpStrategyWithTool(id: string): AcpStrategy {
+  return {
+    id,
+    available: true,
+    label: "mock-acp",
+    buildSpawn: () => ({ command: process.execPath, args: ["-e", MOCK_SCRIPT_WITH_TOOL] }),
   };
 }
 
@@ -133,6 +167,62 @@ describe("callAcpAgentStream", () => {
       { ...ADAPTER, id: "acp-unavailable" },
       "hello",
     )).toThrow(/unavailable/);
+  });
+
+  it("feeds rendered tool-call lines through the facade", async () => {
+    registerAcpStrategy(fakeAcpStrategyWithTool("acp-test-agent"));
+    const handle = callAcpAgentStream(ADAPTER, "hello");
+
+    const chunks: string[] = [];
+    handle.pty.onData(text => chunks.push(text));
+    await handle.promise;
+
+    const fed = chunks.join("");
+    expect(fed).toContain("→ Mock Write [in_progress]");
+    expect(fed).toContain("    at /tmp/mock.txt:1");
+  });
+
+  it("writes tool_call and step_finish events to the hook file (Tracker observability)", async () => {
+    registerAcpStrategy(fakeAcpStrategyWithTool("acp-test-agent"));
+    const hookFile = createHookFile("step-acp-test");
+    try {
+      const handle = callAcpAgentStream(ADAPTER, "hello", hookFile);
+      await handle.promise;
+
+      const events = readHookEvents(hookFile);
+      const toolCall = events.find(e => e.type === "tool_call");
+      expect(toolCall).toMatchObject({
+        type: "tool_call",
+        stepId: "step-acp-test",
+        tool: "write_file",
+      });
+      expect((toolCall as { input: string }).input).toContain('"path":"/tmp/mock.txt"');
+
+      const finish = events.find(e => e.type === "step_finish");
+      expect(finish).toMatchObject({
+        type: "step_finish",
+        stepId: "step-acp-test",
+        reason: "end_turn",
+        tokens: { total: 7, input: 2, output: 5 },
+      });
+    } finally {
+      removeHookFile(hookFile);
+    }
+  });
+});
+
+describe("stepIdFromHookFile", () => {
+  it("round-trips the stepId from a createHookFile path", () => {
+    const hookFile = createHookFile("step-42");
+    try {
+      expect(stepIdFromHookFile(hookFile)).toBe("step-42");
+    } finally {
+      removeHookFile(hookFile);
+    }
+  });
+
+  it("returns 'unknown' for paths that don't match the format", () => {
+    expect(stepIdFromHookFile("C:\\tmp\\unrelated\\events.jsonl")).toBe("unknown");
   });
 });
 

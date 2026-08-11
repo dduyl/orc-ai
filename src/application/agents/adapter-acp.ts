@@ -6,7 +6,8 @@ import { gateFromEnv } from "./acp/permission.js";
 import { runAcpTurn } from "./acp/client.js";
 import { getAcpStrategy } from "./strategy.js";
 import { getAgentCwd } from "./agent-cwd.js";
-import { createHookFile, removeHookFile } from "../../adapters/hooks/endpoint.js";
+import { createHookFile, removeHookFile, appendHookEvent, stepIdFromHookFile } from "../../adapters/hooks/endpoint.js";
+import { renderToolCall, renderToolCallUpdate } from "./acp/render.js";
 import { log } from "../../core/log.js";
 
 /** Env switch that routes supported adapters through ACP instead of the PTY. */
@@ -125,6 +126,17 @@ export interface AgentACPStreamHandle {
   promise: Promise<AgentCallResult>;
 }
 
+/** Serialize a tool's raw input for the hook `ToolCallEvent.input` field. */
+function serializeToolInput(input: unknown): string {
+  if (input === undefined || input === null) return "";
+  try {
+    const json = JSON.stringify(input);
+    return json.length > 2000 ? json.slice(0, 2000) + "…" : json;
+  } catch {
+    return String(input);
+  }
+}
+
 /**
  * Run one agent turn over ACP. Mirrors `callAgentStream`'s contract but the
  * returned `pty` is an {@link AcpPtyFacade} the daemon can feed on.
@@ -140,9 +152,23 @@ export function callAcpAgentStream(
   }
 
   const hookFile = hookFilePath || createHookFile("unknown");
+  const stepId = stepIdFromHookFile(hookFile);
   const facade = new AcpPtyFacade();
   const spec: AcpSpawnSpec = strat.buildSpawn(getAgentCwd());
   const gate = gateFromEnv();
+
+  const feedLines = (lines: string[]): void => {
+    for (const line of lines) facade.feed(line + "\r\n");
+  };
+  const appendStepFinish = (reason: string, tokens?: { total: number; input: number; output: number }): void => {
+    appendHookEvent(hookFile, {
+      type: "step_finish",
+      timestamp: Date.now(),
+      stepId,
+      reason,
+      tokens,
+    });
+  };
 
   const start = Date.now();
   const promise = runAcpTurn({
@@ -154,6 +180,27 @@ export function callAcpAgentStream(
     signal: facade.signal,
     events: {
       onText: text => facade.feed(text),
+      onToolCall: call => {
+        try {
+          feedLines(renderToolCall(call));
+          appendHookEvent(hookFile, {
+            type: "tool_call",
+            timestamp: Date.now(),
+            stepId,
+            tool: call.name ?? call.kind ?? "unknown",
+            input: serializeToolInput(call.rawInput),
+          });
+        } catch (err) {
+          log.warn(`acp: failed to render tool_call: ${(err as Error).message}`);
+        }
+      },
+      onToolCallUpdate: update => {
+        try {
+          feedLines(renderToolCallUpdate(update));
+        } catch (err) {
+          log.warn(`acp: failed to render tool_call_update: ${(err as Error).message}`);
+        }
+      },
       onUsage: () => {
         /* Phase 2: surface usage to the GUI live */
       },
@@ -161,6 +208,11 @@ export function callAcpAgentStream(
   })
     .then(turn => {
       facade.finish(turn.stopReason === "cancelled" ? 1 : 0);
+      appendStepFinish(turn.stopReason, {
+        total: turn.usage.totalTokens,
+        input: turn.usage.inputTokens,
+        output: turn.usage.outputTokens,
+      });
       if (!hookFilePath) removeHookFile(hookFile);
       return {
         content: turn.content,
@@ -172,6 +224,7 @@ export function callAcpAgentStream(
     })
     .catch((err: unknown) => {
       facade.finish(1);
+      appendStepFinish("error");
       if (!hookFilePath) removeHookFile(hookFile);
       throw err;
     });

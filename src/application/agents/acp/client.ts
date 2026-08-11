@@ -7,7 +7,7 @@ import {
   PROTOCOL_VERSION,
   type Stream,
 } from "@agentclientprotocol/sdk";
-import type { Usage } from "@agentclientprotocol/sdk";
+import type { Usage, ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
 import type { AcpSpawnSpec, AcpStopReason, AcpTurnResult, AgentUsage } from "./types.js";
 import type { PermissionGate } from "./permission.js";
 import { log } from "../../../core/log.js";
@@ -15,10 +15,10 @@ import { log } from "../../../core/log.js";
 export interface AcpClientEvents {
   /** Streamed agent text (emitted as it arrives). */
   onText?(text: string): void;
-  /** A tool call started. Phase 1: pass-through for future hook wiring. */
-  onToolCall?(call: unknown): void;
-  /** A tool call updated. Phase 1: pass-through (Phase 2 stashes updates). */
-  onToolCallUpdate?(update: unknown): void;
+  /** A tool call started (ACP `tool_call` session update). */
+  onToolCall?(call: ToolCall): void;
+  /** A tool call updated (ACP `tool_call_update` session update). */
+  onToolCallUpdate?(update: ToolCallUpdate): void;
   /** Normalized usage so far (from `usage_update` notifications). */
   onUsage?(usage: AgentUsage): void;
 }
