@@ -24,6 +24,7 @@ const api = (window as any).electronAPI as {
   onStepActivated: (cb: (data: { stepId: string }) => void) => void;
   onRunActive: (cb: (data: { runId: string }) => void) => void;
   onPermissionRequested: (cb: (data: {
+    requestId: string;
     toolCall: { title?: string | null; name?: string | null };
     options: { kind: string; name: string; optionId: string }[];
   }) => void) => void;
@@ -31,7 +32,7 @@ const api = (window as any).electronAPI as {
   write: (data: string) => void;
   prompt: (text: string) => void;
   cancelMain: () => void;
-  answerPermission: (kind: string) => void;
+  answerPermission: (requestId: string, kind: string) => void;
   switchStep: (stepId: string) => Promise<void>;
   listSteps: () => Promise<StepInfo[]>;
   getStepOutput: (stepId: string) => Promise<string>;
@@ -265,12 +266,30 @@ refs.chatCancel.addEventListener("click", () => {
 });
 
 // ── Permission dialog ──────────────────────────────────────────────────────
-api.onPermissionRequested((data) => {
-  const title = data.toolCall.title ?? data.toolCall.name ?? "tool";
+interface PermissionData {
+  requestId: string;
+  toolCall: { title?: string | null; name?: string | null };
+  options: { kind: string; name: string; optionId: string }[];
+}
+/**
+ * Incoming permission requests are queued and shown one at a time. Each answer
+ * is correlated by `requestId`, so an overlapping request can never steal the
+ * decision meant for the request on screen.
+ */
+const permissionQueue: PermissionData[] = [];
+let activePermission: PermissionData | null = null;
+
+function showNextPermission(): void {
+  activePermission = permissionQueue.shift() ?? null;
+  if (!activePermission) {
+    refs.permissionDialog.classList.remove("visible");
+    return;
+  }
+  const title = activePermission.toolCall.title ?? activePermission.toolCall.name ?? "tool";
   refs.permissionText.textContent = `Allow “${title}” to run?`;
   refs.permissionActions.innerHTML = "";
   const seen = new Set<string>();
-  for (const opt of data.options) {
+  for (const opt of activePermission.options) {
     if (seen.has(opt.kind)) continue;
     seen.add(opt.kind);
     const btn = document.createElement("button");
@@ -288,13 +307,22 @@ api.onPermissionRequested((data) => {
   }
   setBusy(true, "Awaiting your decision…");
   refs.permissionDialog.classList.add("visible");
+}
+
+api.onPermissionRequested((data) => {
+  permissionQueue.push(data);
+  if (!activePermission) showNextPermission();
 });
 
 function answerPermission(kind: string): void {
-  refs.permissionDialog.classList.remove("visible");
-  api.answerPermission(kind);
-  addEvent(`Permission answered: ${kind}`, refs.eventList);
-  setBusy(true);
+  const current = activePermission;
+  activePermission = null;
+  if (current) {
+    api.answerPermission(current.requestId, kind);
+    addEvent(`Permission answered: ${kind}`, refs.eventList);
+  }
+  showNextPermission();
+  if (!activePermission) setBusy(true);
 }
 
 // ── Keyboard routing ───────────────────────────────────────────────────────

@@ -131,9 +131,11 @@ describe("MainAcpSession", () => {
 
     expect(seen[0].toolCall.title).toBe("Run tests");
     expect(seen[0].options.map((o) => o.kind)).toEqual(["allow_once", "allow_always", "reject_once"]);
-    expect(session.answerPermission("allow_once")).toBe(true);
-    // a second answer with nothing pending is a no-op
-    expect(session.answerPermission("reject_once")).toBe(false);
+    // answer the exact request that was surfaced (by correlation id)
+    expect(session.answerPermission(seen[0].requestId, "allow_once")).toBe(true);
+    // an answer for a stale / unknown request is a no-op
+    expect(session.answerPermission(seen[0].requestId, "reject_once")).toBe(false);
+    expect(session.answerPermission("perm-does-not-exist", "allow_once")).toBe(false);
 
     await flushUntil(() => decoded(frames).some((f) => f.kind === "turn"));
     expect(decoded(frames).find((f) => f.kind === "turn")).toMatchObject({ kind: "turn", stopReason: "end_turn" });

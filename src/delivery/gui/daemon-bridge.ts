@@ -138,9 +138,9 @@ export class DaemonBridge {
     await this.requireClient().cancelMain();
   }
 
-  /** Answer the ACP main session's pending permission request. */
-  async answerPermission(kind: PermissionAnswerKind): Promise<void> {
-    await this.requireClient().answerPermission(kind);
+  /** Answer the ACP main session's permission request by correlation id. */
+  async answerPermission(requestId: string, kind: PermissionAnswerKind): Promise<void> {
+    await this.requireClient().answerPermission(requestId, kind);
   }
 
   dispose(): void {    this.mainStream?.close();

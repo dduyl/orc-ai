@@ -11,6 +11,12 @@ export const ACP_PERMISSION_ENV = "ORC_ACP_PERMISSION";
 
 /** What the agent wants to run. Exposed to any attached resolver (Phase 2: GUI). */
 export interface PermissionRequest {
+  /**
+   * Correlation id for this request. The resolver MUST echo it back through
+   * {@link PermissionGate.answer} so a decision lands on the exact request the
+   * user saw — never on whatever request happens to be pending at the time.
+   */
+  requestId: string;
   toolCall: ToolCallUpdate;
   options: PermissionOption[];
 }
@@ -35,14 +41,14 @@ export function pickOption(
 }
 
 /**
- * One permission decision per tool call.
+ * One permission decision per tool call, keyed by its correlation id.
  *
- * A stale request (already answered) is resolved with `cancelled` so the agent
- * never hangs on an orphaned request, and a follow-up request can never
- * double-resolve a prior pending promise.
+ * A stale answer (unknown requestId) is a no-op so a late/duplicate decision can
+ * never resolve a newer request it was not meant for.
  */
 class PendingPermission {
   constructor(
+    readonly requestId: string,
     readonly params: RequestPermissionRequest,
     readonly resolve: (value: RequestPermissionResponse) => void,
   ) {}
@@ -51,16 +57,21 @@ class PendingPermission {
 /**
  * Blocks `session/request_permission` until answered.
  *
- * With no handler attached this is a SAFE-HOLD: the request is never answered,
- * so the agent's tool call simply never completes and the turn stays alive but
+ * With no handler attached this is a SAFE-HOLD: requests are never answered, so
+ * the agent's tool calls simply never complete and the turn stays alive but
  * inert — nothing is auto-allowed and nothing is auto-rejected.
+ *
+ * Multiple requests may be pending at once (parallel tool calls): each keeps
+ * its own {@link PermissionRequest.requestId} and is resolved independently,
+ * so an overlapping request never silently steals another's decision.
  *
  * Phase 1 dev E2E sets `ORC_ACP_PERMISSION=allow_always` to auto-answer every
  * request; an interactive resolver (GUI prompt) lands in a later phase and is
  * wired through {@link PermissionGate.handler} / {@link PermissionGate.answer}.
  */
 export class PermissionGate {
-  private pending: PendingPermission | null = null;
+  private readonly pending = new Map<string, PendingPermission>();
+  private seq = 0;
   private handler: PermissionHandler | undefined;
 
   constructor(handler?: PermissionHandler) {
@@ -68,7 +79,12 @@ export class PermissionGate {
   }
 
   get active(): boolean {
-    return this.pending !== null;
+    return this.pending.size > 0;
+  }
+
+  /** Number of requests awaiting a decision (parallel tool calls can pile up). */
+  get pendingCount(): number {
+    return this.pending.size;
   }
 
   setHandler(handler: PermissionHandler | undefined): void {
@@ -78,46 +94,50 @@ export class PermissionGate {
   /** Handle an inbound permission request. Resolves once answered (or holds). */
   handle(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
     return new Promise<RequestPermissionResponse>(resolve => {
-      // A stale pending request can only be replaced after being settled.
-      if (this.pending) {
-        this.pending.resolve({ outcome: { outcome: "cancelled" } });
-        this.pending = null;
+      const requestId = `perm-${++this.seq}`;
+      this.pending.set(requestId, new PendingPermission(requestId, params, resolve));
+      try {
+        this.handler?.onPermission({
+          requestId,
+          toolCall: params.toolCall,
+          options: params.options,
+        });
+      } catch (err) {
+        // A broken resolver must not hang the agent: settle as cancelled.
+        this.pending.delete(requestId);
+        resolve({ outcome: { outcome: "cancelled" } });
+        log.warn(`acp: permission handler threw for ${requestId}: ${err}`);
       }
-      const request = new PendingPermission(params, resolve);
-      this.pending = request;
-      this.handler?.onPermission({
-        toolCall: params.toolCall,
-        options: params.options,
-      });
     });
   }
 
   /**
-   * Answer the pending request by kind, picking the best matching option.
-   * Returns the response that was sent, or `null` if no request is pending
-   * or no useful option exists (the agent sees it as cancelled either way).
+   * Answer the pending request identified by `requestId`, picking the best
+   * matching option. Returns the response that was sent, or `null` when the
+   * requestId is unknown — i.e. the request was already answered or never
+   * existed (stale-answer guard).
    */
-  answer(kind: PermissionAnswerKind): RequestPermissionResponse | null {
-    if (!this.pending) return null;
-    const { params, resolve } = this.pending;
-    this.pending = null;
-    const option = pickOption(params.options, kind);
+  answer(requestId: string, kind: PermissionAnswerKind): RequestPermissionResponse | null {
+    const pending = this.pending.get(requestId);
+    if (!pending) return null;
+    this.pending.delete(requestId);
+    const option = pickOption(pending.params.options, kind);
     const response: RequestPermissionResponse = option
       ? { outcome: { outcome: "selected", optionId: option.optionId } }
       : { outcome: { outcome: "cancelled" } };
     if (!option) {
-      log.warn(`acp: no permission option matched '${kind}' — answering cancelled`);
+      log.warn(`acp: no permission option matched '${kind}' for ${requestId} — answering cancelled`);
     }
-    resolve(response);
+    pending.resolve(response);
     return response;
   }
 
-  /** Cancel the pending request (used on connection teardown). */
+  /** Cancel every pending request (used on connection teardown). */
   cancel(): void {
-    if (!this.pending) return;
-    const { resolve } = this.pending;
-    this.pending = null;
-    resolve({ outcome: { outcome: "cancelled" } });
+    for (const pending of this.pending.values()) {
+      pending.resolve({ outcome: { outcome: "cancelled" } });
+    }
+    this.pending.clear();
   }
 }
 
@@ -149,8 +169,8 @@ export function gateFromEnv(): PermissionGate {
   log.info(`acp: permission gate = ${mode} via ${ACP_PERMISSION_ENV}`);
   let gate: PermissionGate;
   gate = new PermissionGate({
-    onPermission: () => {
-      void gate.answer(kind);
+    onPermission: (request) => {
+      void gate.answer(request.requestId, kind);
     },
   });
   return gate;

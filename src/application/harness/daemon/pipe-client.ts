@@ -146,11 +146,11 @@ export class PipeClient {
     return this.conn.sendRequest(RpcMethod.cancelMain) as Promise<CancelMainResult>;
   }
 
-  /** Answer the ACP main session's pending permission request. */
-  async answerPermission(kind: PermissionAnswerKind): Promise<AnswerPermissionResult> {
+  /** Answer the ACP main session's permission request that carries `requestId`. */
+  async answerPermission(requestId: string, kind: PermissionAnswerKind): Promise<AnswerPermissionResult> {
     return this.conn.sendRequest(
       RpcMethod.answerPermission,
-      { kind } satisfies AnswerPermissionParams,
+      { requestId, kind } satisfies AnswerPermissionParams,
     ) as Promise<AnswerPermissionResult>;
   }
 

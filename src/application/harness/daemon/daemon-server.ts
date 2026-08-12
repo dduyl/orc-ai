@@ -136,6 +136,8 @@ export interface CancelMainResult {
 
 /** Payload for the `answerPermission` RPC. */
 export interface AnswerPermissionParams {
+  /** Correlation id from the `permissionRequested` notification being answered. */
+  requestId: string;
   kind: PermissionAnswerKind;
 }
 
@@ -652,7 +654,7 @@ export class DaemonServer {
   /** Answer the ACP main session's pending permission request. */
   private handleAnswerPermission(params: AnswerPermissionParams): AnswerPermissionResult {
     if (!this.mainSession) throw new Error("Main terminal unavailable");
-    const answered = this.mainSession.answerPermission(params.kind);
+    const answered = this.mainSession.answerPermission(params.requestId, params.kind);
     return { answered };
   }
 

@@ -120,9 +120,13 @@ export class MainAcpSession {
     this.cancelCurrent?.();
   }
 
-  /** Answer the pending permission request. Returns false when none is pending. */
-  answerPermission(kind: PermissionAnswerKind): boolean {
-    return this.gate.answer(kind) !== null;
+  /**
+   * Answer the permission request identified by `requestId`. Returns false when
+   * the requestId is unknown (already answered / never existed), so a stale or
+   * mistargeted answer is a no-op instead of resolving a newer request.
+   */
+  answerPermission(requestId: string, kind: PermissionAnswerKind): boolean {
+    return this.gate.answer(requestId, kind) !== null;
   }
 
   /** Replay + live `__main__` frames to a main-pipe client. */
