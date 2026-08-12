@@ -244,6 +244,12 @@ export class DaemonBridge {
     const res = await client.attachMain();
     this.mainMode = res.mode;
     this.mainExited = false;
+    // A fresh attach is a fresh conversation: the daemon replays the buffered
+    // frames (V3), so drop the old ANSI buffer and tell the renderer to clear
+    // its chat DOM before the replay lands, otherwise stale bubbles persist
+    // across connects / new main sessions (V4).
+    this.mainBuffer = "";
+    this.send("chat-reset", {});
     this.mainStream = await client.attachMainStream(
       (stepId, payload) => {
         if (stepId !== MAIN_STEP_ID) return;

@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onChatFrame: (cb: (data: { frame: { kind: string } }) => void) => {
     ipcRenderer.on("chat-frame", (_event, data) => cb(data));
   },
+  onChatReset: (cb: () => void) => {
+    ipcRenderer.on("chat-reset", () => cb());
+  },
   write: (data: string) => ipcRenderer.send("input", data),
   prompt: (text: string) => ipcRenderer.send("prompt", text),
   cancelMain: () => ipcRenderer.send("cancel-main"),

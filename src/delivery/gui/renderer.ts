@@ -29,6 +29,7 @@ const api = (window as any).electronAPI as {
     options: { kind: string; name: string; optionId: string }[];
   }) => void) => void;
   onChatFrame: (cb: (data: { frame: ChatFrame }) => void) => void;
+  onChatReset: (cb: () => void) => void;
   write: (data: string) => void;
   prompt: (text: string) => void;
   cancelMain: () => void;
@@ -208,6 +209,10 @@ api.onStepActivated(async (data: { stepId: string }) => {
 });
 
 // ── Chat panel (ACP main) ──────────────────────────────────────────────────
+api.onChatReset(() => {
+  chat.clear();
+});
+
 api.onChatFrame((data) => {
   const frame = data.frame;
   switch (frame.kind) {
