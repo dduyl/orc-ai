@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { DaemonBridge, resolveGuiAdapter } from "./daemon-bridge.js";
 import { registerIpcHandlers } from "./ipc-handlers.js";
+import type { MainSender } from "./ipc.js";
 
 /**
  * Electron GUI — pure pipe client (Phase D D-4).
@@ -27,11 +28,11 @@ const guiDir = getGuiDir();
 let win: BrowserWindow | undefined;
 let bridge: DaemonBridge | undefined;
 
-function send(channel: string, data: unknown): void {
+const send: MainSender = (channel, data) => {
   if (win?.webContents && !win.webContents.isDestroyed()) {
     win.webContents.send(channel, data);
   }
-}
+};
 
 function createWindow(adapterId: string): BrowserWindow {
   const preloadPath = join(guiDir, "preload.js");

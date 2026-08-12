@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+﻿import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,9 +11,12 @@ import type { RunRecord } from "../../application/harness/persistence/Tracker.js
 import type { PermissionRequest } from "../../application/agents/acp/permission.js";
 import type { PermissionAnswerKind } from "../../application/agents/acp/types.js";
 import { getAdapter } from "../../application/agents/adapter.js";
+import { IPC, type MainSender, type StepInfo } from "./ipc.js";
+import type { ChatFrame } from "./ipc.js";
+export type { ChatFrame, StepInfo };
 
 /**
- * GUI → daemon bridge (Phase D D-4).
+ * GUI â†’ daemon bridge (Phase D D-4).
  *
  * The Electron GUI is a pure `PipeClient`: it spawns-or-attaches the daemon
  * block, streams terminal frames, and never owns a PTY, MCP server, or SQLite
@@ -21,27 +24,11 @@ import { getAdapter } from "../../application/agents/adapter.js";
  * the replacement for `PtyManager` + `run-db.ts`):
  *
  * - main terminal + per-run step terminals are demuxed by the frame `stepId`
- *   header into per-step buffers (no `[step: …]` text-marker parsing);
+ *   header into per-step buffers (no `[step: â€¦]` text-marker parsing);
  * - `input` routes to the focused step via the daemon's `input` RPC (steps
  *   need the current `runId`, the main terminal does not);
  * - run status/tree comes from `PipeClient.status()/list()`, never SQLite.
  */
-export interface StepInfo {
-  id: string;
-  name: string;
-  isActive: boolean;
-  isMain: boolean;
-}
-
-/**
- * Structured chat event for the renderer's DOM chat panel.
- *
- * The main session's ACP frames are forwarded verbatim (kinds: text, tool,
- * tool_update, usage, turn, error); `user` is synthesized locally so the panel
- * shows composed prompts the same way the wire stream does.
- */
-export type ChatFrame = MainFrame | { kind: "user"; text: string };
-
 export class DaemonBridge {
   private client: PipeClient | null = null;
   private daemonChild: ChildProcess | null = null;
@@ -53,14 +40,14 @@ export class DaemonBridge {
 
   private mainBuffer = "";
   private stepBuffers = new Map<string, string>();
-  /** `pty` → raw ANSI bytes on the main pipe; `acp` → structured `MainFrame`s. */
+  /** `pty` â†’ raw ANSI bytes on the main pipe; `acp` â†’ structured `MainFrame`s. */
   private mainMode: "pty" | "acp" = "pty";
   private activeStepId = MAIN_STEP_ID;
   private latestRunId: string | null = null;
   private mainExited = false;
   private adapterId = "opencode";
 
-  constructor(private readonly send: (channel: string, data: unknown) => void) {}
+  constructor(private readonly send: MainSender) {}
 
   /** Spawn-or-attach the daemon block, then bind the main terminal. */
   async connect(projectDir: string, adapterId: string): Promise<void> {
@@ -76,7 +63,7 @@ export class DaemonBridge {
     const res = await client.start({ task, workflowId });
     this.trackRun(res.runId);
     this.stepBuffers.clear();
-    this.send("log", { text: `Run started: ${workflowId}` });
+    this.send(IPC.MainToRenderer.log, { text: `Run started: ${workflowId}` });
     await this.attachRunTerminal(res.runId);
     return res;
   }
@@ -106,8 +93,8 @@ export class DaemonBridge {
 
   switchToStep(stepId: string): void {
     this.activeStepId = stepId;
-    this.send("step-activated", { stepId });
-    this.send("log", { text: `Switched to: ${this.stepName(stepId)}` });
+    this.send(IPC.MainToRenderer["step-activated"], { stepId });
+    this.send(IPC.MainToRenderer.log, { text: `Switched to: ${this.stepName(stepId)}` });
   }
 
   /** Route keyboard input to the focused PTY (main or the active run's step). */
@@ -147,7 +134,7 @@ export class DaemonBridge {
     this.runStream?.close();
     this.client?.dispose();
     this.client = null;
-    // Never stop the daemon — it outlives the GUI (D-2).
+    // Never stop the daemon â€” it outlives the GUI (D-2).
   }
 
   // --- daemon lifecycle ----------------------------------------------------
@@ -162,15 +149,15 @@ export class DaemonBridge {
     const existing = await this.tryConnect(projectDir, 1500);
     if (existing) return existing;
 
-    // No daemon — spawn the block, then wait for its control pipe.
+    // No daemon â€” spawn the block, then wait for its control pipe.
     const child = this.spawnDaemon(projectDir);
     this.daemonChild = child;
     this.daemonPid = child.pid ?? null;
-    child.stdout?.on("data", (d) => this.send("log", { text: String(d).trimEnd() }));
-    child.stderr?.on("data", (d) => this.send("log", { text: String(d).trimEnd() }));
+    child.stdout?.on("data", (d) => this.send(IPC.MainToRenderer.log, { text: String(d).trimEnd() }));
+    child.stderr?.on("data", (d) => this.send(IPC.MainToRenderer.log, { text: String(d).trimEnd() }));
     child.once("exit", () => {
       this.daemonPid = null;
-      this.send("log", { text: "daemon exited" });
+      this.send(IPC.MainToRenderer.log, { text: "daemon exited" });
     });
 
     const client = await this.tryConnect(projectDir, 10_000);
@@ -199,7 +186,7 @@ export class DaemonBridge {
 
   private spawnDaemon(projectDir: string): ChildProcess {
     const env = { ...(process.env as Record<string, string>) };
-    // `node-pty` is host-only (D-5), so the daemon must run under host Node —
+    // `node-pty` is host-only (D-5), so the daemon must run under host Node â€”
     // never under Electron's embedded runtime (`ELECTRON_RUN_AS_NODE` would use
     // the Electron ABI and fail to load the host-rebuilt addon).
     let command: string;
@@ -249,7 +236,7 @@ export class DaemonBridge {
     // its chat DOM before the replay lands, otherwise stale bubbles persist
     // across connects / new main sessions (V4).
     this.mainBuffer = "";
-    this.send("chat-reset", {});
+    this.send(IPC.MainToRenderer["chat-reset"], {});
     this.mainStream = await client.attachMainStream(
       (stepId, payload) => {
         if (stepId !== MAIN_STEP_ID) return;
@@ -258,22 +245,22 @@ export class DaemonBridge {
         } else {
           const text = payload.toString("utf8");
           this.mainBuffer += text;
-          if (this.activeStepId === MAIN_STEP_ID) this.send("output", text);
+          if (this.activeStepId === MAIN_STEP_ID) this.send(IPC.MainToRenderer.output, text);
         }
       },
       () => {
         if (this.mainExited) return;
         this.mainExited = true;
-        this.send("exit", 0);
+        this.send(IPC.MainToRenderer.exit, 0);
       },
     );
-    this.send("status", {
+    this.send(IPC.MainToRenderer.status, {
       type: "spawned",
       pid: this.daemonPid,
       adapter: this.adapterId,
       mode: this.mainMode,
     });
-    this.send("log", { text: "attached to daemon main terminal" });
+    this.send(IPC.MainToRenderer.log, { text: "attached to daemon main terminal" });
     this.switchToStep(MAIN_STEP_ID);
   }
 
@@ -281,7 +268,7 @@ export class DaemonBridge {
    * ACP main frames are structured JSON envelopes, not tty bytes. They drive
    * two surfaces:
    *
-   * - a structured `chat-frame` event → the renderer's DOM chat panel (D-7);
+   * - a structured `chat-frame` event â†’ the renderer's DOM chat panel (D-7);
    * - a human-readable ANSI line (same rendering the daemon CLI uses) so the
    *   xterm Terminal view stays coherent on re-attach / step switching.
    */
@@ -290,24 +277,24 @@ export class DaemonBridge {
     try {
       frame = decodeMainFrame(payload);
     } catch (err) {
-      // Not a MainFrame (stale PTY bytes) or an unknown `kind` (codec skew —
+      // Not a MainFrame (stale PTY bytes) or an unknown `kind` (codec skew â€”
       // see main-frame-codec strict decoder). Log so the skew is visible, then
       // drop rather than mis-render the payload.
-      this.send("log", { text: `dropped non-main frame: ${err instanceof Error ? err.message : String(err)}` });
+      this.send(IPC.MainToRenderer.log, { text: `dropped non-main frame: ${err instanceof Error ? err.message : String(err)}` });
       return;
     }
-    this.send("chat-frame", { frame });
+    this.send(IPC.MainToRenderer["chat-frame"], { frame });
     const text = renderMainFrame(frame);
     if (!text) return;
     this.mainBuffer += text;
-    if (this.activeStepId === MAIN_STEP_ID) this.send("output", text);
+    if (this.activeStepId === MAIN_STEP_ID) this.send(IPC.MainToRenderer.output, text);
   }
 
   private onPermissionRequested(request: PermissionRequest): void {
-    this.send("permission-requested", request);
+    this.send(IPC.MainToRenderer["permission-requested"], request);
     const label = request.toolCall.title ?? request.toolCall.name ?? "tool";
-    this.send("log", {
-      text: `[permission] ${label} — waiting for your decision`,
+    this.send(IPC.MainToRenderer.log, {
+      text: `[permission] ${label} â€” waiting for your decision`,
     });
   }
 
@@ -319,7 +306,7 @@ export class DaemonBridge {
       await client.attach(runId);
     } catch (err: any) {
       // Run may have just finished; nothing to stream.
-      this.send("log", { text: `attach run ${runId}: ${err?.message ?? err}` });
+      this.send(IPC.MainToRenderer.log, { text: `attach run ${runId}: ${err?.message ?? err}` });
       this.attachedRuns.delete(runId);
       return;
     }
@@ -334,10 +321,10 @@ export class DaemonBridge {
       );
     } catch (err: any) {
       // Terminal connect failed (e.g. the run finished and evicted its pipe
-      // between attach() and the terminal socket). Not fatal — the progress
+      // between attach() and the terminal socket). Not fatal â€” the progress
       // stream still carries status/tree. Release the run so a retry is possible.
       this.attachedRuns.delete(runId);
-      this.send("log", { text: `attach run terminal ${runId}: ${err?.message ?? err}` });
+      this.send(IPC.MainToRenderer.log, { text: `attach run terminal ${runId}: ${err?.message ?? err}` });
     }
   }
 
@@ -350,30 +337,30 @@ export class DaemonBridge {
     // replay is the only content the client sees.
     if (stepId === SCREEN_STEP_ID) {
       this.stepBuffers.set(SCREEN_STEP_ID, (this.stepBuffers.get(SCREEN_STEP_ID) ?? "") + text);
-      this.send("output", text);
+      this.send(IPC.MainToRenderer.output, text);
       return;
     }
     this.stepBuffers.set(stepId, (this.stepBuffers.get(stepId) ?? "") + text);
-    if (this.activeStepId === stepId) this.send("output", text);
+    if (this.activeStepId === stepId) this.send(IPC.MainToRenderer.output, text);
   }
 
   private onProgress(event: ProgressEvent): void {
     if (event.runId) {
       this.trackRun(event.runId);
       // Runs started outside the GUI (e.g. via MCP on :3100) still get live
-      // terminal frames — attach the run the moment progress announces it.
+      // terminal frames â€” attach the run the moment progress announces it.
       if (!this.attachedRuns.has(event.runId)) void this.attachRunTerminal(event.runId);
     }
     if (event.type === "step_start" && event.stepId) {
       if (!this.stepBuffers.has(event.stepId)) this.stepBuffers.set(event.stepId, "");
       if (event.runId === this.latestRunId) this.switchToStep(event.stepId);
     }
-    this.send("stream-event", event);
+    this.send(IPC.MainToRenderer["stream-event"], event);
   }
 
   private onWorkflowComplete(info: WorkflowCompleteInfo): void {
     if (info.runId) {
-      this.send("log", { text: `[run ${info.runId}] workflow complete (${info.status ?? "?"})` });
+      this.send(IPC.MainToRenderer.log, { text: `[run ${info.runId}] workflow complete (${info.status ?? "?"})` });
       // Do NOT clear stepBuffers here: the combined `__screen__` replay and per-step
       // buffers keep the finished run viewable after completion (Phase E). Clearing
       // would wipe the history a toasted run is about to show.
@@ -394,7 +381,7 @@ export class DaemonBridge {
   private trackRun(runId: string): void {
     if (runId === this.latestRunId) return;
     this.latestRunId = runId;
-    this.send("run-active", { runId });
+    this.send(IPC.MainToRenderer["run-active"], { runId });
   }
 }
 

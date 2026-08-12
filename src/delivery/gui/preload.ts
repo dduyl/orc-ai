@@ -1,41 +1,45 @@
-import { contextBridge, ipcRenderer } from "electron";
+﻿import { contextBridge, ipcRenderer } from "electron";
+import { IPC, type GuiApi } from "./ipc.js";
 
-contextBridge.exposeInMainWorld("electronAPI", {
-  onData: (cb: (data: string) => void) => {
-    ipcRenderer.on("output", (_event, data: string) => cb(data));
+const api: GuiApi = {
+  onData: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer.output, (_event, data) => cb(data));
   },
-  onExit: (cb: (code: number) => void) => {
-    ipcRenderer.on("exit", (_event, code: number) => cb(code));
+  onExit: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer.exit, (_event, code) => cb(code));
   },
-  onStatus: (cb: (data: Record<string, unknown>) => void) => {
-    ipcRenderer.on("status", (_event, data) => cb(data));
+  onStatus: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer.status, (_event, data) => cb(data));
   },
-  onLog: (cb: (data: { text: string }) => void) => {
-    ipcRenderer.on("log", (_event, data) => cb(data));
+  onLog: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer.log, (_event, data) => cb(data));
   },
-  onStepActivated: (cb: (data: { stepId: string }) => void) => {
-    ipcRenderer.on("step-activated", (_event, data) => cb(data));
+  onStepActivated: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer["step-activated"], (_event, data) => cb(data));
   },
-  onRunActive: (cb: (data: { runId: string }) => void) => {
-    ipcRenderer.on("run-active", (_event, data) => cb(data));
+  onRunActive: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer["run-active"], (_event, data) => cb(data));
   },
-  onPermissionRequested: (cb: (data: { requestId: string; toolCall: { title?: string | null; name?: string | null }; options: { kind: string; name: string; optionId: string }[] }) => void) => {
-    ipcRenderer.on("permission-requested", (_event, data) => cb(data));
+  onPermissionRequested: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer["permission-requested"], (_event, data) => cb(data));
   },
-  onChatFrame: (cb: (data: { frame: { kind: string } }) => void) => {
-    ipcRenderer.on("chat-frame", (_event, data) => cb(data));
+  onChatFrame: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer["chat-frame"], (_event, data) => cb(data));
   },
-  onChatReset: (cb: () => void) => {
-    ipcRenderer.on("chat-reset", () => cb());
+  onChatReset: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer["chat-reset"], () => cb());
   },
-  write: (data: string) => ipcRenderer.send("input", data),
-  prompt: (text: string) => ipcRenderer.invoke("prompt", text),
-  cancelMain: () => ipcRenderer.send("cancel-main"),
-  answerPermission: (requestId: string, kind: string) => ipcRenderer.send("answer-permission", requestId, kind),
-  switchStep: (stepId: string) => ipcRenderer.invoke("switch-step", stepId),
-  listSteps: () => ipcRenderer.invoke("list-steps"),
-  getStepOutput: (stepId: string) => ipcRenderer.invoke("get-step-output", stepId),
-  start: (task: string, workflowId: string) => ipcRenderer.invoke("start", task, workflowId),
-  getRunStatus: (runId: string) => ipcRenderer.invoke("get-run-status", runId),
-  listRuns: () => ipcRenderer.invoke("list-runs"),
-});
+  write: (data) => ipcRenderer.send(IPC.RendererToMain.input, data),
+  prompt: (text) => ipcRenderer.invoke(IPC.RendererToMainInvoke.prompt, text),
+  cancelMain: () => ipcRenderer.send(IPC.RendererToMain["cancel-main"]),
+  answerPermission: (requestId, kind) =>
+    ipcRenderer.send(IPC.RendererToMain["answer-permission"], requestId, kind),
+  switchStep: (stepId) => ipcRenderer.invoke(IPC.RendererToMainInvoke["switch-step"], stepId),
+  listSteps: () => ipcRenderer.invoke(IPC.RendererToMainInvoke["list-steps"]),
+  getStepOutput: (stepId) => ipcRenderer.invoke(IPC.RendererToMainInvoke["get-step-output"], stepId),
+  start: (task, workflowId) => ipcRenderer.invoke(IPC.RendererToMainInvoke.start, task, workflowId),
+  getRunStatus: (runId) => ipcRenderer.invoke(IPC.RendererToMainInvoke["get-run-status"], runId),
+  listRuns: () => ipcRenderer.invoke(IPC.RendererToMainInvoke["list-runs"]),
+};
+
+contextBridge.exposeInMainWorld("electronAPI", api);

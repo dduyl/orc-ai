@@ -1,9 +1,6 @@
-export interface StepInfo {
-  id: string;
-  name: string;
-  isActive: boolean;
-  isMain: boolean;
-}
+import type { RunRecord, StepStatusRecord } from "../../application/harness/persistence/Tracker.js";
+import type { StepInfo } from "./ipc.js";
+export type { StepInfo };
 
 /** Token colors mirrored from DESIGN.md (also see xterm theme in terminal.ts). */
 const TOK = {
@@ -61,14 +58,14 @@ export function renderPTYTree(
   }
 }
 
-export function renderStepTree(run: any, container: HTMLElement): void {
+export function renderStepTree(run: RunRecord, container: HTMLElement): void {
   container.innerHTML = "";
   if (!run || !run.steps) {
     container.innerHTML = '<div class="muted-empty">› No active run</div>';
     return;
   }
 
-  const steps: any[] = run.steps;
+  const steps: StepStatusRecord[] = run.steps;
   const completed = steps.filter((s: any) => s.status === "completed").length;
   const failed = steps.filter((s: any) => s.status === "failed").length;
   const running = steps.filter((s: any) => s.status === "running").length;
@@ -94,7 +91,6 @@ export function renderStepTree(run: any, container: HTMLElement): void {
       case "completed": dot = "✓"; color = TOK.ok; break;
       case "failed": dot = "✗"; color = TOK.err; break;
       case "running": dot = "▶"; color = TOK.warn; break;
-      case "skipped": dot = "–"; color = TOK.faint; break;
       default: dot = "○"; color = TOK.info; break;
     }
 

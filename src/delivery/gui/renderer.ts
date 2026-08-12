@@ -3,43 +3,12 @@ import { getDomRefs } from "./dom-refs.js";
 import { ChatView } from "./chat-view.js";
 import { addEvent, setViewLabel, renderPTYTree, renderStepTree, type StepInfo } from "./ui-renderers.js";
 import { initSplitter } from "./splitter.js";
+import type { ChatFrame, PermissionRequest } from "./ipc.js";
+import type { PermissionAnswerKind } from "../../application/agents/acp/types.js";
 
 const MAIN_STEP_ID = "__main__";
 
-/** Renderer-friendly view of an ACP chat frame (see daemon-bridge `ChatFrame`). */
-type ChatFrame =
-  | { kind: "user"; text: string }
-  | { kind: "text"; text: string }
-  | { kind: "tool"; call: { toolCallId: string; title: string } }
-  | { kind: "tool_update"; update: { toolCallId: string; title?: string | null; name?: string | null; status?: string | null } }
-  | { kind: "usage"; usage: { totalTokens: number; inputTokens: number; outputTokens: number } }
-  | { kind: "turn"; stopReason: string }
-  | { kind: "error"; message: string };
-
-const api = (window as any).electronAPI as {
-  onData: (cb: (data: string) => void) => void;
-  onExit: (cb: (code: number) => void) => void;
-  onStatus: (cb: (data: Record<string, unknown>) => void) => void;
-  onLog: (cb: (data: { text: string }) => void) => void;
-  onStepActivated: (cb: (data: { stepId: string }) => void) => void;
-  onRunActive: (cb: (data: { runId: string }) => void) => void;
-  onPermissionRequested: (cb: (data: {
-    requestId: string;
-    toolCall: { title?: string | null; name?: string | null };
-    options: { kind: string; name: string; optionId: string }[];
-  }) => void) => void;
-  onChatFrame: (cb: (data: { frame: ChatFrame }) => void) => void;
-  onChatReset: (cb: () => void) => void;
-  write: (data: string) => void;
-  prompt: (text: string) => Promise<void>;
-  cancelMain: () => void;
-  answerPermission: (requestId: string, kind: string) => void;
-  switchStep: (stepId: string) => Promise<void>;
-  listSteps: () => Promise<StepInfo[]>;
-  getStepOutput: (stepId: string) => Promise<string>;
-  getRunStatus: (runId: string) => Promise<any>;
-  listRuns: () => Promise<any[]>;
-};
+const api = window.electronAPI;
 
 const refs = getDomRefs();
 const { term, fit: fitTermBase } = createTerminal(refs.termContainer);
@@ -144,9 +113,8 @@ api.onExit((code: number) => {
   syncComposer();
 });
 
-api.onStatus((data: Record<string, unknown>) => {
-  const type = data.type as string;
-  if (type === "spawned") {
+api.onStatus((data) => {
+  if (data.type === "spawned") {
     mainMode = data.mode === "acp" ? "acp" : "pty";
     connected = true;
     refs.brandAdapter.textContent = ` · ${String(data.adapter ?? "opencode")}`;
@@ -161,7 +129,7 @@ api.onStatus((data: Record<string, unknown>) => {
     refs.infoPid.textContent = `${data.pid}`;
     addEvent(`Main terminal attached (${mainMode})`, refs.eventList);
     syncComposer();
-  } else if (type === "error") {
+  } else if (data.type === "error") {
     connected = false;
     refs.statusIndicator.className = "status-dot disconnected";
     refs.statusText.textContent = "Error";
@@ -169,7 +137,7 @@ api.onStatus((data: Record<string, unknown>) => {
     refs.sbText.textContent = "Error";
     addEvent(`ERROR: ${data.message}`, refs.eventList);
     syncComposer();
-  } else if (type === "exited") {
+  } else if (data.type === "exited") {
     connected = false;
     busy = false;
     refs.chatBusy.hidden = true;
@@ -229,7 +197,7 @@ api.onChatFrame((data) => {
       chat.addUsage(frame.usage);
       break;
     case "turn":
-      chat.addTurn(frame.stopReason as any);
+      chat.addTurn(frame.stopReason);
       setBusy(false);
       break;
     case "error":
@@ -280,18 +248,9 @@ refs.chatCancel.addEventListener("click", () => {
 });
 
 // ── Permission dialog ──────────────────────────────────────────────────────
-interface PermissionData {
-  requestId: string;
-  toolCall: { title?: string | null; name?: string | null };
-  options: { kind: string; name: string; optionId: string }[];
-}
-/**
- * Incoming permission requests are queued and shown one at a time. Each answer
- * is correlated by `requestId`, so an overlapping request can never steal the
- * decision meant for the request on screen.
- */
-const permissionQueue: PermissionData[] = [];
-let activePermission: PermissionData | null = null;
+/** Queued as they arrive, shown one at a time; answers correlate via `requestId`. */
+const permissionQueue: PermissionRequest[] = [];
+let activePermission: PermissionRequest | null = null;
 
 function showNextPermission(): void {
   activePermission = permissionQueue.shift() ?? null;
@@ -328,7 +287,7 @@ api.onPermissionRequested((data) => {
   if (!activePermission) showNextPermission();
 });
 
-function answerPermission(kind: string): void {
+function answerPermission(kind: PermissionAnswerKind): void {
   const current = activePermission;
   activePermission = null;
   if (current) {
