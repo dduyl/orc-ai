@@ -275,6 +275,9 @@ export class MainAcpSession {
       if (!this.closed) {
         const message = err instanceof Error ? err.message : String(err);
         this.emitError(message);
+        // Close the turn sequence too (divider + counter) so the next user
+        // turn isn't numbered as a re-run of the errored one.
+        this.emit({ kind: "turn", stopReason: "error" });
       }
     } finally {
       this.cancelCurrent = null;

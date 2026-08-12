@@ -124,7 +124,7 @@ export class ChatView {
     this.append(el);
   }
 
-  addTurn(stopReason: AcpStopReason): void {
+  addTurn(stopReason: AcpStopReason | "error"): void {
     this.closeText();
     this.turnSeq += 1;
     const el = document.createElement("div");
@@ -205,13 +205,14 @@ function statusLabel(status: string | null | undefined): string {
   }
 }
 
-function turnLabel(reason: AcpStopReason): string {
+function turnLabel(reason: AcpStopReason | "error"): string {
   switch (reason) {
     case "end_turn": return "complete";
     case "cancelled": return "cancelled";
     case "refusal": return "refused";
     case "max_tokens": return "max tokens";
     case "max_turn_requests": return "request limit";
+    case "error": return "error";
     default: return reason;
   }
 }

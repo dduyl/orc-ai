@@ -10,6 +10,7 @@ describe("main frame codec", () => {
       { kind: "tool_update", update: { toolCallId: "tc-1", name: "write_file", status: "completed" } as never },
       { kind: "usage", usage: { totalTokens: 12, inputTokens: 5, outputTokens: 7 } },
       { kind: "turn", stopReason: "end_turn" },
+      { kind: "turn", stopReason: "error" },
       { kind: "error", message: "boom" },
     ];
     for (const frame of frames) {

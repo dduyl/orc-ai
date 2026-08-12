@@ -26,7 +26,9 @@ rl.on('line', (line) => {
     send({ jsonrpc:'2.0', id, result:{ sessionId:'sess-1' } });
     send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'agent_message_chunk', content:{ type:'text', text:'mock reply' } } } });
   } else if (method === 'session/prompt') {
-    if (process.env.REQ_PERM === '1') {
+    if (process.env.REQ_ERROR === '1') {
+      send({ jsonrpc:'2.0', id, error:{ code:-32000, message:'mock turn failure' } });
+    } else if (process.env.REQ_PERM === '1') {
       const permId = nextId++;
       pending[permId] = () => {
         send({ jsonrpc:'2.0', id, result:{ stopReason:'end_turn', usage:{ totalTokens:7, inputTokens:2, outputTokens:5 } } });
@@ -89,6 +91,7 @@ afterEach(async () => {
   servers.length = 0;
   await sleep(20);
   delete process.env["REQ_PERM"];
+  delete process.env["REQ_ERROR"];
 });
 
 describe("MainAcpSession", () => {
@@ -167,8 +170,35 @@ describe("MainAcpSession", () => {
     await boot;
   });
 
-  it("EOFs attached clients and resolves start() on close", async () => {
+  it("closes the turn sequence when a prompt turn fails", async () => {
+    process.env["REQ_ERROR"] = "1";
     const session = makeSession();
+    sessions.push(session);
+    const boot = session.start();
+
+    const { frames, server } = await attachTo(session);
+    servers.push(server);
+
+    session.prompt("will fail");
+    await flushUntil(() => decoded(frames).some((f) => f.kind === "error"));
+
+    const got = decoded(frames);
+    expect(got.find((f) => f.kind === "error")).toMatchObject({
+      kind: "error",
+      message: expect.stringContaining("mock turn failure"),
+    });
+    // The error frame is followed by a `turn` frame so the chat closes the
+    // turn sequence (divider + counter) instead of stalling on the error.
+    expect(got.find((f) => f.kind === "turn")).toMatchObject({
+      kind: "turn",
+      stopReason: "error",
+    });
+
+    session.close();
+    await boot;
+  });
+
+  it("EOFs attached clients and resolves start() on close", async () => {    const session = makeSession();
     sessions.push(session);
     const boot = session.start();
 

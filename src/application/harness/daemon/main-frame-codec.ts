@@ -24,8 +24,12 @@ export type MainFrame =
   | { kind: "tool_update"; update: ToolCallUpdate }
   /** Token usage so far (`usage_update` / the turn's stop usage). */
   | { kind: "usage"; usage: AgentUsage }
-  /** A prompt turn ended (`stop` message). */
-  | { kind: "turn"; stopReason: AcpStopReason }
+  /**
+   * A prompt turn ended (`stop` message). `stopReason: "error"` is a
+   * client-side sentinel emitted after `error` frames so the turn sequence
+   * still closes (divider + counter) on the error path.
+   */
+  | { kind: "turn"; stopReason: AcpStopReason | "error" }
   /** The session failed; the stream will EOF. */
   | { kind: "error"; message: string };
 
