@@ -34,11 +34,21 @@ export function encodeMainFrame(frame: MainFrame): Buffer {
   return Buffer.from(JSON.stringify(frame), "utf8");
 }
 
+/** Every {@link MainFrame} discriminator accepted by the wire codec. */
+const MAIN_FRAME_KINDS = new Set(["text", "tool", "tool_update", "usage", "turn", "error"]);
+
 /** Parse a `__main__` frame payload back into a {@link MainFrame}. */
 export function decodeMainFrame(payload: Buffer): MainFrame {
   const parsed: unknown = JSON.parse(payload.toString("utf8"));
   if (!parsed || typeof parsed !== "object" || typeof (parsed as { kind?: unknown }).kind !== "string") {
     throw new Error("Not a main frame payload");
+  }
+  // Strict discriminator: an unknown `kind` is a version-skew / wire-corruption
+  // signal, not a frame we can render. Reject it so callers drop (and log) it
+  // instead of mis-rendering stale or forward-compatible payloads.
+  const kind = (parsed as { kind: string }).kind;
+  if (!MAIN_FRAME_KINDS.has(kind)) {
+    throw new Error(`Unknown main frame kind: ${kind}`);
   }
   return parsed as MainFrame;
 }

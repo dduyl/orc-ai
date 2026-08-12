@@ -289,8 +289,12 @@ export class DaemonBridge {
     let frame: MainFrame;
     try {
       frame = decodeMainFrame(payload);
-    } catch {
-      return; // not a MainFrame (stale PTY bytes) — drop
+    } catch (err) {
+      // Not a MainFrame (stale PTY bytes) or an unknown `kind` (codec skew —
+      // see main-frame-codec strict decoder). Log so the skew is visible, then
+      // drop rather than mis-render the payload.
+      this.send("log", { text: `dropped non-main frame: ${err instanceof Error ? err.message : String(err)}` });
+      return;
     }
     this.send("chat-frame", { frame });
     const text = renderMainFrame(frame);

@@ -21,6 +21,12 @@ describe("main frame codec", () => {
     expect(() => decodeMainFrame(Buffer.from("not json", "utf8"))).toThrow();
     expect(() => decodeMainFrame(Buffer.from(JSON.stringify({ hello: 1 }), "utf8"))).toThrow();
   });
+
+  it("rejects unknown main-frame kinds (strict discriminator)", () => {
+    expect(() => decodeMainFrame(Buffer.from(JSON.stringify({ kind: "bogus" }), "utf8"))).toThrow(
+      /Unknown main frame kind: bogus/,
+    );
+  });
 });
 
 describe("renderMainFrame", () => {
