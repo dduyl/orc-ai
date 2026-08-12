@@ -22,7 +22,7 @@ import {
   type StartResult,
   type StopResult,
   type WorkflowCompleteInfo,
-} from "./daemon-server.js";
+} from "./rpc-protocol.js";
 import type { RunRecord } from "../persistence/Tracker.js";
 import type { ProgressEvent, RunReport } from "../orchestrator/index.js";
 import type { PermissionRequest } from "../../agents/acp/permission.js";
@@ -33,8 +33,8 @@ import type { PermissionAnswerKind } from "../../agents/acp/types.js";
  *
  * Connects to `controlPipePath(projectDir, override)`, wraps it in a
  * `vscode-jsonrpc` MessageConnection, and exposes typed request helpers plus a
- * terminal-pipe frame reader. Method-name constants are imported from the
- * server so both sides always agree on the protocol.
+ * terminal-pipe frame reader. Method names and payload types come from
+ * `rpc-protocol.js` so both sides always agree on the wire protocol.
  */
 
 export interface PipeClientOptions {

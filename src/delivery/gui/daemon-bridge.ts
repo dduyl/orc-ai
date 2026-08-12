@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PipeClient, type TerminalStream } from "../../application/harness/daemon/pipe-client.js";
 import { MAIN_STEP_ID, SCREEN_STEP_ID } from "../../application/harness/daemon/frame-transport.js";
-import type { WorkflowCompleteInfo } from "../../application/harness/daemon/daemon-server.js";
+import type { WorkflowCompleteInfo } from "../../application/harness/daemon/rpc-protocol.js";
 import { decodeMainFrame, type MainFrame } from "../../application/harness/daemon/main-frame-codec.js";
 import type { ProgressEvent } from "../../application/harness/orchestrator/index.js";
 import type { RunRecord } from "../../application/harness/persistence/Tracker.js";

@@ -2,6 +2,25 @@ import * as net from "node:net";
 import * as crypto from "node:crypto";
 import type { Server, Socket } from "node:net";
 import { createMessageConnection, type MessageConnection } from "vscode-jsonrpc/node";
+import {
+  RpcMethod,
+  RpcNotification,
+  type AnswerPermissionParams,
+  type AnswerPermissionResult,
+  type AttachMainResult,
+  type AttachParams,
+  type AttachResult,
+  type CancelMainResult,
+  type CancelParams,
+  type CancelResult,
+  type InputParams,
+  type InputResult,
+  type PromptParams,
+  type PromptResult,
+  type StartParams,
+  type StopResult,
+  type WorkflowCompleteInfo,
+} from "./rpc-protocol.js";
 import type { AdapterDef } from "../../agents/adapter.js";
 import { getAdapter, BUILTIN_ADAPTERS } from "../../agents/adapter.js";
 import { RunHost } from "../run-host.js";
@@ -46,110 +65,6 @@ import { log } from "../../../core/log.js";
  */
 
 export const DEFAULT_IDLE_MS = 10 * 60 * 1000;
-
-/** Control-plane JSON-RPC request method names. */
-export const RpcMethod = {
-  start: "start",
-  list: "list",
-  status: "status",
-  cancel: "cancel",
-  attach: "attach",
-  stop: "stop",
-  attachMain: "attachMain",
-  input: "input",
-  prompt: "prompt",
-  cancelMain: "cancelMain",
-  answerPermission: "answerPermission",
-} as const;
-
-/** Control-plane JSON-RPC notifications (server → client). */
-export const RpcNotification = {
-  progress: "progress",
-  workflowComplete: "workflowComplete",
-  permissionRequested: "permissionRequested",
-} as const;
-
-export interface StartParams {
-  task: string;
-  workflowId: string;
-  resume?: boolean;
-}
-
-/** Result of the `start` request. */
-export type StartResult = StartRunResult;
-
-export interface AttachParams {
-  runId: string;
-}
-
-export interface AttachResult {
-  runId: string;
-  /** Path of the run's terminal pipe; connect + read length-prefixed frames. */
-  terminalPipe: string;
-}
-
-/** Result of the `attachMain` request: the daemon-owned main terminal pipe. */
-export interface AttachMainResult {
-  terminalPipe: string;
-  /** `pty` → raw ANSI bytes; `acp` → length-prefixed `MainFrame` JSON frames. */
-  mode: "pty" | "acp";
-}
-
-/** Payload for the `input` RPC: write `data` to a PTY by step id. */
-export interface InputParams {
-  /** Omit for the main terminal (`stepId` must be `__main__`). */
-  runId?: string;
-  /** `__main__` → main PTY; otherwise a step id within `runId`. */
-  stepId: string;
-  data: string;
-}
-
-export interface InputResult {
-  ok: true;
-}
-
-export interface CancelParams {
-  runId: string;
-}
-
-export interface CancelResult {
-  cancelled: boolean;
-  reason?: string;
-}
-
-export interface StopResult {
-  ok: true;
-}
-
-/** Payload for the `prompt` RPC: queue a user prompt on the ACP main session. */
-export interface PromptParams {
-  text: string;
-}
-
-export interface PromptResult {
-  queued: true;
-}
-
-export interface CancelMainResult {
-  ok: true;
-}
-
-/** Payload for the `answerPermission` RPC. */
-export interface AnswerPermissionParams {
-  /** Correlation id from the `permissionRequested` notification being answered. */
-  requestId: string;
-  kind: PermissionAnswerKind;
-}
-
-export interface AnswerPermissionResult {
-  answered: boolean;
-}
-
-export interface WorkflowCompleteInfo {
-  runId?: string;
-  status?: string;
-  report?: RunReport;
-}
 
 export interface DaemonServerOptions {
   projectDir?: string;
