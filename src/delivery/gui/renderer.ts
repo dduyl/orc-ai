@@ -31,7 +31,7 @@ const api = (window as any).electronAPI as {
   onChatFrame: (cb: (data: { frame: ChatFrame }) => void) => void;
   onChatReset: (cb: () => void) => void;
   write: (data: string) => void;
-  prompt: (text: string) => void;
+  prompt: (text: string) => Promise<void>;
   cancelMain: () => void;
   answerPermission: (requestId: string, kind: string) => void;
   switchStep: (stepId: string) => Promise<void>;
@@ -254,8 +254,17 @@ function submitChat(): void {
   chat.addUser(text);
   refs.chatInput.value = "";
   setBusy(true);
-  api.prompt(text);
-  refs.chatInput.focus();
+  api
+    .prompt(text)
+    .catch((err) => {
+      // A rejected prompt round-trip means the turn never started (e.g. the main
+      // session is closed): no `turn`/`error` frame will arrive to unblock the
+      // composer, so clear busy here and surface the failure in the chat.
+      setBusy(false);
+      const message = err instanceof Error ? err.message : String(err);
+      chat.addError(message);
+    })
+    .finally(() => refs.chatInput.focus());
 }
 
 refs.chatSend.addEventListener("click", submitChat);

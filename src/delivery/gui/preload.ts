@@ -29,7 +29,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("chat-reset", () => cb());
   },
   write: (data: string) => ipcRenderer.send("input", data),
-  prompt: (text: string) => ipcRenderer.send("prompt", text),
+  prompt: (text: string) => ipcRenderer.invoke("prompt", text),
   cancelMain: () => ipcRenderer.send("cancel-main"),
   answerPermission: (requestId: string, kind: string) => ipcRenderer.send("answer-permission", requestId, kind),
   switchStep: (stepId: string) => ipcRenderer.invoke("switch-step", stepId),

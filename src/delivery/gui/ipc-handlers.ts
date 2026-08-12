@@ -6,8 +6,11 @@ export function registerIpcHandlers(bridge: DaemonBridge): void {
     void bridge.writeInput(data).catch(() => {});
   });
 
-  ipcMain.on("prompt", (_event, text: string) => {
-    void bridge.prompt(text).catch(() => {});
+  ipcMain.handle("prompt", (_event, text: string) => {
+    // invoke (not fire-and-forget): the renderer clears its busy state when the
+    // prompt round-trip rejects (e.g. the main ACP session is closed), instead
+    // of hanging in "working…" with no `turn`/`error` frame to unblock it.
+    return bridge.prompt(text);
   });
 
   ipcMain.on("cancel-main", () => {
