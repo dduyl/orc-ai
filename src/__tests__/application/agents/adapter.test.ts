@@ -6,6 +6,7 @@ describe("agents/adapter", () => {
     expect(BUILTIN_ADAPTERS.length).toBeGreaterThan(0);
     expect(getAdapter("opencode")).toBeDefined();
     expect(getAdapter("claude")).toBeDefined();
+    expect(getAdapter("antigravity")).toBeDefined();
     expect(getAdapter("nonexistent")).toBeUndefined();
   });
 });

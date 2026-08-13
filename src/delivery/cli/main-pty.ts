@@ -18,11 +18,15 @@ export function spawnMainPty(
 ): PtyLike {
   loadDotEnv(opts.cwd);
 
-  const cmd = adapterId === "opencode" ? "opencode" : `npx ${adapterId}`;
+  const cmd = adapterId === "opencode"
+    ? "opencode"
+    : adapterId === "antigravity"
+    ? "agy"
+    : `npx ${adapterId}`;
   const shell = process.platform === "win32"
     ? (process.env.COMSPEC || "cmd.exe")
     : cmd;
-  const args: string[] = process.platform === "win32" ? ["/c", cmd] : [];
+  const args: string[] = process.platform === "win32" ? ["/k", cmd] : [];
 
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
   if (opts.mcpPort != null) {

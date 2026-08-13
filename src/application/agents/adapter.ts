@@ -16,6 +16,7 @@ export interface AdapterDef {
 export const BUILTIN_ADAPTERS: AdapterDef[] = [
   { id: "opencode", command: "opencode", label: "OpenCode AI Code Orchestrator" },
   { id: "claude", command: "claude", label: "Claude AI Code Assistant" },
+  { id: "antigravity", command: "agy", label: "Google Antigravity Agent" },
 ];
 
 export function getAdapter(id: string): AdapterDef | undefined {

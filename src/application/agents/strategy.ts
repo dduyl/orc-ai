@@ -10,10 +10,12 @@ export interface AgentStrategy {
 
 import { opencodeStrategy } from "./strategies/opencode.js";
 import { claudeStrategy } from "./strategies/claude.js";
+import { antigravityStrategy } from "./strategies/antigravity.js";
 
 const strategies = new Map<string, AgentStrategy>([
   [opencodeStrategy.id, opencodeStrategy],
   [claudeStrategy.id, claudeStrategy],
+  [antigravityStrategy.id, antigravityStrategy],
 ]);
 
 export function getStrategy(adapterId: string): AgentStrategy {

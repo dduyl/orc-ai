@@ -71,6 +71,10 @@ function parseArg(name: string): string | undefined {
   return eq?.split("=").slice(1).join("=");
 }
 
+process.on("uncaughtException", (err) => {
+  console.error("[main] uncaughtException swallowed:", err);
+});
+
 app.whenReady().then(async () => {
   console.log("[main] app ready, argv:", process.argv);
   const adapterId = resolveGuiAdapter(parseArg("adapter"));
