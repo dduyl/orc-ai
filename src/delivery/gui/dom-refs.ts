@@ -33,11 +33,18 @@ export interface DomRefs {
   chatBusy: HTMLElement;
   chatBusyText: HTMLElement;
   chatCancel: HTMLButtonElement;
-  // permission dialog
-  permissionDialog: HTMLElement;
+  // activity box (permissions + tools)
+  activityBox: HTMLElement;
+  permissionSection: HTMLElement;
   permissionText: HTMLElement;
   permissionHint: HTMLElement;
   permissionActions: HTMLElement;
+  permissionNav: HTMLElement;
+  permissionPrev: HTMLButtonElement;
+  permissionNext: HTMLButtonElement;
+  permissionCounter: HTMLElement;
+  toolsSection: HTMLElement;
+  toolList: HTMLElement;
   brandAdapter: HTMLElement;
 }
 
@@ -78,10 +85,17 @@ export function getDomRefs(): DomRefs {
     chatBusy: req("chat-busy"),
     chatBusyText: req("chat-busy-text"),
     chatCancel: req("chat-cancel") as HTMLButtonElement,
-    permissionDialog: req("permission-dialog"),
+    activityBox: req("activity-box"),
+    permissionSection: req("activity-permission"),
     permissionText: req("permission-text"),
     permissionHint: req("permission-hint"),
     permissionActions: req("permission-actions"),
+    permissionNav: req("permission-nav"),
+    permissionPrev: req("permission-prev") as HTMLButtonElement,
+    permissionNext: req("permission-next") as HTMLButtonElement,
+    permissionCounter: req("permission-counter"),
+    toolsSection: req("activity-tools"),
+    toolList: req("tool-list"),
     brandAdapter: req("brand-adapter"),
   };
 }

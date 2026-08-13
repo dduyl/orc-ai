@@ -1,10 +1,10 @@
 import { createTerminal } from "./terminal.js";
 import { getDomRefs } from "./dom-refs.js";
 import { ChatView } from "./chat-view.js";
+import { ActivityBox } from "./activity-box.js";
 import { addEvent, setViewLabel, renderPTYTree, renderStepTree, type StepInfo } from "./ui-renderers.js";
 import { initSplitter } from "./splitter.js";
-import type { ChatFrame, PermissionRequest } from "./ipc.js";
-import type { PermissionAnswerKind } from "../../application/agents/acp/types.js";
+import type { ChatFrame } from "./ipc.js";
 
 const MAIN_STEP_ID = "__main__";
 
@@ -13,6 +13,24 @@ const api = window.electronAPI;
 const refs = getDomRefs();
 const { term, fit: fitTermBase } = createTerminal(refs.termContainer);
 const chat = new ChatView(refs.chatList);
+const activity = new ActivityBox({
+  box: refs.activityBox,
+  permissionSection: refs.permissionSection,
+  permissionText: refs.permissionText,
+  permissionHint: refs.permissionHint,
+  permissionActions: refs.permissionActions,
+  permissionNav: refs.permissionNav,
+  permissionPrev: refs.permissionPrev,
+  permissionNext: refs.permissionNext,
+  permissionCounter: refs.permissionCounter,
+  toolsSection: refs.toolsSection,
+  toolList: refs.toolList,
+  onAnswer: (requestId, kind) => {
+    api.answerPermission(requestId, kind);
+    addEvent(`Permission answered: ${kind}`, refs.eventList);
+    setBusy(true, activity.hasPending() ? "Awaiting your decision…" : undefined);
+  },
+});
 
 let latestRunId: string | null = null;
 let currentStepId: string | null = MAIN_STEP_ID;
@@ -179,6 +197,7 @@ api.onStepActivated(async (data: { stepId: string }) => {
 // ── Chat panel (ACP main) ──────────────────────────────────────────────────
 api.onChatReset(() => {
   chat.clear();
+  activity.clear();
 });
 
 api.onChatFrame((data) => {
@@ -188,10 +207,10 @@ api.onChatFrame((data) => {
       chat.addText(frame.text);
       break;
     case "tool":
-      chat.addTool(frame.call);
+      activity.addTool(frame.call);
       break;
     case "tool_update":
-      chat.addToolUpdate(frame.update);
+      activity.addToolUpdate(frame.update);
       break;
     case "usage":
       chat.addUsage(frame.usage);
@@ -247,56 +266,11 @@ refs.chatCancel.addEventListener("click", () => {
   setBusy(true, "Cancelling…");
 });
 
-// ── Permission dialog ──────────────────────────────────────────────────────
-/** Queued as they arrive, shown one at a time; answers correlate via `requestId`. */
-const permissionQueue: PermissionRequest[] = [];
-let activePermission: PermissionRequest | null = null;
-
-function showNextPermission(): void {
-  activePermission = permissionQueue.shift() ?? null;
-  if (!activePermission) {
-    refs.permissionDialog.classList.remove("visible");
-    return;
-  }
-  const title = activePermission.toolCall.title ?? activePermission.toolCall.name ?? "tool";
-  refs.permissionText.textContent = `Allow “${title}” to run?`;
-  refs.permissionActions.innerHTML = "";
-  const seen = new Set<string>();
-  for (const opt of activePermission.options) {
-    if (seen.has(opt.kind)) continue;
-    seen.add(opt.kind);
-    const btn = document.createElement("button");
-    btn.className = "btn " + (opt.kind.startsWith("allow") ? "btn-allow" : "btn-reject");
-    btn.textContent = opt.name;
-    btn.addEventListener("click", () => answerPermission(opt.kind));
-    refs.permissionActions.appendChild(btn);
-  }
-  if (!seen.has("reject_once") && !seen.has("reject_always")) {
-    const btn = document.createElement("button");
-    btn.className = "btn btn-reject";
-    btn.textContent = "Reject";
-    btn.addEventListener("click", () => answerPermission("reject_once"));
-    refs.permissionActions.appendChild(btn);
-  }
-  setBusy(true, "Awaiting your decision…");
-  refs.permissionDialog.classList.add("visible");
-}
-
+// ── Permission requests → activity box ─────────────────────────────────────
 api.onPermissionRequested((data) => {
-  permissionQueue.push(data);
-  if (!activePermission) showNextPermission();
+  activity.addPermission(data);
+  setBusy(true, "Awaiting your decision…");
 });
-
-function answerPermission(kind: PermissionAnswerKind): void {
-  const current = activePermission;
-  activePermission = null;
-  if (current) {
-    api.answerPermission(current.requestId, kind);
-    addEvent(`Permission answered: ${kind}`, refs.eventList);
-  }
-  showNextPermission();
-  if (!activePermission) setBusy(true);
-}
 
 // ── Keyboard routing ───────────────────────────────────────────────────────
 term.onData((data: string) => {

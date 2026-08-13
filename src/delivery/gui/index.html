@@ -146,17 +146,6 @@ body::before {
   line-height: 1.6; white-space: pre-wrap; word-break: break-word;
 }
 
-.msg-tool {
-  align-self: flex-start; max-width: 92%;
-  background: var(--bg-inset); border: 1px solid var(--border-subtle);
-  border-left: 2px solid var(--info); border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
-  font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
-  display: flex; flex-direction: column; gap: var(--space-1);
-}
-.msg-tool .tool-title { color: var(--text-primary); font-weight: 600; }
-.msg-tool .tool-kind { color: var(--text-faint); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
-
 .msg-usage {
   align-self: stretch; text-align: right;
   font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
@@ -298,28 +287,54 @@ body::before {
 #sb-spacer { flex: 1; }
 #term-size, #exit-status { color: var(--text-faint); }
 
-/* ── Permission dialog ───────────────────────────────────── */
-#permission-dialog {
-  position: fixed; inset: 0; z-index: 50;
-  display: none; align-items: center; justify-content: center;
-  background: rgba(4, 6, 8, 0.6); backdrop-filter: blur(2px);
+/* ── Activity box (permissions + tools) ──────────────────── */
+#activity-box {
+  position: fixed; right: var(--space-4);
+  bottom: calc(var(--status-h) + var(--space-3));
+  width: min(400px, calc(100vw - 2 * var(--space-4)));
+  z-index: 40;
+  display: flex; flex-direction: column; gap: var(--space-3);
+  padding: var(--space-3);
+  background: rgba(13, 16, 20, 0.78); backdrop-filter: blur(8px);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+  font-family: var(--font-ui);
 }
-#permission-dialog.visible { display: flex; }
-.permission-card {
-  width: min(520px, 90vw); background: var(--bg-raised);
-  border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-dialog); overflow: hidden;
-  animation: reveal var(--dur-med) var(--ease-out);
+#activity-box[hidden] { display: none; }
+#activity-box[hidden] .activity-section { display: none; }
+
+.activity-section {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  min-width: 0;
 }
-.permission-card .permission-rail { height: 3px; background: var(--accent); }
-.permission-body { padding: var(--space-5); display: flex; flex-direction: column; gap: var(--space-4); }
-.permission-body .section-title { margin-bottom: 0; }
+.activity-section[hidden] { display: none; }
+.activity-section-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
+  min-height: 22px;
+}
+.activity-section-title {
+  font-family: var(--font-ui); font-size: 10px; text-transform: uppercase;
+  letter-spacing: 1.6px; color: var(--text-faint); font-weight: 600;
+}
+.permission-nav {
+  display: flex; align-items: center; gap: var(--space-1);
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
+}
+.permission-nav[hidden] { display: none; }
+.btn-nav {
+  min-width: 22px; padding: 2px 6px; font-size: 13px; line-height: 1;
+  color: var(--text-secondary); border-color: var(--border-subtle);
+}
+.btn-nav:hover { color: var(--text-primary); border-color: var(--border-strong); }
+#permission-counter { min-width: 34px; text-align: center; }
+
 #permission-text {
-  font-family: var(--font-mono); font-size: 13px; color: var(--text-primary);
+  font-family: var(--font-mono); font-size: 12.5px; color: var(--text-primary);
   line-height: 1.55; word-break: break-word;
 }
-#permission-hint { font-family: var(--font-ui); font-size: 11px; color: var(--text-faint); }
+#permission-hint { font-family: var(--font-ui); font-size: 10.5px; color: var(--text-faint); }
 #permission-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: flex-end; }
+
 .btn {
   font-family: var(--font-ui); font-size: 12px; padding: 7px 14px;
   border-radius: var(--radius-sm); border: 1px solid var(--border-strong);
@@ -331,6 +346,39 @@ body::before {
 .btn-allow:hover { background: rgba(88, 214, 141, 0.12); }
 .btn-reject { border-color: rgba(255, 107, 107, 0.5); color: var(--err); }
 .btn-reject:hover { background: rgba(255, 107, 107, 0.12); }
+
+#tool-list { display: flex; flex-direction: column; gap: var(--space-1); max-height: 40vh; overflow-y: auto; }
+.tool-entry {
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+  background: var(--bg-inset); overflow: hidden;
+}
+.tool-entry.done { border-left: 2px solid var(--ok); }
+.tool-entry.failed { border-left: 2px solid var(--err); }
+.tool-head {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-1) var(--space-2); cursor: pointer; user-select: none;
+  font-family: var(--font-mono); font-size: 12px;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.tool-head:hover { background: var(--bg-raised); }
+.tool-kind {
+  color: var(--text-faint); font-size: 10px; letter-spacing: 1px;
+  text-transform: uppercase; flex-shrink: 0;
+}
+.tool-title { color: var(--text-primary); font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-status { color: var(--text-faint); flex-shrink: 0; }
+.tool-status[data-status="completed"] { color: var(--ok); }
+.tool-status[data-status="failed"] { color: var(--err); }
+.tool-status[data-status="in_progress"] { color: var(--accent); }
+.tool-caret { color: var(--text-faint); flex-shrink: 0; font-size: 10px; }
+.tool-result {
+  display: none; padding: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5;
+  color: var(--text-secondary); white-space: pre-wrap; word-break: break-word;
+  max-height: 30vh; overflow-y: auto; background: var(--bg-base);
+}
+.tool-entry.expanded .tool-result { display: block; }
 
 /* ── Empty / misc ────────────────────────────────────────── */
 .muted-empty {
@@ -439,16 +487,26 @@ body::before {
 
 </div>
 
-<!-- Permission dialog -->
-<div id="permission-dialog" role="dialog" aria-modal="true" aria-labelledby="permission-text">
-  <div class="permission-card">
-    <div class="permission-rail"></div>
-    <div class="permission-body">
-      <div class="section-title">Permission required</div>
-      <p id="permission-text">Allow tool?</p>
-      <p id="permission-hint">The agent is waiting for your decision. Rejecting cancels this tool call.</p>
-      <div id="permission-actions"></div>
+<!-- Activity box: floating permissions + tool results -->
+<div id="activity-box" hidden>
+  <div id="activity-permission" class="activity-section" hidden>
+    <div class="activity-section-head">
+      <span class="activity-section-title">Permission</span>
+      <span id="permission-nav" class="permission-nav" hidden>
+        <button id="permission-prev" class="btn btn-nav" aria-label="Previous request">‹</button>
+        <span id="permission-counter">1/1</span>
+        <button id="permission-next" class="btn btn-nav" aria-label="Next request">›</button>
+      </span>
     </div>
+    <p id="permission-text">Allow tool?</p>
+    <p id="permission-hint">The agent is waiting for your decision. Rejecting cancels this tool call.</p>
+    <div id="permission-actions"></div>
+  </div>
+  <div id="activity-tools" class="activity-section" hidden>
+    <div class="activity-section-head">
+      <span class="activity-section-title">Activity</span>
+    </div>
+    <div id="tool-list"></div>
   </div>
 </div>
 

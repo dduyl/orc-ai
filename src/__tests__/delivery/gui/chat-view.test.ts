@@ -46,39 +46,6 @@ describe("ChatView", () => {
     expect(list.querySelector(".msg-agent")?.classList.contains("streaming")).toBe(false);
   });
 
-  it("addTool renders a chip with the call title and escapes markup", () => {
-    const list = makeList();
-    const chat = new ChatView(list);
-    chat.addTool({ toolCallId: "t1", title: "<script>alert(1)</script>", name: "grep" });
-    const chip = list.querySelector(".msg-tool");
-    expect(chip).not.toBeNull();
-    expect(chip?.querySelector("script")).toBeNull();
-    expect(chip?.querySelector(".tool-title")?.textContent).toBe("<script>alert(1)</script>");
-    expect(chip?.querySelector(".tool-status")?.textContent).toBe("···");
-    expect((chip as HTMLElement).dataset.toolCallId).toBe("t1");
-  });
-
-  it("addToolUpdate coalesces into the live chip and marks it done", () => {
-    const list = makeList();
-    const chat = new ChatView(list);
-    chat.addTool({ toolCallId: "t1", title: "grep" });
-    chat.addToolUpdate({ toolCallId: "t1", title: "grep", status: "in_progress" });
-    chat.addToolUpdate({ toolCallId: "t1", title: "grep", status: "completed" });
-    expect(list.querySelectorAll(".msg-tool")).toHaveLength(1);
-    const chip = list.querySelector(".msg-tool") as HTMLElement;
-    expect(text(chip, ".tool-status")).toBe("done");
-    expect((chip.querySelector(".tool-status") as HTMLElement).dataset.status).toBe("completed");
-    expect(chip.classList.contains("done")).toBe(true);
-  });
-
-  it("addToolUpdate for a different tool call opens a second chip", () => {
-    const list = makeList();
-    const chat = new ChatView(list);
-    chat.addTool({ toolCallId: "t1", title: "grep" });
-    chat.addToolUpdate({ toolCallId: "t2", title: "bash", status: "pending" });
-    expect(list.querySelectorAll(".msg-tool")).toHaveLength(2);
-  });
-
   it("addUsage renders the token summary line", () => {
     const list = makeList();
     const chat = new ChatView(list);

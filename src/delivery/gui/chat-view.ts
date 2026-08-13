@@ -1,16 +1,5 @@
 import type { AgentUsage, AcpStopReason } from "../../application/agents/acp/types.js";
 
-/** Structural subset of the ACP tool-call envelope the DOM panel consumes. */
-export interface ToolCallView {
-  toolCallId: string;
-  title?: string | null;
-  name?: string | null;
-}
-
-export interface ToolCallUpdateView extends ToolCallView {
-  status?: string | null;
-}
-
 /**
  * DOM chat panel for the ACP main session.
  *
@@ -19,17 +8,17 @@ export interface ToolCallUpdateView extends ToolCallView {
  *
  * - user prompts render as right-aligned mono bubbles;
  * - agent text streams into an open "caret" message (a contiguous run closes on
- *   the first tool / usage / turn / error frame, so chips interleave honestly);
- * - each tool call renders as one inset chip whose title/status live-update as
- *   `tool_call_update` frames arrive;
+ *   the first usage / turn / error frame);
  * - usage lines, turn dividers, and errors are scannable single-line tokens.
+ *
+ * Tool calls are NOT rendered here — they live in the floating activity box
+ * (see `activity-box.ts`), which owns click-to-expand result rows.
  */
 export class ChatView {
   /** Pixels above the bottom below which auto-scroll stays engaged. */
   static readonly SCROLL_THRESHOLD = 80;
 
   private openText: { msg: HTMLElement; body: HTMLElement } | null = null;
-  private lastToolEl: HTMLElement | null = null;
   private turnSeq = 0;
 
   constructor(private readonly list: HTMLElement) {}
@@ -37,7 +26,6 @@ export class ChatView {
   clear(): void {
     this.list.innerHTML = "";
     this.openText = null;
-    this.lastToolEl = null;
     this.turnSeq = 0;
     const empty = document.createElement("div");
     empty.className = "chat-empty";
@@ -76,44 +64,6 @@ export class ChatView {
     }
     this.openText.body.textContent += text;
     this.scrollBottom();
-  }
-
-  addTool(call: ToolCallView): void {
-    this.closeText();
-    this.ensureEmptyRemoved();
-    const name = call.title ?? "tool";
-    const chip = this.makeChip(name);
-    chip.dataset.toolCallId = call.toolCallId;
-    this.lastToolEl = chip;
-    this.append(chip);
-  }
-
-  addToolUpdate(update: ToolCallUpdateView): void {
-    this.closeText();
-    this.ensureEmptyRemoved();
-    // Coalesce updates into the live chip for the same tool call.
-    const existing =
-      this.lastToolEl && this.lastToolEl.dataset.toolCallId === update.toolCallId
-        ? (this.lastToolEl as HTMLElement)
-        : null;
-    const chip = existing ?? this.makeChip(update.title ?? update.name ?? "tool");
-    if (update.title || update.name) {
-      const titleEl = chip.querySelector(".tool-title");
-      if (titleEl) titleEl.textContent = update.title ?? update.name ?? "tool";
-    }
-    if (update.status) {
-      const statusEl = chip.querySelector(".tool-status") as HTMLElement | null;
-      if (statusEl) {
-        statusEl.textContent = statusLabel(update.status);
-        statusEl.dataset.status = update.status;
-      }
-      if (update.status === "completed" || update.status === "failed") {
-        chip.classList.add("done");
-      }
-    }
-    chip.dataset.toolCallId = update.toolCallId;
-    this.lastToolEl = chip;
-    if (!existing) this.append(chip);
   }
 
   addUsage(usage: AgentUsage): void {
@@ -169,39 +119,10 @@ export class ChatView {
     if (empty) empty.remove();
   }
 
-  private makeChip(name: string): HTMLElement {
-    const chip = document.createElement("div");
-    chip.className = "msg msg-tool";
-    chip.innerHTML =
-      `<span class="tool-kind">tool</span>` +
-      `<span class="tool-title">${escapeHtml(name)}</span>` +
-      `<span class="tool-status" data-status="pending">···</span>`;
-    return chip;
-  }
-
   private append(el: HTMLElement): void {
     this.ensureEmptyRemoved();
     this.list.appendChild(el);
     this.scrollBottom();
-  }
-}
-
-/** Small safe injection guard — names/titles come from the agent. */
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function statusLabel(status: string | null | undefined): string {
-  switch (status) {
-    case "pending": return "···";
-    case "in_progress": return "running…";
-    case "completed": return "done";
-    case "failed": return "failed";
-    default: return "···";
   }
 }
 
