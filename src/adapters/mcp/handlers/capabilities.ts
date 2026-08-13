@@ -119,6 +119,23 @@ export function handleListTools(): ListToolsResult {
           required: ["summary"],
         },
       },
+      {
+        name: "code_graph_query",
+        description: "Query structural code dependency graph, call graph, and blast radius (ADR-002: CodeGraphContext).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            queryType: {
+              type: "string",
+              enum: ["dependencies", "callers", "callees", "blast_radius"],
+              description: "Type of structural code graph query to execute",
+            },
+            target: { type: "string", description: "Target file path or symbol name to analyze" },
+            depth: { type: "number", description: "Query depth for graph traversal (default: 2)" },
+          },
+          required: ["queryType", "target"],
+        },
+      },
     ],
   };
 }

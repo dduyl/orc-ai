@@ -14,7 +14,7 @@ trusting an "Implemented" mark after further changes.
 | # | Title | Decision | Implementation | Notes |
 |---|---|---|---|---|
 | 001 | Deterministic Validation as Ground Truth | Accepted | Implemented | `type: script` steps gate on a real exit code; built-in workflows (`feat-impl-builtin`, `bug-fix-builtin`) now gate code + tests through script gates with repair feedback to the producer |
-| 002 | Code Graph via CodeGraphContext | Accepted | Not Implemented | Not wired into Architecture Agent's tools |
+| 002 | Code Graph via CodeGraphContext | Accepted | Implemented | Integrated CodeGraphService, exposed code_graph_query MCP tool, and context hint for Architecture Agent |
 | 003 | Index File Ownership by Convention | Accepted | Unverified | Whether specs.json/adrs.json/etc. are actually written was not confirmed |
 | 004 | Architecture Gate and Mandatory-Precision Contract | Accepted | Partial | Gate exists via a review step; contract is schema-optional, not enforced as precise |
 | 005 | Test Timing and Target | Accepted | Unverified | Actual agent prompt content not inspected |

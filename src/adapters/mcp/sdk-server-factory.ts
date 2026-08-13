@@ -28,6 +28,8 @@ import {
   type RunHandlerExtra,
 } from "./handlers/workflow-handlers.js";
 import { handleGuideTool, handleListPromptsTool, handleReturnResult } from "./handlers/result-handlers.js";
+import { host } from "./handlers/state.js";
+import { CodeGraphService } from "../../application/harness/graph/code-graph.js";
 
 export type ToolHandler = (args: any, extra: RunHandlerExtra) => CallToolResult | Promise<CallToolResult>;
 
@@ -40,6 +42,17 @@ export const TOOL_HANDLERS: Record<string, ToolHandler> = {
   get_run_status: (args) => handleGetRunStatusTool(args),
   list_runs: () => handleListRunsTool(),
   return_result: (args) => handleReturnResult(args),
+  code_graph_query: async (args) => {
+    const result = await CodeGraphService.queryCodeGraph({
+      queryType: args.queryType,
+      target: args.target,
+      depth: args.depth,
+      projectDir: host.projectDir,
+    });
+    return {
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    };
+  },
 };
 
 export async function executeTool(name: string, args: any, extra: RunHandlerExtra): Promise<CallToolResult> {

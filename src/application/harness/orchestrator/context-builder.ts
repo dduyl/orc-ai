@@ -62,6 +62,9 @@ export function buildStepContext(
   if (step.task) {
     parts.push(`=== Task ===\n${step.task}`);
   }
+  if (step.agent === "arch") {
+    parts.push(`=== Structural Code Graph (ADR-002) ===\nYou can call the \`code_graph_query\` tool to retrieve structural call graphs, dependency graphs, or blast-radius analysis.`);
+  }
   parts.push(buildResponseInstructions(step, completionKey));
   return parts.join("\n\n");
 }
