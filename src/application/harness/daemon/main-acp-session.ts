@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn } from "cross-spawn";
 import type { Socket } from "node:net";
 import { Readable, Writable } from "node:stream";
 import {
