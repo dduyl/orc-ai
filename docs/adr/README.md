@@ -20,7 +20,7 @@ trusting an "Implemented" mark after further changes.
 | 005 | Test Timing and Target | Accepted | Unverified | Actual agent prompt content not inspected |
 | 006 | Command Execution Model | Accepted | Implemented | CommandExecutor + `type: script` step in the runner gate on a real exit code |
 | 007 | Runtime Substrate: PTY-Driven Coding Agent | Deprecated (see ADR-026) | Implemented | Confirmed: adapter-pty.ts, PTY/MCP race, strategy files. Superseded by ADR-026 — the code still works, but the substrate decision is replaced |
-| 008 | Bounded Research Tool-Calls per Agent Step | Accepted | Not Implemented | Only the global bound (017) currently applies |
+| 008 | Bounded Research Tool-Calls per Agent Step | Accepted | Implemented | Enforced checkResearchBudget (max 5 calls for spec/arch, restricted for non-research roles) with unverified_assumption fallback |
 | 009 | Review Agent | Accepted | Partial | A review step exists; single-parameterized-agent design not confirmed |
 | 010 | Checkpointing, Crash Recovery, and Session Reuse | Accepted | Partial | Checkpointing confirmed real; session-id reuse extension not built |
 | 011 | Signal-Based Step Graph | Accepted | Implemented | Steps declare `emits`/`on`/`any` signal refs (`stepId.signal`); `__start__` seeds entry steps; script gates emit a pass/fail signal; redo loops via `any` edges with repair feedback; graph validated at load |
