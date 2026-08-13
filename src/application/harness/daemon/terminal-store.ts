@@ -1,15 +1,19 @@
 import { pipeline } from "node:stream";
 import type { Socket } from "node:net";
-import { Terminal } from "@xterm/headless";
-import { SerializeAddon } from "@xterm/addon-serialize";
+import type { Terminal } from "@xterm/headless";
+import type { SerializeAddon } from "@xterm/addon-serialize";
+import { createRequire } from "node:module";
 import { log } from "../../../core/log.js";
 import { CoalescingTransform, SCREEN_STEP_ID, writeEofFrame, writeFrame } from "./frame-transport.js";
 import type { RunLog, RunLogStore } from "./run-log.js";
 
-// @xterm/headless ships CJS with no ESM wrapper, so it is imported as a CommonJS
-// default and the constructor is extracted here. The bundler (esbuild) inlines
-// the CJS package, keeping the packaged binary free of a runtime require().
-const HeadlessTerminal: new (opts: Record<string, unknown>) => Terminal = Terminal as any;
+const req = createRequire(import.meta.url);
+
+const xtermHeadlessModule = req("@xterm/headless");
+const HeadlessTerminal: new (opts: Record<string, unknown>) => Terminal = (xtermHeadlessModule.Terminal || xtermHeadlessModule.default?.Terminal || xtermHeadlessModule) as any;
+
+const serializeAddonModule = req("@xterm/addon-serialize");
+const SerializeAddonClass: new () => SerializeAddon = (serializeAddonModule.SerializeAddon || serializeAddonModule.default?.SerializeAddon || serializeAddonModule) as any;
 
 /**
  * The subset of node-pty's IPty the daemon consumes. Duck-typed so tests can
@@ -73,13 +77,13 @@ export class RunTerminal {
     this.coalesceMs = opts.coalesceMs ?? 16;
     this.maxFrameBytes = opts.maxFrameBytes ?? 4096;
     this.log = opts.log;
-    this.xterm = new Terminal({
+    this.xterm = new HeadlessTerminal({
       cols: opts.cols ?? 120,
       rows: opts.rows ?? 40,
       scrollback: 5000,
       allowProposedApi: true,
     });
-    this.serializer = new SerializeAddon();
+    this.serializer = new SerializeAddonClass();
     this.xterm.loadAddon(this.serializer);
   }
 
