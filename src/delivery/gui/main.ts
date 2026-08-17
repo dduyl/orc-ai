@@ -34,7 +34,7 @@ const send: MainSender = (channel, data) => {
   }
 };
 
-function createWindow(adapterId: string): BrowserWindow {
+function createWindow(adapterId: string, projectDir: string): BrowserWindow {
   const preloadPath = join(guiDir, "preload.js");
 
   win = new BrowserWindow({
@@ -49,6 +49,9 @@ function createWindow(adapterId: string): BrowserWindow {
       preload: preloadPath,
       contextIsolation: true,
       sandbox: false,
+      // The preload walks the workspace cwd locally for `@`-mention completion
+      // (Phase 5 v2), so the renderer never talks to the agent's HTTP server.
+      additionalArguments: [`--orc-cwd=${projectDir}`],
     },
   });
 
@@ -81,7 +84,7 @@ app.whenReady().then(async () => {
   const adapterId = resolveGuiAdapter(parseArg("adapter"));
   const projectDir = resolve(process.cwd(), parseArg("cwd") ?? "");
 
-  createWindow(adapterId);
+  createWindow(adapterId, projectDir);
 
   try {
     await bridge!.connect(projectDir, adapterId);

@@ -214,6 +214,70 @@ body::before {
 #chat-send:hover { background: var(--accent); color: var(--bg-base); }
 #chat-send:disabled, #chat-input:disabled { opacity: 0.45; cursor: default; }
 
+/* Composer mode badge (normal / workflow / custom) */
+#chat-mode {
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.6px;
+  color: var(--text-faint); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); padding: 3px 8px; cursor: pointer;
+  white-space: nowrap; flex-shrink: 0; user-select: none;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+#chat-mode:hover { color: var(--text-primary); border-color: var(--accent-edge); }
+#chat-mode.active { color: var(--accent); border-color: var(--accent-edge); background: var(--accent-dim); }
+
+/* Composer model badge + picker (session config options) */
+#chat-promptrow { position: relative; }
+#chat-model {
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.4px;
+  color: var(--text-faint); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); padding: 3px 8px; cursor: pointer;
+  white-space: nowrap; flex-shrink: 0; user-select: none;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+#chat-model:hover { color: var(--text-primary); border-color: var(--accent-edge); }
+#chat-model[hidden] { display: none; }
+#chat-model-menu {
+  display: none; flex-direction: column; gap: 1px;
+  position: absolute; left: 0; bottom: calc(100% + 4px);
+  width: 380px; min-width: 280px; max-width: min(60vw, 460px);
+  max-height: 320px; overflow-y: auto;
+  background: var(--bg-raised); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-pop); z-index: 50;
+}
+#chat-model-menu.visible { display: flex; }
+.model-opt {
+  border: 0; background: transparent; color: var(--text-secondary);
+  font-family: var(--font-mono); font-size: 12px; text-align: left;
+  padding: 8px 12px; cursor: pointer; line-height: 1.45;
+  white-space: normal; overflow-wrap: anywhere;
+}
+.model-opt:hover { background: var(--accent-dim); color: var(--text-primary); }
+.model-opt.active { color: var(--accent); font-weight: 600; }
+
+/* Chat mention popover (@ mentions) */
+#chat-suggestions {
+  display: none; flex-direction: column; gap: 1px;
+  background: var(--bg-raised); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md); overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,.25);
+  max-height: 220px; overflow-y: auto;
+}
+#chat-suggestions.visible { display: flex; }
+.sugg {
+  display: flex; align-items: baseline; gap: var(--space-3);
+  padding: 6px 10px; cursor: pointer;
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary);
+}
+.sugg .sugg-name { color: var(--text-primary); font-weight: 600; white-space: nowrap; }
+.sugg .sugg-desc {
+  color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sugg .sugg-kind { margin-left: auto; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--text-faint); flex-shrink: 0; }
+.sugg.active { background: var(--accent-dim); color: var(--accent); }
+.sugg.active .sugg-name { color: var(--accent); }
+.sugg:hover { background: var(--accent-dim); }
+.sugg.back { color: var(--text-faint); cursor: pointer; }
+.sugg.back .sugg-name { color: var(--text-faint); font-weight: 400; font-style: italic; }
+
 /* ══ Terminal view ══ */
 #terminal-view { flex: 1; display: none; flex-direction: column; overflow: hidden; position: relative; }
 #terminal-view.visible { display: flex; }
@@ -426,10 +490,14 @@ body::before {
             <span id="chat-busy-text">Agent is working…</span>
             <button id="chat-cancel">Cancel</button>
           </div>
+          <div id="chat-suggestions"></div>
           <div id="chat-promptrow">
             <span class="prompt-tag">YOU ›</span>
+            <span id="chat-mode" class="chat-mode" title="normal mode - plain chat, nothing prepended" role="button" tabindex="0">normal</span>
+            <span id="chat-model" class="chat-model" role="button" tabindex="0" hidden></span>
             <input id="chat-input" placeholder="Message the agent…  (Enter to send)" autocomplete="off" spellcheck="false">
             <button id="chat-send" aria-label="Send message">➤</button>
+            <div id="chat-model-menu"></div>
           </div>
         </div>
       </section>

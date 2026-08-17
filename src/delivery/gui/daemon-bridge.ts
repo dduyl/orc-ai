@@ -10,6 +10,7 @@ import type { ProgressEvent } from "../../application/harness/orchestrator/index
 import type { RunRecord } from "../../application/harness/persistence/Tracker.js";
 import type { PermissionRequest } from "../../application/agents/acp/permission.js";
 import type { PermissionAnswerKind } from "../../application/agents/acp/types.js";
+import type { PromptMention } from "../../application/harness/daemon/rpc-protocol.js";
 import { getAdapter } from "../../application/agents/adapter.js";
 import { IPC, type MainSender, type StepInfo } from "./ipc.js";
 import type { ChatFrame } from "./ipc.js";
@@ -115,9 +116,9 @@ export class DaemonBridge {
   }
 
   /** Submit a whole prompt turn to the ACP main session (chat mode). */
-  async prompt(text: string): Promise<void> {
+  async prompt(text: string, mentions?: PromptMention[]): Promise<void> {
     if (this.mainMode !== "acp") throw new Error("main terminal is not an ACP session");
-    await this.requireClient().prompt(text);
+    await this.requireClient().prompt(text, mentions);
   }
 
   /** Cancel the ACP main session's in-flight turn. */
@@ -128,6 +129,11 @@ export class DaemonBridge {
   /** Answer the ACP main session's permission request by correlation id. */
   async answerPermission(requestId: string, kind: PermissionAnswerKind): Promise<void> {
     await this.requireClient().answerPermission(requestId, kind);
+  }
+
+  /** Set an ACP main session config option (e.g. the model). */
+  async setConfigOption(configId: string, value: string): Promise<void> {
+    await this.requireClient().setConfigOption(configId, value);
   }
 
   dispose(): void {    this.mainStream?.close();
@@ -410,6 +416,12 @@ export function renderMainFrame(frame: MainFrame): string {
       return `\r\n\x1b[1;32m[turn end: ${frame.stopReason}]\x1b[0m\r\n`;
     case "error":
       return `\r\n\x1b[1;31m[error] ${frame.message}\x1b[0m\r\n`;
+    case "commands":
+      // Advertised slash commands drive the composer popover, not the log.
+      return "";
+    case "config":
+      // Session config options drive the composer model picker, not the log.
+      return "";
     default:
       return "";
   }

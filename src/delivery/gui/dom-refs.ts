@@ -30,9 +30,13 @@ export interface DomRefs {
   chatList: HTMLElement;
   chatInput: HTMLInputElement;
   chatSend: HTMLButtonElement;
+  chatMode: HTMLElement;
+  chatModel: HTMLElement;
+  chatModelMenu: HTMLElement;
   chatBusy: HTMLElement;
   chatBusyText: HTMLElement;
   chatCancel: HTMLButtonElement;
+  chatSuggestions: HTMLElement;
   // activity box (permissions + tools)
   activityBox: HTMLElement;
   permissionSection: HTMLElement;
@@ -82,9 +86,13 @@ export function getDomRefs(): DomRefs {
     chatList: req("chat-list"),
     chatInput: req("chat-input") as HTMLInputElement,
     chatSend: req("chat-send") as HTMLButtonElement,
+    chatMode: req("chat-mode"),
+    chatModel: req("chat-model"),
+    chatModelMenu: req("chat-model-menu"),
     chatBusy: req("chat-busy"),
     chatBusyText: req("chat-busy-text"),
     chatCancel: req("chat-cancel") as HTMLButtonElement,
+    chatSuggestions: req("chat-suggestions"),
     activityBox: req("activity-box"),
     permissionSection: req("activity-permission"),
     permissionText: req("permission-text"),

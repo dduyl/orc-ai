@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GUIDE_TEXT } from "../../../adapters/mcp/handlers/content.js";
 
 /**
  * `terminal.ts` wraps xterm (needs a real canvas/DOM); renderer only needs the
@@ -35,7 +36,8 @@ const DOM = `
     <section id="chat-view">
       <div id="chat-scroll"><div id="chat-list"></div></div>
       <div id="chat-inputbar"><div id="chat-busy" hidden><span id="chat-busy-text">Agent is working.</span><button id="chat-cancel">Cancel</button></div></div>
-      <div id="chat-promptrow"><input id="chat-input"><button id="chat-send">Send</button></div>
+      <div id="chat-suggestions"></div>
+      <div id="chat-promptrow"><span id="chat-mode" class="chat-mode">normal</span><span id="chat-model" hidden></span><input id="chat-input"><button id="chat-send">Send</button><div id="chat-model-menu"></div></div>
     </section>
     <section id="terminal-view">
       <div id="view-label"><span id="view-label-text">TERMINAL</span><span id="view-label-step"></span></div>
@@ -105,6 +107,10 @@ function createApiStub(): {
     start: vi.fn(async () => ({ runId: "r1" })),
     getRunStatus: vi.fn(async () => null),
     listRuns: vi.fn(async () => []),
+    getCustomModes: vi.fn(async () => []),
+    listSkills: vi.fn(async () => []),
+    findFiles: vi.fn(async () => ({ entries: [] })),
+    setConfigOption: vi.fn(async () => {}),
   };
   return { api, handlers, calls };
 }
@@ -120,7 +126,22 @@ type RobotFrame =
   | { kind: "usage"; usage: { totalTokens: number; inputTokens: number; outputTokens: number } }
   | { kind: "turn"; stopReason: string }
   | { kind: "error"; message: string }
-  | { kind: "user"; text: string };
+  | { kind: "user"; text: string }
+  | {
+      kind: "commands";
+      commands: Array<{ name: string; description: string; input?: string }>;
+    }
+  | {
+      kind: "config";
+      options: Array<{
+        id: string;
+        name: string;
+        category?: string;
+        type: string;
+        currentValue: string | boolean | null;
+        options?: Array<{ value: string; name: string }>;
+      }>;
+    };
 
 function el(id: string): HTMLElement {
   const node = document.getElementById(id);
@@ -212,7 +233,7 @@ describe("renderer flow", () => {
     input.value = "  next step  ";
     (el("chat-send") as HTMLButtonElement).click();
 
-    expect(stub.api.prompt).toHaveBeenCalledWith("next step");
+    expect(stub.api.prompt).toHaveBeenCalledWith("next step", []);
     expect(el("chat-list").querySelector(".msg-user")?.textContent).toBe("next step");
     expect(el("chat-send").getAttribute("disabled")).not.toBeNull();
 
@@ -277,5 +298,336 @@ describe("renderer flow", () => {
     fire("chatReset", {});
     expect(el("activity-box").hidden).toBe(true);
     expect(el("tool-list").querySelectorAll(".tool-entry")).toHaveLength(0);
+  });
+
+  it("cycles composer modes with Tab (normal -> workflow -> normal when no custom modes)", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    const input = el("chat-input") as HTMLInputElement;
+    const badge = el("chat-mode");
+
+    expect(badge.textContent).toBe("normal");
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+    expect(badge.textContent).toBe("workflow · guide");
+    expect(badge.classList.contains("active")).toBe(true);
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+    expect(badge.textContent).toBe("normal");
+    expect(badge.classList.contains("active")).toBe(false);
+  });
+
+  it("prepends the workflow guide to prompts sent in workflow mode", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    const input = el("chat-input") as HTMLInputElement;
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+    input.value = "do it";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+
+    expect(stub.api.prompt).toHaveBeenCalledWith(`${GUIDE_TEXT.trim()}\n\ndo it`, []);
+    // The user bubble shows only the typed text, not the injected guide.
+    expect(el("chat-list").querySelector(".msg-user")?.textContent).toBe("do it");
+  });
+
+  it("cycles through a custom ~/.orc/modes instruction and prepends it", async () => {
+    await loadRenderer();
+    stub.api.getCustomModes = vi.fn(async () => [
+      { name: "security-review", content: "Prioritize security." },
+    ]);
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    await vi.advanceTimersByTimeAsync(1);
+    const input = el("chat-input") as HTMLInputElement;
+    const badge = el("chat-mode");
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+    expect(badge.textContent).toBe("workflow · guide");
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+    expect(badge.textContent).toBe("custom · security-review");
+    expect(badge.classList.contains("active")).toBe(true);
+
+    input.value = "review this diff";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(stub.api.prompt).toHaveBeenCalledWith("Prioritize security.\n\nreview this diff", []);
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+    expect(badge.textContent).toBe("normal");
+  });
+
+  it("sends a leading-slash line as plain text on the ACP prompt path", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    const input = el("chat-input") as HTMLInputElement;
+
+    input.value = "/compact";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(stub.api.prompt).toHaveBeenCalledWith("/compact", []);
+
+    fire("chatFrame", { frame: { kind: "turn", stopReason: "end_turn" } });
+  });
+
+  it("expands @-directory mentions and completes @-file mentions on submit", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    const findFiles = stub.api.findFiles as ReturnType<typeof vi.fn>;
+    findFiles.mockResolvedValueOnce({
+      entries: [
+        { name: "cli", path: "src/cli", absolute: "src/cli", type: "directory" },
+        { name: "core", path: "src/core", absolute: "src/core", type: "directory" },
+      ],
+    });
+    findFiles.mockResolvedValueOnce({
+      dir: "src/core",
+      entries: [
+        { name: "types.ts", path: "types.ts", absolute: "src/core/types.ts", type: "file" },
+        { name: "schemas.ts", path: "schemas.ts", absolute: "src/core/schemas.ts", type: "file" },
+      ],
+    });
+    const input = el("chat-input") as HTMLInputElement;
+    const sugg = el("chat-suggestions");
+
+    input.value = "check @src/";
+    input.dispatchEvent(new Event("input"));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(findFiles).toHaveBeenCalledWith("src/");
+    expect(Array.from(sugg.querySelectorAll(".sugg-name")).map((s) => s.textContent)).toEqual(["cli", "core"]);
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown" }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(input.value).toBe("check @src/core/");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(findFiles).toHaveBeenCalledWith("src/core/");
+    expect(Array.from(sugg.querySelectorAll(".sugg-name")).map((s) => s.textContent)).toEqual([
+      "types.ts",
+      "schemas.ts",
+    ]);
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(input.value).toBe("check @src/core/types.ts");
+
+    (el("chat-send") as HTMLButtonElement).click();
+    expect(stub.api.prompt).toHaveBeenCalledWith("check", [{ path: "src/core/types.ts" }]);
+  });
+
+  it("lists advertised agent commands under a leading slash and picks one", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    fire("chatFrame", {
+      frame: {
+        kind: "commands",
+        commands: [
+          { name: "compact", description: "Compact conversation history" },
+          { name: "help", description: "List available commands" },
+        ],
+      },
+    });
+    const input = el("chat-input") as HTMLInputElement;
+    const sugg = el("chat-suggestions");
+
+    input.value = "/";
+    input.dispatchEvent(new Event("input"));
+    await vi.advanceTimersByTimeAsync(1);
+    // Both commands are builtins → a single `cmd` group → flat list (no drill).
+    expect(Array.from(sugg.querySelectorAll(".sugg-name")).map((s) => s.textContent)).toEqual([
+      "/compact",
+      "/help",
+    ]);
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown" }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(input.value).toBe("/help ");
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(stub.api.prompt).toHaveBeenCalledWith("/help", []);
+  });
+
+  it("groups slash commands into cmd / skill / other and drills into a group", async () => {
+    await loadRenderer();
+    (stub.api.listSkills as ReturnType<typeof vi.fn>).mockResolvedValue(["cavecrew", "docx"]);
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    fire("chatFrame", {
+      frame: {
+        kind: "commands",
+        commands: [
+          { name: "compact", description: "Compact history" },
+          { name: "cavecrew", description: "Decision guide for subagents" },
+          { name: "docx", description: "Word documents" },
+          { name: "my-macro", description: "A personal config command" },
+        ],
+      },
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    const input = el("chat-input") as HTMLInputElement;
+    const sugg = el("chat-suggestions");
+
+    input.value = "/";
+    input.dispatchEvent(new Event("input"));
+    await vi.advanceTimersByTimeAsync(1);
+    // A real mix → group rows first (counts in the description).
+    expect(Array.from(sugg.querySelectorAll(".sugg-name")).map((s) => s.textContent)).toEqual([
+      "cmd",
+      "skill",
+      "other",
+    ]);
+    expect(Array.from(sugg.querySelectorAll(".sugg-desc")).map((s) => s.textContent)).toEqual([
+      "1 command",
+      "2 commands",
+      "1 command",
+    ]);
+
+    // Drill into `skill`: back row + the skill commands.
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown" }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(Array.from(sugg.querySelectorAll(".sugg-name")).map((s) => s.textContent)).toEqual([
+      "‹ all groups",
+      "/cavecrew",
+      "/docx",
+    ]);
+
+    // Pick a skill command.
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown" }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(input.value).toBe("/cavecrew ");
+    expect(stub.api.prompt).not.toHaveBeenCalled();
+
+    // Re-open `/`: picking a command reset the drill level → groups again.
+    input.value = "/";
+    input.dispatchEvent(new Event("input"));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(Array.from(sugg.querySelectorAll(".sugg-name")).map((s) => s.textContent)).toEqual([
+      "cmd",
+      "skill",
+      "other",
+    ]);
+
+    // Drill in again; Escape pops back to the group list (doesn't close).
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown" }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(Array.from(sugg.querySelectorAll(".sugg-name")).map((s) => s.textContent)).toEqual([
+      "cmd",
+      "skill",
+      "other",
+    ]);
+    expect(sugg.classList.contains("visible")).toBe(true);
+
+    // Escape on the group list closes the popover.
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(sugg.classList.contains("visible")).toBe(false);
+  });
+
+  it("filters commands by prefix and keeps Enter submitting on an empty list", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    fire("chatFrame", {
+      frame: { kind: "commands", commands: [{ name: "compact", description: "Compact history" }] },
+    });
+    const input = el("chat-input") as HTMLInputElement;
+    const sugg = el("chat-suggestions");
+
+    input.value = "/mod";
+    input.dispatchEvent(new Event("input"));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sugg.textContent).toContain("No commands available");
+
+    // Non-interactive empty state: Enter still submits the raw line.
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(stub.api.prompt).toHaveBeenCalledWith("/mod", []);
+    expect(el("chat-list").querySelector(".msg-user")?.textContent).toBe("/mod");
+  });
+
+  it("never prepends the workflow guide to a leading-slash line", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    const input = el("chat-input") as HTMLInputElement;
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+    expect(el("chat-mode").textContent).toBe("workflow · guide");
+    input.value = "/compact";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(stub.api.prompt).toHaveBeenCalledWith("/compact", []);
+  });
+
+  it("shows the current model from a config frame and switches via setConfigOption", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    const badge = el("chat-model");
+    expect(badge.hidden).toBe(true);
+
+    fire("chatFrame", {
+      frame: {
+        kind: "config",
+        options: [
+          {
+            id: "model",
+            name: "Model",
+            category: "model",
+            type: "select",
+            currentValue: "mini",
+            options: [
+              { value: "mini", name: "opencode mini" },
+              { value: "full", name: "opencode" },
+            ],
+          },
+        ],
+      },
+    });
+    expect(badge.hidden).toBe(false);
+    expect(badge.textContent).toBe("opencode mini");
+
+    badge.click();
+    const menu = el("chat-model-menu");
+    expect(menu.classList.contains("visible")).toBe(true);
+    expect(Array.from(menu.querySelectorAll(".model-opt")).map((o) => o.textContent)).toEqual([
+      "opencode mini",
+      "opencode",
+    ]);
+
+    (menu.querySelectorAll(".model-opt")[1] as HTMLButtonElement).click();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(stub.api.setConfigOption).toHaveBeenCalledWith("model", "full");
+    expect(badge.textContent).toBe("opencode");
+    expect(menu.classList.contains("visible")).toBe(false);
+  });
+
+  it("reverts the model badge when the switch round-trip fails", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    (stub.api.setConfigOption as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("rejected"));
+    fire("chatFrame", {
+      frame: {
+        kind: "config",
+        options: [
+          {
+            id: "model",
+            name: "Model",
+            category: "model",
+            type: "select",
+            currentValue: "mini",
+            options: [{ value: "mini", name: "opencode mini" }],
+          },
+        ],
+      },
+    });
+    const badge = el("chat-model");
+    badge.click();
+    (el("chat-model-menu").querySelector(".model-opt") as HTMLButtonElement).click();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(badge.textContent).toBe("opencode mini");
+    expect(el("event-list").textContent).toContain("Model switch failed");
+  });
+
+  it("hides the model badge when the agent advertises no model option", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    fire("chatFrame", {
+      frame: {
+        kind: "config",
+        options: [{ id: "verbose", name: "Verbose", type: "boolean", currentValue: true }],
+      },
+    });
+    expect(el("chat-model").hidden).toBe(true);
   });
 });

@@ -11,11 +11,49 @@
  * electron dependency, so it bundles cleanly for the browser.
  */
 import type { MainFrame } from "../../application/harness/daemon/main-frame-codec.js";
+import type { PromptMention } from "../../application/harness/daemon/rpc-protocol.js";
 import type { ProgressEvent } from "../../application/harness/orchestrator/index.js";
 import type { RunRecord } from "../../application/harness/persistence/Tracker.js";
 import type { PermissionRequest } from "../../application/agents/acp/permission.js";
 import type { PermissionAnswerKind } from "../../application/agents/acp/types.js";
-export type { PermissionRequest, PermissionAnswerKind };
+export type {
+  PermissionRequest,
+  PermissionAnswerKind,
+  PromptMention,
+};
+
+/**
+ * A file or directory entry under a directory listing.
+ *
+ * Local-fs mirror of the removed ACP HTTP file API (Phase 5 v2): the preload
+ * walks the workspace with `node:fs`, so the renderer never talks to the
+ * agent's HTTP server. Shape stays identical to the old `AcpDirEntry`/`AcpFindResult`
+ * so the renderer's `@`-mention picker logic is untouched.
+ */
+export interface FsEntry {
+  name: string;
+  /** Relative path within the listed directory. */
+  path: string;
+  /** Absolute path of the entry. */
+  absolute: string;
+  type: "file" | "directory";
+}
+
+/** Result of a local `@`-mention expansion query. */
+export interface FsFindResult {
+  /** Entries directly completing the query. */
+  entries: FsEntry[];
+  /** Directory these entries were listed from (`@dir/` expansion), if any. */
+  dir?: string;
+}
+
+/** A custom instruction mode from `~/.orc/modes/`. */
+export interface CustomMode {
+  /** File basename without the extension, e.g. `security-review`. */
+  name: string;
+  /** Full instruction file content (prepended to every prompt in this mode). */
+  content: string;
+}
 
 /** Main-terminal status event forwarded to the renderer. */
 export type StatusEvent =
@@ -71,13 +109,14 @@ export interface RendererToMainSend {
 
 /** Renderer → main invoke channels: name → argument list + result type. */
 export interface RendererToMainInvoke {
-  prompt: { args: [text: string]; result: void };
+  prompt: { args: [text: string, mentions?: PromptMention[]]; result: void };
   "switch-step": { args: [stepId: string]; result: void };
   "list-steps": { args: []; result: StepInfo[] };
   "get-step-output": { args: [stepId: string]; result: string };
   start: { args: [task: string, workflowId: string]; result: { runId: string } };
   "get-run-status": { args: [runId: string]; result: RunRecord };
   "list-runs": { args: []; result: RunRecord[] };
+  "set-config-option": { args: [configId: string, value: string]; result: void };
 }
 
 // ── Channel names (runtime strings, mirrored 1:1 to the contracts) ─────────
@@ -97,6 +136,7 @@ export const IPC = {
     start: "start",
     "get-run-status": "get-run-status",
     "list-runs": "list-runs",
+    "set-config-option": "set-config-option",
   },
   MainToRenderer: {
     output: "output",
@@ -130,7 +170,7 @@ export interface GuiApi {
   onChatFrame(cb: (data: { frame: ChatFrame }) => void): void;
   onChatReset(cb: () => void): void;
   write(data: string): void;
-  prompt(text: string): Promise<void>;
+  prompt(text: string, mentions?: PromptMention[]): Promise<void>;
   cancelMain(): void;
   answerPermission(requestId: string, kind: PermissionAnswerKind): void;
   switchStep(stepId: string): Promise<void>;
@@ -139,6 +179,20 @@ export interface GuiApi {
   start(task: string, workflowId: string): Promise<{ runId: string }>;
   getRunStatus(runId: string): Promise<RunRecord>;
   listRuns(): Promise<RunRecord[]>;
+  /** Set an ACP session config option (e.g. the model) on the main session. */
+  setConfigOption(configId: string, value: string): Promise<void>;
+  /** Expand an `@`-mention token against the local workspace (preload fs walk). */
+  findFiles(query: string): Promise<FsFindResult>;
+  /** List a directory's children against the local workspace (preload fs walk). */
+  listDir(path: string): Promise<FsEntry[]>;
+  /** Custom instruction modes from `~/.orc/modes/` (preload fs read). */
+  getCustomModes(): Promise<CustomMode[]>;
+  /**
+   * Names of installed skills (dirs with a `SKILL.md` under the workspace's and
+   * home's `.claude`/`.agents`/`.opencode/skills`). Used to group the `/`
+   * command picker into `cmd` / `skill` / `other`.
+   */
+  listSkills(): Promise<string[]>;
 }
 
 declare global {
