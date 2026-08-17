@@ -38,7 +38,7 @@ trusting an "Implemented" mark after further changes.
 | 023 | Terminal Output Compression via RTK | Proposed | Not Implemented | New this round |
 | 024 | Concise Agent-to-Orchestrator Summaries | Proposed | Not Implemented | Prompt-only change, not yet applied to any role's prompt |
 | 025 | Detached Daemon Run Host with Attachable GUI | Accepted | Implemented | Phase A: migrated all 3 consumers to `node:sqlite` (Checkpointer/Tracker/run-db). Phase B/C: frame transport + TerminalStore + daemon control protocol. Phase D: daemon hosts MCP :3100 (`orc mcp`), owns main terminal + `input` RPC, GUI is a pure `PipeClient` (`daemon-bridge.ts`, `pty-manager.ts`/`run-db.ts` deleted, zero native deps), `node-pty` host-only ABI; daemon survives GUI close |
-| 026 | Runtime Substrate: ACP-Driven Coding Agent | Accepted | Not Implemented | Supersedes ADR-007 (PTY) and ADR-025 D-3 (main PTY passthrough). Covers both step subagents and the main interactive session. Plan at ADR-026-ROLLOUT.md |
+| 026 | Runtime Substrate: ACP-Driven Coding Agent | Accepted | Partial | Supersedes ADR-007 (PTY) and ADR-025 D-3 (main PTY passthrough). Covers both step subagents and the main interactive session. PR 1 (`feat/acp-substrate`): protocol client + acp-opencode/acp-claude strategies + adapter dispatch shim + step render bridge (tool-call diffs → terminal lines) + hook pass-through for Tracker — live; main session still PTY. Plan at ADR-026-ROLLOUT.md |
 
 ## When a later ADR replaces an earlier one
 

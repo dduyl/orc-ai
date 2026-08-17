@@ -7,7 +7,7 @@ npm run build                # tsc + GUI renderer bundle + asset copies
 npm run start:gui           # launch the Electron GUI (pure pipe client; spawns-or-attaches the daemon)
 .\dist\orc.exe mcp          # start the daemon block hosting MCP (no GUI)
 npm run build:binary        # build standalone dist/orc.exe
-npm test                    # run the full vitest suite (151 tests)
+npm test                    # run the full vitest suite (239 tests)
 ```
 
 Notes:
@@ -112,7 +112,7 @@ src/
 ## Test
 
 ```bash
-npm test              # run all tests (vitest) — 151 tests
+npm test              # run all tests (vitest) — 239 tests
 npm run test:watch    # watch mode
 npm run build         # TypeScript compile + assets
 npm run lint          # type-check only (tsc --noEmit)
