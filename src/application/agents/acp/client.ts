@@ -1,4 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "cross-spawn";
+import type { ChildProcess } from "node:child_process";
 import { Writable, Readable } from "node:stream";
 import {
   client,
@@ -34,7 +35,7 @@ export interface AcpTurnOptions {
   signal?: AbortSignal;
 }
 
-function normalizeUsage(input?: Usage | null): AgentUsage {
+export function normalizeUsage(input?: Usage | null): AgentUsage {
   return {
     totalTokens: input?.totalTokens ?? 0,
     inputTokens: input?.inputTokens ?? 0,
@@ -83,6 +84,7 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
   });
 
   let cancelled = false;
+  let handshakeDone = false;
   const killChild = (): void => {
     try {
       child.kill();
@@ -140,6 +142,7 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
       clientCapabilities: { session: {} },
       clientInfo: { name: "orc", version: "0.1.0" },
     });
+    handshakeDone = true;
     return ctx.buildSession(cwd).withSession(async session => {
       let cancelSent = false;
       signal?.addEventListener(
@@ -200,6 +203,23 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
         duration: Date.now() - start,
         error: (err as Error).message,
       };
+    }
+    // With cross-spawn a missing command is launched through cmd.exe, which
+    // exits before any ACP handshake; the connection-close error and the
+    // converted ENOENT error land in the same event-loop turn. Prefer the
+    // actionable spawn error when it surfaces within one setImmediate tick.
+    // cross-spawn launches a missing command through cmd.exe, which exits
+    // before any ACP handshake. The SDK rejects with a generic "connection
+    // closed" at the same time cross-spawn converts the failure into an
+    // `error` event (~1ms later). Prefer the actionable spawn error, but only
+    // while no handshake has completed: a mid-turn connection close must
+    // surface immediately without paying the grace window.
+    if (!handshakeDone) {
+      const spawnErr = await Promise.race([
+        spawnFailed.promise,
+        new Promise<null>(resolve => setTimeout(() => resolve(null), 50)),
+      ]);
+      if (spawnErr) throw spawnErr;
     }
     throw err;
   } finally {

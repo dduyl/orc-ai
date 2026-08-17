@@ -1,13 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  findInPath,
-  needsShellWrapper,
-  probeBinary,
-  shellWrapIfNeeded,
-} from "../../../../application/agents/acp/resolve.js";
+import { probeBinary } from "../../../../application/agents/acp/resolve.js";
+import { spawn } from "cross-spawn";
 
 const origPath = process.env.PATH;
 
@@ -15,65 +11,53 @@ afterEach(() => {
   process.env.PATH = origPath;
 });
 
-function tempBin(name: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "orc-acp-resolve-"));
-  writeFileSync(join(dir, name), "x");
+function tempDir(): string {
+  return mkdtempSync(join(tmpdir(), "orc-acp-resolve-"));
+}
+
+/** Seed a runnable file into a fresh temp dir and return the dir. */
+function seed(name: string, content = "x"): string {
+  const dir = tempDir();
+  const p = join(dir, name);
+  writeFileSync(p, content);
+  if (process.platform !== "win32") chmodSync(p, 0o755);
   return dir;
 }
 
-describe("findInPath", () => {
-  it("finds an executable on PATH", () => {
-    const dir = tempBin("my-tool" + (process.platform === "win32" ? ".exe" : ""));
-    process.env.PATH = dir;
-    const found = findInPath("my-tool");
-    expect(found).toBe(join(dir, "my-tool" + (process.platform === "win32" ? ".exe" : "")));
-  });
-
-  it("finds .cmd shims on Windows", () => {
-    if (process.platform !== "win32") return;
-    const dir = tempBin("my-tool.cmd");
-    process.env.PATH = dir;
-    expect(findInPath("my-tool")).toBe(join(dir, "my-tool.cmd"));
-  });
-
-  it("returns undefined when not found", () => {
-    process.env.PATH = tempBin("other-tool.exe");
-    expect(findInPath("definitely-not-on-path-xyz")).toBeUndefined();
-  });
-});
-
-describe("needsShellWrapper / shellWrapIfNeeded", () => {
-  it("detects .cmd/.bat shims on Windows", () => {
-    if (process.platform !== "win32") return;
-    expect(needsShellWrapper("C:\\tools\\opencode.cmd")).toBe(true);
-    expect(needsShellWrapper("C:\\tools\\opencode.exe")).toBe(false);
-    expect(needsShellWrapper("opencode")).toBe(false);
-  });
-
-  it("passes through non-shim commands unchanged", () => {
-    const spec = shellWrapIfNeeded("node", ["--version"]);
-    expect(spec).toEqual({ command: "node", args: ["--version"] });
-  });
-
-  it("wraps .cmd shims in cmd.exe on Windows", () => {
-    if (process.platform !== "win32") return;
-    const spec = shellWrapIfNeeded("C:\\tools\\opencode.cmd", ["acp", "--pure"]);
-    expect(spec.command).toBe("cmd.exe");
-    expect(spec.args[0]).toBe("/d");
-    expect(spec.args[1]).toBe("/s");
-    expect(spec.args[2]).toBe("/c");
-  });
-});
-
 describe("probeBinary", () => {
   it("returns true when the binary exists on PATH", () => {
-    const dir = tempBin("probe-tool" + (process.platform === "win32" ? ".exe" : ""));
-    process.env.PATH = dir;
+    const name = process.platform === "win32" ? "probe-tool.exe" : "probe-tool";
+    process.env.PATH = seed(name);
     expect(probeBinary("probe-tool", "test")).toBe(true);
   });
 
   it("returns false when absent", () => {
-    process.env.PATH = tempBin("other-tool.exe");
+    process.env.PATH = seed("other-tool.exe");
     expect(probeBinary("definitely-not-on-path-xyz", "test")).toBe(false);
+  });
+
+  it("does not treat a bare extensionless shim as runnable on Windows", () => {
+    if (process.platform !== "win32") return;
+    process.env.PATH = seed("probe-tool", "#!/bin/sh");
+    expect(probeBinary("probe-tool", "test")).toBe(false);
+  });
+});
+
+describe("cross-spawn shim resolution", () => {
+  it("resolves the .cmd shim (never the bare shim) and spawns without ENOENT on Windows", async () => {
+    if (process.platform !== "win32") return;
+    const dir = tempDir();
+    writeFileSync(join(dir, "my-tool"), "#!/bin/sh");
+    writeFileSync(join(dir, "my-tool.cmd"), "@echo off\r\n");
+    process.env.PATH = dir;
+
+    const child = spawn("my-tool", ["acp", "--pure"], { stdio: "ignore" });
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", (err) =>
+        reject(new Error(`expected .cmd shim to spawn, got: ${err.message}`)),
+      );
+      child.once("exit", () => resolve());
+      setTimeout(() => reject(new Error("timed out waiting for .cmd shim to exit")), 5000);
+    });
   });
 });

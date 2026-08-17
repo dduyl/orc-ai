@@ -2,6 +2,27 @@ import * as net from "node:net";
 import * as crypto from "node:crypto";
 import type { Server, Socket } from "node:net";
 import { createMessageConnection, type MessageConnection } from "vscode-jsonrpc/node";
+import {
+  RpcMethod,
+  RpcNotification,
+  type AnswerPermissionParams,
+  type AnswerPermissionResult,
+  type AttachMainResult,
+  type AttachParams,
+  type AttachResult,
+  type CancelMainResult,
+  type CancelParams,
+  type CancelResult,
+  type InputParams,
+  type InputResult,
+  type PromptParams,
+  type PromptResult,
+  type SetConfigOptionParams,
+  type SetConfigOptionResult,
+  type StartParams,
+  type StopResult,
+  type WorkflowCompleteInfo,
+} from "./rpc-protocol.js";
 import type { AdapterDef } from "../../agents/adapter.js";
 import { getAdapter, BUILTIN_ADAPTERS } from "../../agents/adapter.js";
 import { RunHost } from "../run-host.js";
@@ -12,11 +33,14 @@ import { TerminalStore, type PtyLike } from "./terminal-store.js";
 import { RunLogStore } from "./run-log.js";
 import { controlPipePath, terminalPipePath, mainPipePath } from "./pipe-name.js";
 import { MAIN_STEP_ID } from "./frame-transport.js";
+import { MainAcpSession } from "./main-acp-session.js";
 import { join } from "node:path";
 import type { ProgressEvent, RunReport } from "../orchestrator/index.js";
 import { McpServer } from "../../../adapters/mcp/server.js";
 import { setupInfrastructure } from "../persistence/bootstrap.js";
 import { registerPtyWriter } from "../signalling/pty-notifier.js";
+import type { PermissionRequest } from "../../agents/acp/permission.js";
+import type { PermissionAnswerKind } from "../../agents/acp/types.js";
 import { log } from "../../../core/log.js";
 
 /**
@@ -43,80 +67,6 @@ import { log } from "../../../core/log.js";
  */
 
 export const DEFAULT_IDLE_MS = 10 * 60 * 1000;
-
-/** Control-plane JSON-RPC request method names. */
-export const RpcMethod = {
-  start: "start",
-  list: "list",
-  status: "status",
-  cancel: "cancel",
-  attach: "attach",
-  stop: "stop",
-  attachMain: "attachMain",
-  input: "input",
-} as const;
-
-/** Control-plane JSON-RPC notifications (server → client). */
-export const RpcNotification = {
-  progress: "progress",
-  workflowComplete: "workflowComplete",
-} as const;
-
-export interface StartParams {
-  task: string;
-  workflowId: string;
-  resume?: boolean;
-}
-
-/** Result of the `start` request. */
-export type StartResult = StartRunResult;
-
-export interface AttachParams {
-  runId: string;
-}
-
-export interface AttachResult {
-  runId: string;
-  /** Path of the run's terminal pipe; connect + read length-prefixed frames. */
-  terminalPipe: string;
-}
-
-/** Result of the `attachMain` request: the daemon-owned main terminal pipe. */
-export interface AttachMainResult {
-  terminalPipe: string;
-}
-
-/** Payload for the `input` RPC: write `data` to a PTY by step id. */
-export interface InputParams {
-  /** Omit for the main terminal (`stepId` must be `__main__`). */
-  runId?: string;
-  /** `__main__` → main PTY; otherwise a step id within `runId`. */
-  stepId: string;
-  data: string;
-}
-
-export interface InputResult {
-  ok: true;
-}
-
-export interface CancelParams {
-  runId: string;
-}
-
-export interface CancelResult {
-  cancelled: boolean;
-  reason?: string;
-}
-
-export interface StopResult {
-  ok: true;
-}
-
-export interface WorkflowCompleteInfo {
-  runId?: string;
-  status?: string;
-  report?: RunReport;
-}
 
 export interface DaemonServerOptions {
   projectDir?: string;
@@ -147,6 +97,17 @@ export interface DaemonServerOptions {
    * daemon runs without a main terminal.
    */
   spawnMain?: () => PtyLike;
+  /**
+   * Spawn the daemon-owned persistent ACP main session (ADR-026 Phase 3).
+   * When provided it supersedes `spawnMain`: the main pipe carries structured
+   * `MainFrame` JSON frames (`AttachMainResult.mode === "acp"`) and the control
+   * pipe gains `prompt` / `cancelMain` / `answerPermission`. The factory wires
+   * the session's permission requests into the daemon's control-pipe
+   * `permissionRequested` broadcast.
+   */
+spawnMainAcp?: (opts: { onPermission: (request: PermissionRequest) => void }) =>
+    | MainAcpSession
+    | Promise<MainAcpSession>;
   /** Invoked once after the daemon has fully shut down (tests / CLI exit). */
   onShutdown?: () => void;
 }
@@ -162,6 +123,9 @@ export class DaemonServer {
   private readonly mcp?: { port: number } | false;
   private readonly idleMs: number;
   private readonly spawnMain?: () => PtyLike;
+  private readonly spawnMainAcp?: (opts: {
+    onPermission: (request: PermissionRequest) => void;
+  }) => MainAcpSession | Promise<MainAcpSession>;
   private readonly onShutdown?: () => void;
   /** Owned disk-log store for finished-run re-attach (undefined if disabled). */
   private readonly runLogStore: RunLogStore | undefined;
@@ -182,6 +146,8 @@ export class DaemonServer {
   private mcpServer: McpServer | null = null;
   /** The daemon-owned main PTY (tagged `__main__`), if `spawnMain` was provided. */
   private mainPty: PtyLike | null = null;
+  /** The daemon-owned persistent ACP main session, if `spawnMainAcp` was provided. */
+  private mainSession: MainAcpSession | null = null;
   private mainTerminalServer: Server | null = null;
   /** runId → (stepId → pty) for `input` routing (populated by feedPty). */
   private stepPtys = new Map<string, Map<string, PtyLike>>();
@@ -192,6 +158,7 @@ export class DaemonServer {
     this.mcp = opts.mcp ?? false;
     this.idleMs = opts.idleMs ?? DEFAULT_IDLE_MS;
     this.spawnMain = opts.spawnMain;
+    this.spawnMainAcp = opts.spawnMainAcp;
     this.onShutdown = opts.onShutdown;
     this.ownsTracker = !opts.tracker;
     this.controlPipe = controlPipePath(this.projectDir, opts.pipeOverride);
@@ -250,6 +217,10 @@ export class DaemonServer {
    * coding-agent shell; the run host reaches agents via MCP on :3100.
    */
   private startMain(): void {
+    if (this.spawnMainAcp) {
+      void this.startMainAcp();
+      return;
+    }
     if (!this.spawnMain) return;
     try {
       this.mainPty = this.spawnMain();
@@ -266,6 +237,30 @@ export class DaemonServer {
     } catch (err: any) {
       log.warn(`[daemon] main PTY spawn failed: ${err?.message ?? err}`);
       this.mainPty = null;
+    }
+  }
+
+  /**
+   * Spawn the persistent ACP main session (ADR-026 Phase 3). Unlike the PTY
+   * main there is no terminal-store wiring: the session owns its own replay +
+   * live fan-out of structured `MainFrame`s, served directly to main-pipe
+   * clients via `onMainTerminalConnection`. Permission requests are forwarded
+   * to the control pipe and answered by the attached GUI (`answerPermission`).
+   */
+  private async startMainAcp(): Promise<void> {
+    try {
+      const session = await this.spawnMainAcp!({
+        onPermission: (request) => this.broadcast(RpcNotification.permissionRequested, request),
+      });
+      this.mainSession = session;
+      session.onExit(() => this.touch());
+      void session.start().catch((err: any) => {
+        log.warn(`[daemon] main ACP session failed: ${err?.message ?? err}`);
+      });
+      log.info("[daemon] main ACP session on");
+    } catch (err: any) {
+      log.warn(`[daemon] main ACP session spawn failed: ${err?.message ?? err}`);
+      this.mainSession = null;
     }
   }
 
@@ -353,6 +348,11 @@ export class DaemonServer {
     const main = this.mainPty;
     this.mainPty = null;
     try { main?.kill?.(); } catch { /* ignore */ }
+    // Close the persistent ACP main session (if any): EOFs its clients and
+    // kills the agent child. Clients are destroyed below via terminalSockets.
+    const mainSession = this.mainSession;
+    this.mainSession = null;
+    mainSession?.close();
     this.stepPtys.clear();
     if (this.mainTerminalServer) {
       try { this.mainTerminalServer.close(); } catch { /* ignore */ }
@@ -434,6 +434,14 @@ export class DaemonServer {
     conn.onRequest(RpcMethod.attach, (params: AttachParams) => this.handleAttach(params));
     conn.onRequest(RpcMethod.attachMain, () => this.handleAttachMain());
     conn.onRequest(RpcMethod.input, (params: InputParams) => this.handleInput(params));
+    conn.onRequest(RpcMethod.prompt, (params: PromptParams) => this.handlePrompt(params));
+    conn.onRequest(RpcMethod.cancelMain, () => this.handleCancelMain());
+    conn.onRequest(RpcMethod.answerPermission, (params: AnswerPermissionParams) =>
+      this.handleAnswerPermission(params),
+    );
+    conn.onRequest(RpcMethod.setConfigOption, (params: SetConfigOptionParams) =>
+      this.handleSetConfigOption(params),
+    );
     conn.onRequest(RpcMethod.stop, () => this.handleStop(sock));
 
     const cleanup = (): void => {
@@ -513,9 +521,12 @@ export class DaemonServer {
   }
 
   private async handleAttachMain(): Promise<AttachMainResult> {
-    if (!this.spawnMain) throw new Error("daemon has no main terminal");
+    if (!this.spawnMain && !this.spawnMainAcp) throw new Error("daemon has no main terminal");
     await this.ensureMainTerminalServer();
-    return { terminalPipe: mainPipePath(this.projectDir, this.pipeOverride) };
+    return {
+      terminalPipe: mainPipePath(this.projectDir, this.pipeOverride),
+      mode: this.mainSession ? "acp" : "pty",
+    };
   }
 
   /**
@@ -547,6 +558,34 @@ export class DaemonServer {
     // teardown strictly AFTER that — one extra macrotask guarantees the reply
     // bytes are written to the socket before it is closed.
     setImmediate(() => { setImmediate(() => { void this.stop(requesterSocket); }); });
+    return { ok: true };
+  }
+
+  /** Queue a user prompt turn on the ACP main session (`prompt` RPC). */
+  private handlePrompt(params: PromptParams): PromptResult {
+    if (!this.mainSession) throw new Error("Main terminal unavailable");
+    this.mainSession.prompt(params.text, params.mentions);
+    return { queued: true };
+  }
+
+  /** Cancel the ACP main session's in-flight turn (`cancelMain` RPC). */
+  private handleCancelMain(): CancelMainResult {
+    if (!this.mainSession) throw new Error("Main terminal unavailable");
+    this.mainSession.cancelTurn();
+    return { ok: true };
+  }
+
+  /** Answer the ACP main session's pending permission request. */
+  private handleAnswerPermission(params: AnswerPermissionParams): AnswerPermissionResult {
+    if (!this.mainSession) throw new Error("Main terminal unavailable");
+    const answered = this.mainSession.answerPermission(params.requestId, params.kind);
+    return { answered };
+  }
+
+  /** Set an ACP main session config option (e.g. the model). */
+  private async handleSetConfigOption(params: SetConfigOptionParams): Promise<SetConfigOptionResult> {
+    if (!this.mainSession) throw new Error("Main terminal unavailable");
+    await this.mainSession.setConfigOption(params.configId, params.value);
     return { ok: true };
   }
 
@@ -647,7 +686,7 @@ export class DaemonServer {
     if (this.mainTerminalServer) return;
     const path = mainPipePath(this.projectDir, this.pipeOverride);
     await new Promise<void>((resolve, reject) => {
-      const server = net.createServer((sock) => this.onTerminalConnection(MAIN_STEP_ID, sock));
+      const server = net.createServer((sock) => this.onMainTerminalConnection(sock));
       server.once("error", reject);
       server.listen(path, () => {
         server.removeListener("error", reject);
@@ -657,6 +696,22 @@ export class DaemonServer {
         resolve();
       });
     });
+  }
+
+  /**
+   * Main-pipe client. In ACP mode the persistent session owns the replay +
+   * live `MainFrame` fan-out (structured frames, no xterm). In PTY mode the
+   * frames flow through the terminal store (ANSI replay + coalesced live).
+   */
+  private onMainTerminalConnection(sock: Socket): void {
+    sock.on("error", () => {});
+    this.terminalSockets.add(sock);
+    sock.on("close", () => this.terminalSockets.delete(sock));
+    if (this.mainSession) {
+      this.mainSession.attach(sock);
+      return;
+    }
+    this.terminalStore.attach(MAIN_STEP_ID, sock);
   }
 
   /**

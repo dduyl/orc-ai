@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { DaemonBridge, resolveGuiAdapter } from "./daemon-bridge.js";
 import { registerIpcHandlers } from "./ipc-handlers.js";
+import type { MainSender } from "./ipc.js";
 
 /**
  * Electron GUI — pure pipe client (Phase D D-4).
@@ -27,13 +28,13 @@ const guiDir = getGuiDir();
 let win: BrowserWindow | undefined;
 let bridge: DaemonBridge | undefined;
 
-function send(channel: string, data: unknown): void {
+const send: MainSender = (channel, data) => {
   if (win?.webContents && !win.webContents.isDestroyed()) {
     win.webContents.send(channel, data);
   }
-}
+};
 
-function createWindow(adapterId: string): BrowserWindow {
+function createWindow(adapterId: string, projectDir: string): BrowserWindow {
   const preloadPath = join(guiDir, "preload.js");
 
   win = new BrowserWindow({
@@ -41,13 +42,16 @@ function createWindow(adapterId: string): BrowserWindow {
     height: 800,
     minWidth: 600,
     minHeight: 300,
-    backgroundColor: "#0d0d0d",
+    backgroundColor: "#0b0e11",
     title: `ORC — ${adapterId}`,
     show: false,
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
       sandbox: false,
+      // The preload walks the workspace cwd locally for `@`-mention completion
+      // (Phase 5 v2), so the renderer never talks to the agent's HTTP server.
+      additionalArguments: [`--orc-cwd=${projectDir}`],
     },
   });
 
@@ -80,7 +84,7 @@ app.whenReady().then(async () => {
   const adapterId = resolveGuiAdapter(parseArg("adapter"));
   const projectDir = resolve(process.cwd(), parseArg("cwd") ?? "");
 
-  createWindow(adapterId);
+  createWindow(adapterId, projectDir);
 
   try {
     await bridge!.connect(projectDir, adapterId);

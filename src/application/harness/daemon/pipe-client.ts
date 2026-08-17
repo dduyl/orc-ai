@@ -6,28 +6,38 @@ import { FrameReader } from "./frame-transport.js";
 import {
   RpcMethod,
   RpcNotification,
+  type AnswerPermissionParams,
+  type AnswerPermissionResult,
   type AttachParams,
   type AttachResult,
   type AttachMainResult,
+  type CancelMainResult,
   type CancelParams,
   type CancelResult,
   type InputParams,
   type InputResult,
+  type PromptMention,
+  type PromptParams,
+  type PromptResult,
+  type SetConfigOptionParams,
+  type SetConfigOptionResult,
   type StartParams,
   type StartResult,
   type StopResult,
   type WorkflowCompleteInfo,
-} from "./daemon-server.js";
+} from "./rpc-protocol.js";
 import type { RunRecord } from "../persistence/Tracker.js";
 import type { ProgressEvent, RunReport } from "../orchestrator/index.js";
+import type { PermissionRequest } from "../../agents/acp/permission.js";
+import type { PermissionAnswerKind } from "../../agents/acp/types.js";
 
 /**
  * Client for the daemon's control pipe (ADR-025 Phase C step 3).
  *
  * Connects to `controlPipePath(projectDir, override)`, wraps it in a
  * `vscode-jsonrpc` MessageConnection, and exposes typed request helpers plus a
- * terminal-pipe frame reader. Method-name constants are imported from the
- * server so both sides always agree on the protocol.
+ * terminal-pipe frame reader. Method names and payload types come from
+ * `rpc-protocol.js` so both sides always agree on the wire protocol.
  */
 
 export interface PipeClientOptions {
@@ -37,6 +47,8 @@ export interface PipeClientOptions {
   onProgress?: (event: ProgressEvent) => void;
   /** Receives the `workflowComplete` notification. */
   onWorkflowComplete?: (info: WorkflowCompleteInfo) => void;
+  /** Receives the ACP main session's `permissionRequested` notifications. */
+  onPermissionRequested?: (request: PermissionRequest) => void;
 }
 
 export interface TerminalStream {
@@ -82,6 +94,11 @@ export class PipeClient {
     if (opts.onWorkflowComplete) {
       conn.onNotification(RpcNotification.workflowComplete, (e: WorkflowCompleteInfo) => opts.onWorkflowComplete?.(e));
     }
+    if (opts.onPermissionRequested) {
+      conn.onNotification(RpcNotification.permissionRequested, (e: PermissionRequest) =>
+        opts.onPermissionRequested?.(e),
+      );
+    }
     conn.listen();
     sock.on("close", () => client.dispose());
     return client;
@@ -120,6 +137,33 @@ export class PipeClient {
   /** Route keyboard input to a PTY: `__main__` or a step within a run. */
   async writeInput(params: InputParams): Promise<InputResult> {
     return this.conn.sendRequest(RpcMethod.input, params satisfies InputParams) as Promise<InputResult>;
+  }
+
+  /** Queue a user prompt turn on the ACP main session. */
+  async prompt(text: string, mentions?: PromptMention[]): Promise<PromptResult> {
+    const params: PromptParams = mentions?.length ? { text, mentions } : { text };
+    return this.conn.sendRequest(RpcMethod.prompt, params) as Promise<PromptResult>;
+  }
+
+  /** Cancel the ACP main session's in-flight turn. */
+  async cancelMain(): Promise<CancelMainResult> {
+    return this.conn.sendRequest(RpcMethod.cancelMain) as Promise<CancelMainResult>;
+  }
+
+  /** Answer the ACP main session's permission request that carries `requestId`. */
+  async answerPermission(requestId: string, kind: PermissionAnswerKind): Promise<AnswerPermissionResult> {
+    return this.conn.sendRequest(
+      RpcMethod.answerPermission,
+      { requestId, kind } satisfies AnswerPermissionParams,
+    ) as Promise<AnswerPermissionResult>;
+  }
+
+  /** Set an ACP main session config option (e.g. the model). */
+  async setConfigOption(configId: string, value: string): Promise<SetConfigOptionResult> {
+    return this.conn.sendRequest(
+      RpcMethod.setConfigOption,
+      { configId, value } satisfies SetConfigOptionParams,
+    ) as Promise<SetConfigOptionResult>;
   }
 
   /**

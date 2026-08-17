@@ -1,16 +1,23 @@
-import { spawn, type ChildProcess } from "node:child_process";
+﻿import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PipeClient, type TerminalStream } from "../../application/harness/daemon/pipe-client.js";
 import { MAIN_STEP_ID, SCREEN_STEP_ID } from "../../application/harness/daemon/frame-transport.js";
-import type { WorkflowCompleteInfo } from "../../application/harness/daemon/daemon-server.js";
+import type { WorkflowCompleteInfo } from "../../application/harness/daemon/rpc-protocol.js";
+import { decodeMainFrame, type MainFrame } from "../../application/harness/daemon/main-frame-codec.js";
 import type { ProgressEvent } from "../../application/harness/orchestrator/index.js";
 import type { RunRecord } from "../../application/harness/persistence/Tracker.js";
+import type { PermissionRequest } from "../../application/agents/acp/permission.js";
+import type { PermissionAnswerKind } from "../../application/agents/acp/types.js";
+import type { PromptMention } from "../../application/harness/daemon/rpc-protocol.js";
 import { getAdapter } from "../../application/agents/adapter.js";
+import { IPC, type MainSender, type StepInfo } from "./ipc.js";
+import type { ChatFrame } from "./ipc.js";
+export type { ChatFrame, StepInfo };
 
 /**
- * GUI → daemon bridge (Phase D D-4).
+ * GUI â†’ daemon bridge (Phase D D-4).
  *
  * The Electron GUI is a pure `PipeClient`: it spawns-or-attaches the daemon
  * block, streams terminal frames, and never owns a PTY, MCP server, or SQLite
@@ -18,18 +25,11 @@ import { getAdapter } from "../../application/agents/adapter.js";
  * the replacement for `PtyManager` + `run-db.ts`):
  *
  * - main terminal + per-run step terminals are demuxed by the frame `stepId`
- *   header into per-step buffers (no `[step: …]` text-marker parsing);
+ *   header into per-step buffers (no `[step: â€¦]` text-marker parsing);
  * - `input` routes to the focused step via the daemon's `input` RPC (steps
  *   need the current `runId`, the main terminal does not);
  * - run status/tree comes from `PipeClient.status()/list()`, never SQLite.
  */
-export interface StepInfo {
-  id: string;
-  name: string;
-  isActive: boolean;
-  isMain: boolean;
-}
-
 export class DaemonBridge {
   private client: PipeClient | null = null;
   private daemonChild: ChildProcess | null = null;
@@ -41,12 +41,14 @@ export class DaemonBridge {
 
   private mainBuffer = "";
   private stepBuffers = new Map<string, string>();
+  /** `pty` â†’ raw ANSI bytes on the main pipe; `acp` â†’ structured `MainFrame`s. */
+  private mainMode: "pty" | "acp" = "pty";
   private activeStepId = MAIN_STEP_ID;
   private latestRunId: string | null = null;
   private mainExited = false;
   private adapterId = "opencode";
 
-  constructor(private readonly send: (channel: string, data: unknown) => void) {}
+  constructor(private readonly send: MainSender) {}
 
   /** Spawn-or-attach the daemon block, then bind the main terminal. */
   async connect(projectDir: string, adapterId: string): Promise<void> {
@@ -62,7 +64,7 @@ export class DaemonBridge {
     const res = await client.start({ task, workflowId });
     this.trackRun(res.runId);
     this.stepBuffers.clear();
-    this.send("log", { text: `Run started: ${workflowId}` });
+    this.send(IPC.MainToRenderer.log, { text: `Run started: ${workflowId}` });
     await this.attachRunTerminal(res.runId);
     return res;
   }
@@ -92,14 +94,20 @@ export class DaemonBridge {
 
   switchToStep(stepId: string): void {
     this.activeStepId = stepId;
-    this.send("step-activated", { stepId });
-    this.send("log", { text: `Switched to: ${this.stepName(stepId)}` });
+    this.send(IPC.MainToRenderer["step-activated"], { stepId });
+    this.send(IPC.MainToRenderer.log, { text: `Switched to: ${this.stepName(stepId)}` });
   }
 
   /** Route keyboard input to the focused PTY (main or the active run's step). */
   async writeInput(data: string): Promise<void> {
     const client = this.requireClient();
     if (this.activeStepId === MAIN_STEP_ID) {
+      // In ACP mode the main terminal is a chat session, not a PTY: a keystroke
+      // is not bytes-for-a-tty, it is a whole prompt line.
+      if (this.mainMode === "acp") {
+        await client.prompt(data);
+        return;
+      }
       await client.writeInput({ stepId: MAIN_STEP_ID, data });
       return;
     }
@@ -107,11 +115,32 @@ export class DaemonBridge {
     await client.writeInput({ runId: this.latestRunId, stepId: this.activeStepId, data });
   }
 
+  /** Submit a whole prompt turn to the ACP main session (chat mode). */
+  async prompt(text: string, mentions?: PromptMention[]): Promise<void> {
+    if (this.mainMode !== "acp") throw new Error("main terminal is not an ACP session");
+    await this.requireClient().prompt(text, mentions);
+  }
+
+  /** Cancel the ACP main session's in-flight turn. */
+  async cancelMain(): Promise<void> {
+    await this.requireClient().cancelMain();
+  }
+
+  /** Answer the ACP main session's permission request by correlation id. */
+  async answerPermission(requestId: string, kind: PermissionAnswerKind): Promise<void> {
+    await this.requireClient().answerPermission(requestId, kind);
+  }
+
+  /** Set an ACP main session config option (e.g. the model). */
+  async setConfigOption(configId: string, value: string): Promise<void> {
+    await this.requireClient().setConfigOption(configId, value);
+  }
+
   dispose(): void {    this.mainStream?.close();
     this.runStream?.close();
     this.client?.dispose();
     this.client = null;
-    // Never stop the daemon — it outlives the GUI (D-2).
+    // Never stop the daemon â€” it outlives the GUI (D-2).
   }
 
   // --- daemon lifecycle ----------------------------------------------------
@@ -126,15 +155,15 @@ export class DaemonBridge {
     const existing = await this.tryConnect(projectDir, 1500);
     if (existing) return existing;
 
-    // No daemon — spawn the block, then wait for its control pipe.
+    // No daemon â€” spawn the block, then wait for its control pipe.
     const child = this.spawnDaemon(projectDir);
     this.daemonChild = child;
     this.daemonPid = child.pid ?? null;
-    child.stdout?.on("data", (d) => this.send("log", { text: String(d).trimEnd() }));
-    child.stderr?.on("data", (d) => this.send("log", { text: String(d).trimEnd() }));
+    child.stdout?.on("data", (d) => this.send(IPC.MainToRenderer.log, { text: String(d).trimEnd() }));
+    child.stderr?.on("data", (d) => this.send(IPC.MainToRenderer.log, { text: String(d).trimEnd() }));
     child.once("exit", () => {
       this.daemonPid = null;
-      this.send("log", { text: "daemon exited" });
+      this.send(IPC.MainToRenderer.log, { text: "daemon exited" });
     });
 
     const client = await this.tryConnect(projectDir, 10_000);
@@ -152,6 +181,7 @@ export class DaemonBridge {
           projectDir,
           onProgress: (e) => this.onProgress(e),
           onWorkflowComplete: (i) => this.onWorkflowComplete(i),
+          onPermissionRequested: (request) => this.onPermissionRequested(request),
         })
           .then(resolve)
           .catch(() => setTimeout(attempt, 100));
@@ -162,24 +192,30 @@ export class DaemonBridge {
 
   private spawnDaemon(projectDir: string): ChildProcess {
     const env = { ...(process.env as Record<string, string>) };
-    // `node-pty` is host-only (D-5), so the daemon must run under host Node —
+    // `node-pty` is host-only (D-5), so the daemon must run under host Node â€”
     // never under Electron's embedded runtime (`ELECTRON_RUN_AS_NODE` would use
     // the Electron ABI and fail to load the host-rebuilt addon).
     let command: string;
     let args: string[];
+    const mainArgs = this.isAcpMode(env) ? ["--main", "acp"] : [];
     if (env["ORC_DAEMON_BIN"]) {
       command = env["ORC_DAEMON_BIN"];
-      args = ["daemon", "start"];
+      args = ["daemon", "start", ...mainArgs];
     } else if (this.isPackagedApp) {
       command = this.resolveBundledOrc();
-      args = ["daemon", "start"];
+      args = ["daemon", "start", ...mainArgs];
     } else {
       // Dev: root the CLI from the compiled output and run it with the host
       // `node` on PATH (the same runtime the rebuild targets).
       command = "node";
-      args = [join(dirname(fileURLToPath(import.meta.url)), "../cli/index.js"), "daemon", "start"];
+      args = [join(dirname(fileURLToPath(import.meta.url)), "../cli/index.js"), "daemon", "start", ...mainArgs];
     }
     return spawn(command, args, { cwd: projectDir, env, stdio: ["ignore", "pipe", "pipe"] });
+  }
+
+  /** `ORC_MAIN_MODE=acp` (or a binary expecting ACP) drives the main session over ACP. */
+  private isAcpMode(env: Record<string, string>): boolean {
+    return env["ORC_MAIN_MODE"] === "acp";
   }
 
   private get isPackagedApp(): boolean {
@@ -198,24 +234,74 @@ export class DaemonBridge {
 
   private async attachMain(): Promise<void> {
     const client = this.requireClient();
-    await client.attachMain();
+    const res = await client.attachMain();
+    this.mainMode = res.mode;
     this.mainExited = false;
+    // A fresh attach is a fresh conversation: the daemon replays the buffered
+    // frames (V3), so drop the old ANSI buffer and tell the renderer to clear
+    // its chat DOM before the replay lands, otherwise stale bubbles persist
+    // across connects / new main sessions (V4).
+    this.mainBuffer = "";
+    this.send(IPC.MainToRenderer["chat-reset"], {});
     this.mainStream = await client.attachMainStream(
       (stepId, payload) => {
         if (stepId !== MAIN_STEP_ID) return;
-        const text = payload.toString("utf8");
-        this.mainBuffer += text;
-        if (this.activeStepId === MAIN_STEP_ID) this.send("output", text);
+        if (this.mainMode === "acp") {
+          this.onMainFrame(payload);
+        } else {
+          const text = payload.toString("utf8");
+          this.mainBuffer += text;
+          if (this.activeStepId === MAIN_STEP_ID) this.send(IPC.MainToRenderer.output, text);
+        }
       },
       () => {
         if (this.mainExited) return;
         this.mainExited = true;
-        this.send("exit", 0);
+        this.send(IPC.MainToRenderer.exit, 0);
       },
     );
-    this.send("status", { type: "spawned", pid: this.daemonPid, adapter: this.adapterId });
-    this.send("log", { text: "attached to daemon main terminal" });
+    this.send(IPC.MainToRenderer.status, {
+      type: "spawned",
+      pid: this.daemonPid,
+      adapter: this.adapterId,
+      mode: this.mainMode,
+    });
+    this.send(IPC.MainToRenderer.log, { text: "attached to daemon main terminal" });
     this.switchToStep(MAIN_STEP_ID);
+  }
+
+  /**
+   * ACP main frames are structured JSON envelopes, not tty bytes. They drive
+   * two surfaces:
+   *
+   * - a structured `chat-frame` event â†’ the renderer's DOM chat panel (D-7);
+   * - a human-readable ANSI line (same rendering the daemon CLI uses) so the
+   *   xterm Terminal view stays coherent on re-attach / step switching.
+   */
+  private onMainFrame(payload: Buffer): void {
+    let frame: MainFrame;
+    try {
+      frame = decodeMainFrame(payload);
+    } catch (err) {
+      // Not a MainFrame (stale PTY bytes) or an unknown `kind` (codec skew â€”
+      // see main-frame-codec strict decoder). Log so the skew is visible, then
+      // drop rather than mis-render the payload.
+      this.send(IPC.MainToRenderer.log, { text: `dropped non-main frame: ${err instanceof Error ? err.message : String(err)}` });
+      return;
+    }
+    this.send(IPC.MainToRenderer["chat-frame"], { frame });
+    const text = renderMainFrame(frame);
+    if (!text) return;
+    this.mainBuffer += text;
+    if (this.activeStepId === MAIN_STEP_ID) this.send(IPC.MainToRenderer.output, text);
+  }
+
+  private onPermissionRequested(request: PermissionRequest): void {
+    this.send(IPC.MainToRenderer["permission-requested"], request);
+    const label = request.toolCall.title ?? request.toolCall.name ?? "tool";
+    this.send(IPC.MainToRenderer.log, {
+      text: `[permission] ${label} â€” waiting for your decision`,
+    });
   }
 
   private async attachRunTerminal(runId: string): Promise<void> {
@@ -226,7 +312,7 @@ export class DaemonBridge {
       await client.attach(runId);
     } catch (err: any) {
       // Run may have just finished; nothing to stream.
-      this.send("log", { text: `attach run ${runId}: ${err?.message ?? err}` });
+      this.send(IPC.MainToRenderer.log, { text: `attach run ${runId}: ${err?.message ?? err}` });
       this.attachedRuns.delete(runId);
       return;
     }
@@ -241,10 +327,10 @@ export class DaemonBridge {
       );
     } catch (err: any) {
       // Terminal connect failed (e.g. the run finished and evicted its pipe
-      // between attach() and the terminal socket). Not fatal — the progress
+      // between attach() and the terminal socket). Not fatal â€” the progress
       // stream still carries status/tree. Release the run so a retry is possible.
       this.attachedRuns.delete(runId);
-      this.send("log", { text: `attach run terminal ${runId}: ${err?.message ?? err}` });
+      this.send(IPC.MainToRenderer.log, { text: `attach run terminal ${runId}: ${err?.message ?? err}` });
     }
   }
 
@@ -257,30 +343,30 @@ export class DaemonBridge {
     // replay is the only content the client sees.
     if (stepId === SCREEN_STEP_ID) {
       this.stepBuffers.set(SCREEN_STEP_ID, (this.stepBuffers.get(SCREEN_STEP_ID) ?? "") + text);
-      this.send("output", text);
+      this.send(IPC.MainToRenderer.output, text);
       return;
     }
     this.stepBuffers.set(stepId, (this.stepBuffers.get(stepId) ?? "") + text);
-    if (this.activeStepId === stepId) this.send("output", text);
+    if (this.activeStepId === stepId) this.send(IPC.MainToRenderer.output, text);
   }
 
   private onProgress(event: ProgressEvent): void {
     if (event.runId) {
       this.trackRun(event.runId);
       // Runs started outside the GUI (e.g. via MCP on :3100) still get live
-      // terminal frames — attach the run the moment progress announces it.
+      // terminal frames â€” attach the run the moment progress announces it.
       if (!this.attachedRuns.has(event.runId)) void this.attachRunTerminal(event.runId);
     }
     if (event.type === "step_start" && event.stepId) {
       if (!this.stepBuffers.has(event.stepId)) this.stepBuffers.set(event.stepId, "");
       if (event.runId === this.latestRunId) this.switchToStep(event.stepId);
     }
-    this.send("stream-event", event);
+    this.send(IPC.MainToRenderer["stream-event"], event);
   }
 
   private onWorkflowComplete(info: WorkflowCompleteInfo): void {
     if (info.runId) {
-      this.send("log", { text: `[run ${info.runId}] workflow complete (${info.status ?? "?"})` });
+      this.send(IPC.MainToRenderer.log, { text: `[run ${info.runId}] workflow complete (${info.status ?? "?"})` });
       // Do NOT clear stepBuffers here: the combined `__screen__` replay and per-step
       // buffers keep the finished run viewable after completion (Phase E). Clearing
       // would wipe the history a toasted run is about to show.
@@ -301,7 +387,7 @@ export class DaemonBridge {
   private trackRun(runId: string): void {
     if (runId === this.latestRunId) return;
     this.latestRunId = runId;
-    this.send("run-active", { runId });
+    this.send(IPC.MainToRenderer["run-active"], { runId });
   }
 }
 
@@ -309,4 +395,34 @@ export class DaemonBridge {
 export function resolveGuiAdapter(rawAdapterId: string | undefined): string {
   const adapter = getAdapter(rawAdapterId ?? "opencode");
   return adapter?.id ?? rawAdapterId ?? "opencode";
+}
+
+/**
+ * Translate one ACP main frame into a human-readable ANSI line for the xterm
+ * view. Text chunks stream as-is (so the reply reads naturally); every other
+ * kind becomes a single labeled line so the chat stays scannable.
+ */
+export function renderMainFrame(frame: MainFrame): string {
+  switch (frame.kind) {
+    case "text":
+      return frame.text;
+    case "tool":
+      return `\r\n\x1b[1;36m[tool] ${frame.call.title ?? frame.call.name ?? "tool"}\x1b[0m\r\n`;
+    case "tool_update":
+      return `\r\n\x1b[2m[tool update] ${frame.update.title ?? frame.update.name ?? "tool"}\x1b[0m\r\n`;
+    case "usage":
+      return `\r\n\x1b[2m[tokens ${frame.usage.totalTokens} (in ${frame.usage.inputTokens} / out ${frame.usage.outputTokens})]\x1b[0m\r\n`;
+    case "turn":
+      return `\r\n\x1b[1;32m[turn end: ${frame.stopReason}]\x1b[0m\r\n`;
+    case "error":
+      return `\r\n\x1b[1;31m[error] ${frame.message}\x1b[0m\r\n`;
+    case "commands":
+      // Advertised slash commands drive the composer popover, not the log.
+      return "";
+    case "config":
+      // Session config options drive the composer model picker, not the log.
+      return "";
+    default:
+      return "";
+  }
 }
