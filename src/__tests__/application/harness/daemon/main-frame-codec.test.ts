@@ -12,6 +12,30 @@ describe("main frame codec", () => {
       { kind: "turn", stopReason: "end_turn" },
       { kind: "turn", stopReason: "error" },
       { kind: "error", message: "boom" },
+      {
+        kind: "commands",
+        commands: [
+          { name: "compact", description: "Compact conversation history" },
+          { name: "help", description: "Get help", input: "<topic>" },
+        ],
+      },
+      {
+        kind: "config",
+        options: [
+          {
+            id: "model",
+            name: "Model",
+            category: "model",
+            type: "select",
+            currentValue: "opencode-mini",
+            options: [
+              { value: "opencode-mini", name: "opencode mini" },
+              { value: "opencode", name: "opencode" },
+            ],
+          },
+          { id: "verbose", name: "Verbose", category: "mode", type: "boolean", currentValue: true },
+        ],
+      },
     ];
     for (const frame of frames) {
       expect(decodeMainFrame(encodeMainFrame(frame))).toEqual(frame);
@@ -48,5 +72,17 @@ describe("renderMainFrame", () => {
     expect(renderMainFrame({ kind: "usage", usage: { totalTokens: 10, inputTokens: 4, outputTokens: 6 } })).toContain("10");
     expect(renderMainFrame({ kind: "turn", stopReason: "end_turn" })).toContain("[turn end: end_turn]");
     expect(renderMainFrame({ kind: "error", message: "boom" })).toContain("[error] boom");
+  });
+
+  it("renders nothing for commands and config frames (composer-only data)", () => {
+    expect(
+      renderMainFrame({ kind: "commands", commands: [{ name: "compact", description: "Compact history" }] }),
+    ).toBe("");
+    expect(
+      renderMainFrame({
+        kind: "config",
+        options: [{ id: "model", name: "Model", category: "model", type: "select", currentValue: "x" }],
+      }),
+    ).toBe("");
   });
 });

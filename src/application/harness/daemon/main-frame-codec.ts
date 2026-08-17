@@ -31,7 +31,38 @@ export type MainFrame =
    */
   | { kind: "turn"; stopReason: AcpStopReason | "error" }
   /** The session failed; the stream will EOF. */
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  /** Slash commands the agent can run (`available_commands_update`). */
+  | { kind: "commands"; commands: AgentCommand[] }
+  /** Session configuration options and their current state (`session/new` / `config_option_update`). */
+  | { kind: "config"; options: AgentConfigOption[] };
+
+/** A slash command the agent advertises via `available_commands_update`. */
+export interface AgentCommand {
+  name: string;
+  description: string;
+  /** Input hint when the command requires an argument (e.g. `/help <topic>`). */
+  input?: string;
+}
+
+/**
+ * One session configuration option (model / mode / thought-level selector).
+ * Normalized from the ACP `SessionConfigOption` union so the renderer can
+ * render a selector without depending on the ACP SDK types.
+ */
+export interface AgentConfigOption {
+  /** The option's stable id (`configId`), used when setting a value. */
+  id: string;
+  /** Human-readable label, e.g. "Model". */
+  name: string;
+  /** Semantic category (`"model"`, `"mode"`, `"thought_level"`, …) when present. */
+  category?: string | null;
+  type: "select" | "boolean";
+  /** The currently selected value (value id for select, boolean for boolean). */
+  currentValue: string | boolean | null;
+  /** Selectable values for `select` options (groups flattened). */
+  options?: Array<{ value: string; name: string }>;
+}
 
 /** Serialize a main frame to the payload carried by a `__main__` frame. */
 export function encodeMainFrame(frame: MainFrame): Buffer {
@@ -39,7 +70,7 @@ export function encodeMainFrame(frame: MainFrame): Buffer {
 }
 
 /** Every {@link MainFrame} discriminator accepted by the wire codec. */
-const MAIN_FRAME_KINDS = new Set(["text", "tool", "tool_update", "usage", "turn", "error"]);
+const MAIN_FRAME_KINDS = new Set(["text", "tool", "tool_update", "usage", "turn", "error", "commands", "config"]);
 
 /** Parse a `__main__` frame payload back into a {@link MainFrame}. */
 export function decodeMainFrame(payload: Buffer): MainFrame {

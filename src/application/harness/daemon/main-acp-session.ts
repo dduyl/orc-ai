@@ -1,6 +1,7 @@
 import { spawn } from "cross-spawn";
 import type { Socket } from "node:net";
 import { Readable, Writable } from "node:stream";
+import { pathToFileURL } from "node:url";
 import {
   client,
   methods,
@@ -10,6 +11,8 @@ import {
   type ClientContext,
   type ActiveSession,
   type ActiveSessionMessage,
+  type ContentBlock,
+  type SessionConfigOption,
   type ToolCall,
   type ToolCallUpdate,
 } from "@agentclientprotocol/sdk";
@@ -19,8 +22,9 @@ import { normalizeUsage } from "../../agents/acp/client.js";
 import type { AgentUsage, AcpStopReason } from "../../agents/acp/types.js";
 import { autoPermissionMode, gateFromEnv, PermissionGate, type PermissionRequest } from "../../agents/acp/permission.js";
 import type { PermissionAnswerKind } from "../../agents/acp/types.js";
+import type { PromptMention } from "./rpc-protocol.js";
 import { MAIN_STEP_ID, writeEofFrame, writeFrame } from "./frame-transport.js";
-import { encodeMainFrame, type MainFrame } from "./main-frame-codec.js";
+import { encodeMainFrame, type AgentCommand, type AgentConfigOption, type MainFrame } from "./main-frame-codec.js";
 
 /**
  * Persistent ACP-backed main session (ADR-026, Phase 3).
@@ -76,6 +80,13 @@ export class MainAcpSession {
   private ctx: ClientContext | null = null;
   private sessionId: string | null = null;
   private cancelCurrent: (() => void) | null = null;
+  /**
+   * Reader handed over by `drainInitialUpdates` when its grace window expired
+   * with a `nextUpdate()` still pending. `runTurn` consumes it before issuing a
+   * fresh read so the timed-out reader never lingers and swallows a real turn
+   * update (the SDK queue is FIFO; an abandoned waiter steals the next value).
+   */
+  private pendingIdleUpdate: Promise<ActiveSessionMessage> | null = null;
   private closed = false;
 
   constructor(opts: MainAcpSessionOptions) {
@@ -110,9 +121,9 @@ export class MainAcpSession {
   }
 
   /** Queue a user prompt turn. Throws once the session is closed. */
-  prompt(text: string): void {
+  prompt(text: string, mentions?: PromptMention[]): void {
     if (this.closed) throw new Error("main ACP session is closed");
-    this.queue.push(text);
+    this.queue.push({ text, mentions: mentions ?? [] });
   }
 
   /** Cancel the in-flight turn (no-op when idle or closed). */
@@ -127,6 +138,23 @@ export class MainAcpSession {
    */
   answerPermission(requestId: string, kind: PermissionAnswerKind): boolean {
     return this.gate.answer(requestId, kind) !== null;
+  }
+
+  /**
+   * Set a session config option (e.g. the model) via `session/set_config_option`.
+   * The full refreshed option set is re-emitted as a `config` frame. Throws once
+   * the session is closed; rejects if the agent does not support the option.
+   */
+  async setConfigOption(configId: string, value: string): Promise<void> {
+    if (this.closed || !this.ctx || !this.sessionId) {
+      throw new Error("main ACP session is not open");
+    }
+    const res = await this.ctx.request(methods.agent.session.setConfigOption, {
+      sessionId: this.sessionId,
+      configId,
+      value,
+    });
+    this.emit({ kind: "config", options: normalizeConfigOptions(res.configOptions) });
   }
 
   /** Replay + live `__main__` frames to a main-pipe client. */
@@ -227,10 +255,13 @@ export class MainAcpSession {
         await ctx.buildSession(cwd).withSession(async (session) => {
           this.sessionId = session.sessionId;
           log.info(`[main-acp] session ${session.sessionId} open (${spec.command})`);
+          const sessionConfig = session.newSessionResponse.configOptions;
+          if (sessionConfig) this.emit({ kind: "config", options: normalizeConfigOptions(sessionConfig) });
+          await this.drainInitialUpdates(session);
           for (;;) {
-            const text = await this.queue.take();
-            if (text === null || this.closed) break;
-            await this.runTurn(ctx, session, text);
+            const turn = await this.queue.take();
+            if (turn === null || this.closed) break;
+            await this.runTurn(ctx, session, turn);
           }
         });
       });
@@ -245,7 +276,36 @@ export class MainAcpSession {
     }
   }
 
-  private async runTurn(ctx: ClientContext, session: ActiveSession, text: string): Promise<void> {
+  /**
+   * Drain the session-update burst emitted right after `session/new` (e.g.
+   * opencode's `available_commands_update` at session create) so commands and
+   * config are available before the user's first prompt. Bounded by a grace
+   * window; when it expires mid-read the still-pending reader is parked in
+   * {@link pendingIdleUpdate} for {@link runTurn} to consume first — a pending
+   * `nextUpdate()` must never be abandoned, or it would consume the next real
+   * turn update out of turn.
+   */
+  private async drainInitialUpdates(session: ActiveSession): Promise<void> {
+    const deadline = Date.now() + 300;
+    let next: Promise<ActiveSessionMessage> | null = session.nextUpdate();
+    for (;;) {
+      const remaining = deadline - Date.now();
+      const msg = await Promise.race([
+        next,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), Math.max(remaining, 0))),
+      ]);
+      if (msg === null) {
+        if (!this.closed) this.pendingIdleUpdate = next;
+        return;
+      }
+      if (msg.kind === "stop") return;
+      this.forwardUpdate(msg.update);
+      next = session.nextUpdate();
+    }
+  }
+
+  private async runTurn(ctx: ClientContext, session: ActiveSession, turn: PromptTurn): Promise<void> {
+    const blocks = this.toContentBlocks(turn);
     let cancelSent = false;
     this.cancelCurrent = () => {
       if (cancelSent || this.closed) return;
@@ -256,11 +316,14 @@ export class MainAcpSession {
     };
     // The stop message already carries the PromptResponse; we only keep this
     // promise to avoid an unhandled rejection if the turn is cancelled.
-    const promptPromise = session.prompt(text).catch(() => undefined);
+    const promptPromise = session.prompt(blocks).catch(() => undefined);
     let stopReason: AcpStopReason = "end_turn";
+    let nextMsg: Promise<ActiveSessionMessage> | null = this.pendingIdleUpdate;
+    this.pendingIdleUpdate = null;
     try {
       for (;;) {
-        const msg: ActiveSessionMessage = await session.nextUpdate();
+        const msg: ActiveSessionMessage = nextMsg ? await nextMsg : await session.nextUpdate();
+        nextMsg = null;
         if (msg.kind === "stop") {
           stopReason = msg.stopReason;
           const usage = normalizeUsage(msg.response.usage);
@@ -284,6 +347,25 @@ export class MainAcpSession {
     }
   }
 
+  /**
+   * Build the `session/prompt` content blocks for a user turn: the text chunk
+   * plus one `resource_link` per `@path` mention (file:// URI). Without
+   * mentions this is just the plain-text block, keeping the common case
+   * identical to the pre-mention wire format.
+   */
+  private toContentBlocks(turn: PromptTurn): ContentBlock[] {
+    const blocks: ContentBlock[] = [{ type: "text", text: turn.text }];
+    for (const mention of turn.mentions) {
+      if (!mention.path) continue;
+      blocks.push({
+        type: "resource_link",
+        name: mention.path,
+        uri: mentionUri(mention.path, this.opts.cwd),
+      });
+    }
+    return blocks;
+  }
+
   private forwardUpdate(update: NonNullable<unknown> & { sessionUpdate?: string }): void {
     switch (update.sessionUpdate) {
       case "agent_message_chunk": {
@@ -304,6 +386,23 @@ export class MainAcpSession {
         if (typeof used === "number") {
           this.emit({ kind: "usage", usage: { totalTokens: used, inputTokens: 0, outputTokens: 0 } });
         }
+        break;
+      }
+      case "available_commands_update": {
+        const list = (update as { availableCommands?: Array<{ name?: string; description?: string; input?: { hint?: string } | null } | null> }).availableCommands;
+        if (Array.isArray(list)) {
+          const commands: AgentCommand[] = [];
+          for (const raw of list) {
+            if (!raw || typeof raw.name !== "string") continue;
+            commands.push({ name: raw.name, description: raw.description ?? "", input: raw.input?.hint });
+          }
+          this.emit({ kind: "commands", commands });
+        }
+        break;
+      }
+      case "config_option_update": {
+        const list = (update as { configOptions?: SessionConfigOption[] }).configOptions;
+        if (Array.isArray(list)) this.emit({ kind: "config", options: normalizeConfigOptions(list) });
         break;
       }
       default:
@@ -330,21 +429,30 @@ export class MainAcpSession {
   }
 }
 
+/**
+ * Build the `file://` URI for a mention path. Absolute paths are used as-is;
+ * relative paths resolve against `cwd`.
+ */
+function mentionUri(path: string, cwd: string): string {
+  const resolved = path.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(path) ? path : `${cwd}/${path}`;
+  return pathToFileURL(resolved).href;
+}
+
 /** FIFO of user prompts; `null` from `take()` signals the session is closing. */
 class PromptQueue {
-  private items: string[] = [];
-  private waiters: ((text: string | null) => void)[] = [];
+  private items: PromptTurn[] = [];
+  private waiters: ((turn: PromptTurn | null) => void)[] = [];
 
-  push(text: string): void {
+  push(turn: PromptTurn): void {
     const waiter = this.waiters.shift();
     if (waiter) {
-      waiter(text);
+      waiter(turn);
       return;
     }
-    this.items.push(text);
+    this.items.push(turn);
   }
 
-  take(): Promise<string | null> {
+  take(): Promise<PromptTurn | null> {
     const item = this.items.shift();
     if (item !== undefined) return Promise.resolve(item);
     return new Promise((resolve) => this.waiters.push(resolve));
@@ -354,6 +462,49 @@ class PromptQueue {
     this.items.length = 0;
     for (const waiter of this.waiters.splice(0)) waiter(null);
   }
+}
+
+/** One queued user turn: the composer text plus any `@`-mention attachments. */
+interface PromptTurn {
+  text: string;
+  mentions: PromptMention[];
+}
+
+/**
+ * Normalize the ACP `SessionConfigOption` union into renderer-facing selectors.
+ * Select groups are flattened; unknown/unsupported option shapes are skipped.
+ */
+function normalizeConfigOptions(options: SessionConfigOption[]): AgentConfigOption[] {
+  const out: AgentConfigOption[] = [];
+  for (const opt of options) {
+    if (opt.type === "boolean") {
+      out.push({
+        id: opt.id,
+        name: opt.name,
+        category: opt.category,
+        type: "boolean",
+        currentValue: opt.currentValue,
+      });
+    } else if (opt.type === "select") {
+      const choices: Array<{ value: string; name: string }> = [];
+      for (const item of opt.options) {
+        if ("options" in item) {
+          for (const sub of item.options) choices.push({ value: sub.value, name: sub.name });
+        } else {
+          choices.push({ value: item.value, name: item.name });
+        }
+      }
+      out.push({
+        id: opt.id,
+        name: opt.name,
+        category: opt.category,
+        type: "select",
+        currentValue: typeof opt.currentValue === "string" ? opt.currentValue : null,
+        options: choices,
+      });
+    }
+  }
+  return out;
 }
 
 /** Tiny event emitter for the single-shot exit notification. */

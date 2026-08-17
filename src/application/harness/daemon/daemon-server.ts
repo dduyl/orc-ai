@@ -17,6 +17,8 @@ import {
   type InputResult,
   type PromptParams,
   type PromptResult,
+  type SetConfigOptionParams,
+  type SetConfigOptionResult,
   type StartParams,
   type StopResult,
   type WorkflowCompleteInfo,
@@ -103,7 +105,9 @@ export interface DaemonServerOptions {
    * the session's permission requests into the daemon's control-pipe
    * `permissionRequested` broadcast.
    */
-  spawnMainAcp?: (opts: { onPermission: (request: PermissionRequest) => void }) => MainAcpSession;
+spawnMainAcp?: (opts: { onPermission: (request: PermissionRequest) => void }) =>
+    | MainAcpSession
+    | Promise<MainAcpSession>;
   /** Invoked once after the daemon has fully shut down (tests / CLI exit). */
   onShutdown?: () => void;
 }
@@ -119,7 +123,9 @@ export class DaemonServer {
   private readonly mcp?: { port: number } | false;
   private readonly idleMs: number;
   private readonly spawnMain?: () => PtyLike;
-  private readonly spawnMainAcp?: (opts: { onPermission: (request: PermissionRequest) => void }) => MainAcpSession;
+  private readonly spawnMainAcp?: (opts: {
+    onPermission: (request: PermissionRequest) => void;
+  }) => MainAcpSession | Promise<MainAcpSession>;
   private readonly onShutdown?: () => void;
   /** Owned disk-log store for finished-run re-attach (undefined if disabled). */
   private readonly runLogStore: RunLogStore | undefined;
@@ -212,7 +218,7 @@ export class DaemonServer {
    */
   private startMain(): void {
     if (this.spawnMainAcp) {
-      this.startMainAcp();
+      void this.startMainAcp();
       return;
     }
     if (!this.spawnMain) return;
@@ -241,9 +247,9 @@ export class DaemonServer {
    * clients via `onMainTerminalConnection`. Permission requests are forwarded
    * to the control pipe and answered by the attached GUI (`answerPermission`).
    */
-  private startMainAcp(): void {
+  private async startMainAcp(): Promise<void> {
     try {
-      const session = this.spawnMainAcp!({
+      const session = await this.spawnMainAcp!({
         onPermission: (request) => this.broadcast(RpcNotification.permissionRequested, request),
       });
       this.mainSession = session;
@@ -433,6 +439,9 @@ export class DaemonServer {
     conn.onRequest(RpcMethod.answerPermission, (params: AnswerPermissionParams) =>
       this.handleAnswerPermission(params),
     );
+    conn.onRequest(RpcMethod.setConfigOption, (params: SetConfigOptionParams) =>
+      this.handleSetConfigOption(params),
+    );
     conn.onRequest(RpcMethod.stop, () => this.handleStop(sock));
 
     const cleanup = (): void => {
@@ -555,7 +564,7 @@ export class DaemonServer {
   /** Queue a user prompt turn on the ACP main session (`prompt` RPC). */
   private handlePrompt(params: PromptParams): PromptResult {
     if (!this.mainSession) throw new Error("Main terminal unavailable");
-    this.mainSession.prompt(params.text);
+    this.mainSession.prompt(params.text, params.mentions);
     return { queued: true };
   }
 
@@ -571,6 +580,13 @@ export class DaemonServer {
     if (!this.mainSession) throw new Error("Main terminal unavailable");
     const answered = this.mainSession.answerPermission(params.requestId, params.kind);
     return { answered };
+  }
+
+  /** Set an ACP main session config option (e.g. the model). */
+  private async handleSetConfigOption(params: SetConfigOptionParams): Promise<SetConfigOptionResult> {
+    if (!this.mainSession) throw new Error("Main terminal unavailable");
+    await this.mainSession.setConfigOption(params.configId, params.value);
+    return { ok: true };
   }
 
   // --- run event fan-out ---------------------------------------------------

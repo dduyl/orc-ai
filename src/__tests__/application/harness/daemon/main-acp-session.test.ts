@@ -23,9 +23,34 @@ rl.on('line', (line) => {
   if (method === 'initialize') {
     send({ jsonrpc:'2.0', id, result:{ protocolVersion:1, agentCapabilities:{}, agentInfo:{ name:'mock', version:'1' } } });
   } else if (method === 'session/new') {
-    send({ jsonrpc:'2.0', id, result:{ sessionId:'sess-1' } });
+    const result = { sessionId:'sess-1' };
+    if (process.env.REQ_CONFIG === '1') {
+      result.configOptions = [
+        { id:'model', name:'Model', category:'model', type:'select', currentValue:'mini',
+          options:[{ value:'mini', name:'opencode mini' }, { value:'full', name:'opencode' }] }
+      ];
+    }
+    send({ jsonrpc:'2.0', id, result });
     send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'agent_message_chunk', content:{ type:'text', text:'mock reply' } } } });
+    if (process.env.REQ_CMDS_AT_OPEN === '1') {
+      send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'available_commands_update', availableCommands:[
+        { name:'compact', description:'Compact history' },
+        { name:'help', description:'Get help', input:{ hint:'<topic>' } }
+      ] } } });
+    }
   } else if (method === 'session/prompt') {
+    if (process.env.REQ_CMDS === '1') {
+      send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'available_commands_update', availableCommands:[
+        { name:'compact', description:'Compact history' },
+        { name:'help', description:'Get help', input:{ hint:'<topic>' } }
+      ] } } });
+    }
+    if (process.env.REQ_CFG_UPDATE === '1') {
+      send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'config_option_update', configOptions:[
+        { id:'model', name:'Model', category:'model', type:'select', currentValue:'full',
+          options:[{ value:'mini', name:'opencode mini' }, { value:'full', name:'opencode' }] }
+      ] } } });
+    }
     if (process.env.REQ_ERROR === '1') {
       send({ jsonrpc:'2.0', id, error:{ code:-32000, message:'mock turn failure' } });
     } else if (process.env.REQ_PERM === '1') {
@@ -42,9 +67,20 @@ rl.on('line', (line) => {
           { optionId:'o3', kind:'reject_once', name:'Reject' },
         ],
       } });
+    } else if (process.env.REQ_ECHO === '1') {
+      send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'agent_message_chunk', content:{ type:'text', text: JSON.stringify(msg.params.prompt) } } } });
+      send({ jsonrpc:'2.0', id, result:{ stopReason:'end_turn', usage:{ totalTokens:7, inputTokens:2, outputTokens:5 } } });
     } else {
       send({ jsonrpc:'2.0', id, result:{ stopReason:'end_turn', usage:{ totalTokens:7, inputTokens:2, outputTokens:5 } } });
     }
+  } else if (method === 'session/set_config_option') {
+    const value = (msg.params && msg.params.value) || 'mini';
+    const configOptions = [
+      { id:'model', name:'Model', category:'model', type:'select', currentValue: value,
+        options:[{ value:'mini', name:'opencode mini' }, { value:'full', name:'opencode' }] }
+    ];
+    send({ jsonrpc:'2.0', id, result:{ configOptions } });
+    send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'config_option_update', configOptions } } });
   }
 });
 `;
@@ -92,6 +128,11 @@ afterEach(async () => {
   await sleep(20);
   delete process.env["REQ_PERM"];
   delete process.env["REQ_ERROR"];
+  delete process.env["REQ_ECHO"];
+  delete process.env["REQ_CMDS"];
+  delete process.env["REQ_CMDS_AT_OPEN"];
+  delete process.env["REQ_CFG_UPDATE"];
+  delete process.env["REQ_CONFIG"];
 });
 
 describe("MainAcpSession", () => {
@@ -198,7 +239,42 @@ describe("MainAcpSession", () => {
     await boot;
   });
 
-  it("EOFs attached clients and resolves start() on close", async () => {    const session = makeSession();
+  it("prompt turns with mentions send the text plus a resource_link block per mention", async () => {
+    process.env["REQ_ECHO"] = "1";
+    const session = makeSession();
+    sessions.push(session);
+    const boot = session.start();
+
+    const { frames, server } = await attachTo(session);
+    servers.push(server);
+
+    session.prompt("review this", [{ path: "src/core/types.ts" }, { path: "src/index.ts" }]);
+    await flushUntil(() => decoded(frames).filter((f) => f.kind === "text").length >= 2);
+
+    const got = decoded(frames);
+    const texts = got.filter((f) => f.kind === "text");
+    const text = texts[texts.length - 1] as { text: string } | undefined;
+    expect(text).toBeTruthy();
+    const sent = JSON.parse(text!.text) as Array<{
+      type: string;
+      text?: string;
+      name?: string;
+      uri?: string;
+    }>;
+    expect(sent[0]).toEqual({ type: "text", text: "review this" });
+    const links = sent.filter((b) => b.type === "resource_link");
+    expect(links).toHaveLength(2);
+    expect(links[0].name).toBe("src/core/types.ts");
+    expect(links[0].uri).toContain("file:///");
+    expect(links[0].uri).toContain("src/core/types.ts");
+    expect(links[1].name).toBe("src/index.ts");
+
+    session.close();
+    await boot;
+  });
+
+  it("EOFs attached clients and resolves start() on close", async () => {
+    const session = makeSession();
     sessions.push(session);
     const boot = session.start();
 
@@ -209,5 +285,127 @@ describe("MainAcpSession", () => {
     await eof;
     await boot;
     expect(session.exited).toBe(true);
+  });
+
+  it("emits a config frame from session/new configOptions", async () => {
+    process.env["REQ_CONFIG"] = "1";
+    const session = makeSession();
+    sessions.push(session);
+    const boot = session.start();
+
+    const { frames, server } = await attachTo(session);
+    servers.push(server);
+    await flushUntil(() => decoded(frames).some((f) => f.kind === "config"));
+
+    expect(decoded(frames).find((f) => f.kind === "config")).toMatchObject({
+      kind: "config",
+      options: [
+        {
+          id: "model",
+          name: "Model",
+          category: "model",
+          type: "select",
+          currentValue: "mini",
+          options: [
+            { value: "mini", name: "opencode mini" },
+            { value: "full", name: "opencode" },
+          ],
+        },
+      ],
+    });
+
+    session.close();
+    await boot;
+  });
+
+  it("forwards available_commands_update into a commands frame", async () => {
+    process.env["REQ_CMDS"] = "1";
+    const session = makeSession();
+    sessions.push(session);
+    const boot = session.start();
+
+    const { frames, server } = await attachTo(session);
+    servers.push(server);
+
+    session.prompt("hello");
+    await flushUntil(() => decoded(frames).some((f) => f.kind === "commands"));
+
+    expect(decoded(frames).find((f) => f.kind === "commands")).toMatchObject({
+      kind: "commands",
+      commands: [
+        { name: "compact", description: "Compact history" },
+        { name: "help", description: "Get help", input: "<topic>" },
+      ],
+    });
+
+    session.close();
+    await boot;
+  });
+
+  it("drains session-open updates (available_commands_update) before any prompt", async () => {
+    process.env["REQ_CMDS_AT_OPEN"] = "1";
+    const session = makeSession();
+    sessions.push(session);
+    const boot = session.start();
+
+    const { frames, server } = await attachTo(session);
+    servers.push(server);
+
+    // No prompt is submitted: the commands frame must arrive from the
+    // session-open drain, proving `/` works before the user's first turn.
+    await flushUntil(() => decoded(frames).some((f) => f.kind === "commands"));
+
+    expect(decoded(frames).find((f) => f.kind === "commands")).toMatchObject({
+      kind: "commands",
+      commands: [
+        { name: "compact", description: "Compact history" },
+        { name: "help", description: "Get help", input: "<topic>" },
+      ],
+    });
+
+    session.close();
+    await boot;
+  });
+
+  it("forwards config_option_update into a config frame", async () => {
+    process.env["REQ_CFG_UPDATE"] = "1";
+    const session = makeSession();
+    sessions.push(session);
+    const boot = session.start();
+
+    const { frames, server } = await attachTo(session);
+    servers.push(server);
+
+    session.prompt("hello");
+    await flushUntil(() => decoded(frames).some((f) => f.kind === "config"));
+
+    expect(decoded(frames).find((f) => f.kind === "config")).toMatchObject({
+      kind: "config",
+      options: [{ id: "model", currentValue: "full" }],
+    });
+
+    session.close();
+    await boot;
+  });
+
+  it("setConfigOption sends session/set_config_option and re-emits config", async () => {
+    const session = makeSession();
+    sessions.push(session);
+    const boot = session.start();
+
+    const { frames, server } = await attachTo(session);
+    servers.push(server);
+    await flushUntil(() => session.session !== null);
+
+    await session.setConfigOption("model", "full");
+    await flushUntil(() => decoded(frames).some((f) => f.kind === "config"));
+
+    expect(decoded(frames).find((f) => f.kind === "config")).toMatchObject({
+      kind: "config",
+      options: [{ id: "model", currentValue: "full" }],
+    });
+
+    session.close();
+    await boot;
   });
 });

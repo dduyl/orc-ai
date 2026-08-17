@@ -72,6 +72,7 @@ describe("daemon/rpc-protocol", () => {
       prompt: "prompt",
       cancelMain: "cancelMain",
       answerPermission: "answerPermission",
+      setConfigOption: "setConfigOption",
     });
     expect(RpcNotification).toEqual({
       progress: "progress",

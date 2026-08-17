@@ -16,8 +16,11 @@ import {
   type CancelResult,
   type InputParams,
   type InputResult,
+  type PromptMention,
   type PromptParams,
   type PromptResult,
+  type SetConfigOptionParams,
+  type SetConfigOptionResult,
   type StartParams,
   type StartResult,
   type StopResult,
@@ -137,8 +140,9 @@ export class PipeClient {
   }
 
   /** Queue a user prompt turn on the ACP main session. */
-  async prompt(text: string): Promise<PromptResult> {
-    return this.conn.sendRequest(RpcMethod.prompt, { text } satisfies PromptParams) as Promise<PromptResult>;
+  async prompt(text: string, mentions?: PromptMention[]): Promise<PromptResult> {
+    const params: PromptParams = mentions?.length ? { text, mentions } : { text };
+    return this.conn.sendRequest(RpcMethod.prompt, params) as Promise<PromptResult>;
   }
 
   /** Cancel the ACP main session's in-flight turn. */
@@ -152,6 +156,14 @@ export class PipeClient {
       RpcMethod.answerPermission,
       { requestId, kind } satisfies AnswerPermissionParams,
     ) as Promise<AnswerPermissionResult>;
+  }
+
+  /** Set an ACP main session config option (e.g. the model). */
+  async setConfigOption(configId: string, value: string): Promise<SetConfigOptionResult> {
+    return this.conn.sendRequest(
+      RpcMethod.setConfigOption,
+      { configId, value } satisfies SetConfigOptionParams,
+    ) as Promise<SetConfigOptionResult>;
   }
 
   /**

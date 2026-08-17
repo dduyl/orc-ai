@@ -25,6 +25,7 @@ export const RpcMethod = {
   prompt: "prompt",
   cancelMain: "cancelMain",
   answerPermission: "answerPermission",
+  setConfigOption: "setConfigOption",
 } as const;
 
 /** Control-plane JSON-RPC notifications (server → client). */
@@ -89,6 +90,15 @@ export interface StopResult {
 /** Payload for the `prompt` RPC: queue a user prompt on the ACP main session. */
 export interface PromptParams {
   text: string;
+  /** `@path` mentions to attach as `resource_link` content blocks. */
+  mentions?: PromptMention[];
+}
+
+/** A `@path` mention extracted from the composer on submit (line ranges optional). */
+export interface PromptMention {
+  path: string;
+  lineStart?: number;
+  lineEnd?: number;
 }
 
 export interface PromptResult {
@@ -108,6 +118,16 @@ export interface AnswerPermissionParams {
 
 export interface AnswerPermissionResult {
   answered: boolean;
+}
+
+/** Payload for the `setConfigOption` RPC: set an ACP session config option (e.g. model). */
+export interface SetConfigOptionParams {
+  configId: string;
+  value: string;
+}
+
+export interface SetConfigOptionResult {
+  ok: true;
 }
 
 export interface WorkflowCompleteInfo {

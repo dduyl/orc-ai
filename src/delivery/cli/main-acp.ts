@@ -13,10 +13,10 @@ import { loadDotEnv } from "./env-loader.js";
  * `answerPermission`). Permission requests are wired to the daemon, which
  * broadcasts them on the control pipe for the attached GUI to answer.
  */
-export function spawnMainAcpSession(
+export async function spawnMainAcpSession(
   adapterId: string,
   opts: { onPermission: (request: PermissionRequest) => void; cwd?: string },
-): MainAcpSession {
+): Promise<MainAcpSession> {
   loadDotEnv(opts.cwd);
   const strat = getAcpStrategy(adapterId);
   if (!strat || !strat.available) {
@@ -25,9 +25,10 @@ export function spawnMainAcpSession(
     );
   }
   const cwd = opts.cwd ?? process.cwd();
+  const spawn = strat.buildSpawn(cwd);
   return new MainAcpSession({
     cwd,
-    spawn: strat.buildSpawn(cwd),
+    spawn: { command: spawn.command, args: spawn.args },
     env: { ...(process.env as Record<string, string>) },
     onPermission: opts.onPermission,
   });
