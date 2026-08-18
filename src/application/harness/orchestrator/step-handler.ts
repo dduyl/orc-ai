@@ -3,6 +3,7 @@ import type { AdapterDef, AgentCallResult } from "../../agents/adapter.js";
 import { callAgentStream } from "../../agents/adapter-pty.js";
 import type { AgentSystemPrompt } from "../../planner/prompt-loader.js";
 import { CommandExecutor, type CommandExecutionResult } from "../execution/CommandExecutor.js";
+import { compressGateOutput } from "../execution/output-compress.js";
 import { commandsTomlPath } from "../persistence/bootstrap.js";
 import { createHookFile, readHookEvents, removeHookFile } from "../../../adapters/hooks/endpoint.js";
 import { registerCompletion, rejectCompletion, completionKeyExists } from "../signalling/StepCompletionRegistry.js";
@@ -37,8 +38,12 @@ export function buildRepairPrompt(
       `command: ${g.command}`,
       `exit code: ${g.exitCode}`,
     ];
-    if (g.stdout) lines.push(`stdout:\n${g.stdout}`);
-    if (g.stderr) lines.push(`stderr:\n${g.stderr}`);
+    const compressed = compressGateOutput(g.stdout ?? "", g.stderr ?? "");
+    if (compressed.changed) {
+      lines.push(`[output compressed: ${compressed.originalChars} -> ${compressed.compressedChars} chars]`);
+    }
+    if (compressed.stdout) lines.push(`stdout:\n${compressed.stdout}`);
+    if (compressed.stderr) lines.push(`stderr:\n${compressed.stderr}`);
     return lines.join("\n");
   });
   return [

@@ -248,6 +248,53 @@ describe("buildRepairPrompt", () => {
     expect(prompt).toContain("=== Response Instructions ===");
     expect(prompt).toContain("return_result");
   });
+
+  it("compresses oversized gate output and annotates the ratio", () => {
+    const big = Array.from({ length: 500 }, (_, i) => `line ${i}`).join("\n");
+    const result: CommandExecutionResult = {
+      schemaVersion: 1,
+      passed: false,
+      exitCode: 1,
+      groups: [{ name: "inline", command: "npx vitest run", exitCode: 1, stdout: big, stderr: "" }],
+    };
+    const prompt = buildRepairPrompt("test_unit", result, agentStep);
+    expect(prompt).toContain("[output compressed:");
+    expect(prompt).toContain("lines omitted]");
+    expect(prompt).toContain("line 0");
+    expect(prompt).toContain("line 499");
+    expect(prompt).not.toContain("line 250");
+  });
+
+  it("annotates per-group compression when one command floods but the other is small", () => {
+    const big = Array.from({ length: 500 }, (_, i) => `line ${i}`).join("\n");
+    const result: CommandExecutionResult = {
+      schemaVersion: 1,
+      passed: false,
+      exitCode: 1,
+      groups: [
+        { name: "test.unit", command: "npm run lint", exitCode: 0, stdout: "lint ok", stderr: "" },
+        { name: "test.unit", command: "npx vitest run", exitCode: 1, stdout: big, stderr: "" },
+      ],
+    };
+    const prompt = buildRepairPrompt("test_unit", result, agentStep);
+    const markerCount = prompt.split("[output compressed:").length - 1;
+    expect(markerCount).toBe(1);
+    expect(prompt).toContain("lint ok");
+    expect(prompt).not.toContain("line 250");
+  });
+
+  it("leaves small gate output untouched (no compression marker)", () => {
+    const result: CommandExecutionResult = {
+      schemaVersion: 1,
+      passed: false,
+      exitCode: 1,
+      groups: [{ name: "inline", command: "npx tsc --noEmit", exitCode: 1, stdout: "small out", stderr: "small err" }],
+    };
+    const prompt = buildRepairPrompt("validate", result, agentStep);
+    expect(prompt).not.toContain("[output compressed:");
+    expect(prompt).toContain("small out");
+    expect(prompt).toContain("small err");
+  });
 });
 
 describe("step-handler repair feedback", () => {
