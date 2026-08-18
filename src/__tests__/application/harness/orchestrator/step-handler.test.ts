@@ -295,6 +295,19 @@ describe("buildRepairPrompt", () => {
     expect(prompt).toContain("small out");
     expect(prompt).toContain("small err");
   });
+
+  it("annotates blank-only oversized output and drops the stdout block", () => {
+    const blank = "\n\n\n\n".repeat(300);
+    const result: CommandExecutionResult = {
+      schemaVersion: 1,
+      passed: false,
+      exitCode: 1,
+      groups: [{ name: "inline", command: "npx vitest run", exitCode: 1, stdout: blank, stderr: "" }],
+    };
+    const prompt = buildRepairPrompt("test_unit", result, agentStep);
+    expect(prompt).toContain("[output compressed:");
+    expect(prompt).not.toContain("stdout:");
+  });
 });
 
 describe("step-handler repair feedback", () => {

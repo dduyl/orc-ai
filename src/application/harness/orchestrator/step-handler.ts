@@ -38,7 +38,7 @@ export function buildRepairPrompt(
       `command: ${g.command}`,
       `exit code: ${g.exitCode}`,
     ];
-    const compressed = compressGateOutput(g.stdout ?? "", g.stderr ?? "");
+    const compressed = compressGateOutput(g.stdout, g.stderr);
     if (compressed.changed) {
       lines.push(`[output compressed: ${compressed.originalChars} -> ${compressed.compressedChars} chars]`);
     }
