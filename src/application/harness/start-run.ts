@@ -222,3 +222,23 @@ export function resolvePausedRunId(host: RunHost, task: string, workflowId: stri
   }
   return undefined;
 }
+
+/**
+ * Re-arms the quota wake timer for paused runs found at startup.
+ *
+ * A paused run's wake timer lives in memory (`host.wakeTimers`) and is lost on
+ * a daemon restart — the run would otherwise sit paused forever with no way to
+ * auto-resume. Runs that already have a live background job (or a fresh timer)
+ * are left untouched. Called once when the server starts, right after
+ * `reconcileStaleRuns`.
+ */
+export function reconcilePausedRuns(host: RunHost): void {
+  for (const run of host.tracker.listRuns()) {
+    if (run.status === "paused" && !host.bgRuns.has(run.runId)) {
+      log.warn(`[run ${run.runId}] Paused run found at startup — re-arming its quota wake`);
+      // A resetAtMs that has already passed schedules an immediate wake
+      // (delay clamps to 0) — the run resumes as soon as the daemon is up.
+      host.schedulePausedRunResume(run.runId, run.task, run.workflowId, run.resetAtMs ?? undefined);
+    }
+  }
+}

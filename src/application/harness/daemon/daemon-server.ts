@@ -26,7 +26,7 @@ import {
 import type { AdapterDef } from "../../agents/adapter.js";
 import { getAdapter, BUILTIN_ADAPTERS } from "../../agents/adapter.js";
 import { RunHost } from "../run-host.js";
-import { startRun, reconcileStaleRuns, resolvePausedRunId, type StartRunResult } from "../start-run.js";
+import { startRun, reconcileStaleRuns, reconcilePausedRuns, resolvePausedRunId, type StartRunResult } from "../start-run.js";
 import { WorkflowRegistry } from "../../planner/registry.js";
 import type { Tracker, RunRecord } from "../persistence/Tracker.js";
 import { TerminalStore, type PtyLike } from "./terminal-store.js";
@@ -201,6 +201,8 @@ export class DaemonServer {
     // transport and must not re-run these.
     setupInfrastructure();
     reconcileStaleRuns(this.host);
+    // Paused runs survive restarts — re-arm their quota wakes so they resume.
+    reconcilePausedRuns(this.host);
     if (this.mcp) {
       this.mcpServer = new McpServer(this.host, () => this.touch());
       await this.mcpServer.startHttp(this.mcp.port);

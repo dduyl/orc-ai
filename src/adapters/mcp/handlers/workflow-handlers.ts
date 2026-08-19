@@ -205,6 +205,10 @@ export async function handleGetRunStatusTool(args: any): Promise<CallToolResult>
       createdAt: run.createdAt,
       updatedAt: run.updatedAt,
       completedAt: run.completedAt,
+      // ADR-022: pause metadata so a client can tell a paused run when it
+      // will auto-resume (or that it is waiting on manual resume).
+      resetAtMs: run.resetAtMs ?? null,
+      pauseReason: run.pauseReason ?? null,
     }, null, 2) }],
   };
 }

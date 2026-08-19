@@ -4,20 +4,27 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import type { AdapterDef } from "../../../../application/agents/adapter.js";
 
-vi.mock("../../../../application/harness/start-run.js", () => ({
-  startRun: vi.fn(async () => ({
-    runId: "x",
-    workflowId: "wf",
-    workflowName: "WF",
-    status: "running",
-    message: "",
-  })),
-  reconcileStaleRuns: vi.fn(),
-}));
+vi.mock("../../../../application/harness/start-run.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../../application/harness/start-run.js")>();
+  return {
+    startRun: vi.fn(async () => ({
+      runId: "x",
+      workflowId: "wf",
+      workflowName: "WF",
+      status: "running",
+      message: "",
+    })),
+    reconcileStaleRuns: vi.fn(),
+    // Real implementation so the startup-reconcile tests exercise the actual
+    // re-arming logic; only the fired startRun is mocked.
+    reconcilePausedRuns: (host: any) => actual.reconcilePausedRuns(host),
+  };
+});
 
 import { RunHost } from "../../../../application/harness/run-host.js";
 import { Tracker } from "../../../../application/harness/persistence/Tracker.js";
 import { WorkflowRegistry } from "../../../../application/planner/registry.js";
+import { reconcilePausedRuns } from "../../../../application/harness/start-run.js";
 import { startRun } from "../../../../application/harness/start-run.js";
 
 const mockedStartRun = vi.mocked(startRun);
@@ -165,6 +172,54 @@ describe("RunHost paused-run wake timer (ADR-022)", () => {
     vi.advanceTimersByTime(5_000);
     expect(mockedStartRun).not.toHaveBeenCalled();
     expect(tracker.getRun("w7")!.status).toBe("paused");
+    tracker.close();
+  });
+
+  it("reconcilePausedRuns re-arms a paused run's wake at startup", () => {
+    const { host, tracker } = makeHost();
+    tracker.createRun("w8", "wf", "WF", "task", "test", [{ stepId: "s1", agent: null, task: null, signals: [] }]);
+    tracker.pauseRun("w8", Date.now() + 30_000);
+
+    reconcilePausedRuns(host);
+
+    vi.advanceTimersByTime(30_000);
+    expect(mockedStartRun).toHaveBeenCalledTimes(1);
+    expect(mockedStartRun).toHaveBeenCalledWith(host, "task", "wf", true, {
+      runId: "w8",
+      signal: undefined,
+      onEvent: undefined,
+    });
+    tracker.close();
+  });
+
+  it("reconcilePausedRuns resumes immediately when the reset window already passed", () => {
+    const { host, tracker } = makeHost();
+    tracker.createRun("w9", "wf", "WF", "task", "test", [{ stepId: "s1", agent: null, task: null, signals: [] }]);
+    tracker.pauseRun("w9", Date.now() - 1_000);
+
+    reconcilePausedRuns(host);
+
+    vi.advanceTimersByTime(0);
+    expect(mockedStartRun).toHaveBeenCalledTimes(1);
+    expect(mockedStartRun).toHaveBeenCalledWith(host, "task", "wf", true, {
+      runId: "w9",
+      signal: undefined,
+      onEvent: undefined,
+    });
+    tracker.close();
+  });
+
+  it("reconcilePausedRuns leaves a paused run with an active background job untouched", () => {
+    const { host, tracker } = makeHost();
+    tracker.createRun("w10", "wf", "WF", "task", "test", [{ stepId: "s1", agent: null, task: null, signals: [] }]);
+    tracker.pauseRun("w10", Date.now() + 30_000);
+    host.bgRuns.set("w10", Promise.resolve({} as any));
+
+    reconcilePausedRuns(host);
+
+    vi.advanceTimersByTime(60_000);
+    expect(mockedStartRun).not.toHaveBeenCalled();
+    expect(tracker.getRun("w10")!.status).toBe("paused");
     tracker.close();
   });
 });
