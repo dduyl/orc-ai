@@ -18,13 +18,21 @@ const { agentCalls, mockState } = vi.hoisted(() => {
     killSettles: boolean;
     resolve?: (v?: unknown) => void;
     rejectWith?: unknown;
-  } = { killed: 0, pending: false, killSettles: true };
+    callCount: number;
+    downgradeParams: Array<string | undefined>;
+    sequence?: Array<{ rejectWith?: unknown; resolveValue?: unknown }>;
+  } = { killed: 0, pending: false, killSettles: true, callCount: 0, downgradeParams: [] };
   return { agentCalls: [] as string[], mockState };
 });
 
 vi.mock("../../../../application/agents/adapter-pty.js", () => ({
-  callAgentStream: (_adapter: unknown, prompt: string) => {
+  callAgentStream: (_adapter: unknown, prompt: string, _hook?: string, downgradeTo?: string) => {
     agentCalls.push(prompt);
+    mockState.callCount++;
+    mockState.downgradeParams.push(downgradeTo);
+    const entry = mockState.sequence?.[mockState.callCount - 1];
+    const rejectWith = entry?.rejectWith !== undefined ? entry.rejectWith : mockState.rejectWith;
+    const resolveValue = entry?.resolveValue;
     const pty = {
       onData: () => {}, onExit: () => {}, write: () => {}, resize: () => {},
       kill: () => {
@@ -40,9 +48,11 @@ vi.mock("../../../../application/agents/adapter-pty.js", () => ({
       pty,
       promise: mockState.pending
         ? new Promise(resolve => { mockState.resolve = resolve; })
-        : mockState.rejectWith !== undefined
-          ? Promise.reject(mockState.rejectWith)
-          : Promise.resolve({ content: "mock", model: "mock", tokensUsed: 0, duration: 0 }),
+        : rejectWith !== undefined
+          ? Promise.reject(rejectWith)
+          : resolveValue !== undefined
+            ? Promise.resolve({ ...resolveValue, ...(downgradeTo ? { downgradedTo: downgradeTo } : {}) })
+            : Promise.resolve({ content: "mock", model: "mock", tokensUsed: 0, duration: 0, ...(downgradeTo ? { downgradedTo: downgradeTo } : {}) }),
     };
   },
 }));
@@ -637,6 +647,7 @@ describe("step-handler quota surfacing chain", () => {
       dir,
       tracker,
       runId,
+      emitter: em,
       streamEvents,
       progress,
       handler,
@@ -646,6 +657,14 @@ describe("step-handler quota surfacing chain", () => {
       },
     };
   }
+
+  beforeEach(() => {
+    agentCalls.length = 0;
+    mockState.callCount = 0;
+    mockState.downgradeParams = [];
+    mockState.sequence = undefined;
+    mockState.rejectWith = undefined;
+  });
 
   it("quota: structured payload is value-equal across outcome, progress, tracker, and stream", async () => {
     mockState.rejectWith = new AgentCallError("quota", "You exceeded your current quota", {
@@ -694,6 +713,125 @@ describe("step-handler quota surfacing chain", () => {
       const finish = h.streamEvents.find((e: any) => e.type === "step_finish");
       expect(finish.part.quota).toBeUndefined();
       expect(finish.part.reason).toBe("stop");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("quota → downgrade → second quota: fails with downgradedTo value-equal across outcome, progress, tracker, stream", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111 }) },
+      { rejectWith: new AgentCallError("quota", "second quota", { resetAtMs: 222 }) },
+    ];
+    const h = buildHarness();
+    h.handler = createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: h.emitter,
+      task: "t",
+      tracker: { runId: h.runId, tracker: h.tracker },
+      onProgress: e => h.progress.push(e),
+      resolveDowngradeModel: () => "claude-haiku",
+    });
+    try {
+      const out = await h.handler(agentStep(), ctx());
+      const expected = { kind: "quota", resetAtMs: 222, message: "second quota", downgradedTo: "claude-haiku" };
+
+      expect(out.status).toBe("failed");
+      expect(out.failureReason).toBe("quota_exhausted");
+      expect(out.downgradedTo).toBe("claude-haiku");
+      expect(out.quota).toEqual(expected);
+      // exactly two adapter calls: the original attempt + one downgraded retry.
+      expect(agentCalls.length).toBe(2);
+      expect(mockState.downgradeParams).toEqual([undefined, "claude-haiku"]);
+
+      const complete = h.progress.find((e: any) => e.type === "step_complete");
+      expect(complete.status).toBe("failed");
+      expect(complete.error).toBe("second quota");
+      expect(complete.quota).toEqual(expected);
+
+      const step = h.tracker.getRun(h.runId)!.steps[0];
+      expect(step.status).toBe("failed");
+      expect(step.quota).toEqual(expected);
+
+      const finish = h.streamEvents.find((e: any) => e.type === "step_finish");
+      expect(finish.part.reason).toBe("quota");
+      expect(finish.part.quota).toEqual(expected);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("quota → downgrade → success: step completes and surfaces downgradedTo with two adapter calls", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111 }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const h = buildHarness();
+    h.handler = createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: h.emitter,
+      task: "t",
+      tracker: { runId: h.runId, tracker: h.tracker },
+      onProgress: e => h.progress.push(e),
+      resolveDowngradeModel: () => "claude-haiku",
+    });
+    try {
+      const out = await h.handler(agentStep(), ctx());
+
+      expect(out.status).toBe("completed");
+      expect(out.downgradedTo).toBe("claude-haiku");
+      expect(out.quota).toBeUndefined();
+      expect(agentCalls.length).toBe(2);
+      expect(mockState.downgradeParams).toEqual([undefined, "claude-haiku"]);
+
+      const complete = h.progress.find((e: any) => e.type === "step_complete");
+      expect(complete.status).toBe("completed");
+      expect(complete.quota).toBeUndefined();
+
+      const step = h.tracker.getRun(h.runId)!.steps[0];
+      expect(step.status).toBe("completed");
+      expect(step.quota).toBeNull();
+
+      const finish = h.streamEvents.find((e: any) => e.type === "step_finish");
+      expect(finish.part.reason).toBe("stop");
+      expect(finish.part.quota).toBeUndefined();
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it.each([
+    ["same model as tried", (): string => "test"],
+    ["empty string", (): string => ""],
+    ["whitespace", (): string => "   "],
+    ["throws", (): string => { throw new Error("boom"); }],
+  ] as const)("quota with unusable resolveDowngradeModel (%s): fails with no downgrade and a single adapter call", async (_label, callback) => {
+    mockState.rejectWith = new AgentCallError("quota", "quota exceeded", { resetAtMs: 333 });
+    mockState.sequence = undefined;
+    const h = buildHarness();
+    h.handler = createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: h.emitter,
+      task: "t",
+      tracker: { runId: h.runId, tracker: h.tracker },
+      onProgress: e => h.progress.push(e),
+      resolveDowngradeModel: callback,
+    });
+    try {
+      const out = await h.handler(agentStep(), ctx());
+
+      expect(out.status).toBe("failed");
+      expect(out.failureReason).toBe("quota_exhausted");
+      expect(out.quota).toEqual({ kind: "quota", resetAtMs: 333, message: "quota exceeded" });
+      expect(out.downgradedTo).toBeUndefined();
+      expect(agentCalls.length).toBe(1);
+      expect(mockState.downgradeParams).toEqual([undefined]);
     } finally {
       h.cleanup();
     }

@@ -28,10 +28,14 @@ export function callAgentStream(
   adapter: AdapterDef,
   prompt: string,
   hookFilePath?: string,
+  downgradeTo?: string,
 ): AgentPTYStreamHandle {
   if (acpEnabledFor(adapter.id)) {
-    return callAcpAgentStream(adapter, prompt, hookFilePath);
+    return callAcpAgentStream(adapter, prompt, hookFilePath, downgradeTo);
   }
+
+  // PTY path: no session model config to switch, so `downgradeTo` is accepted
+  // but inert. The harness decides the variant; the PTY branch cannot apply it.
 
   const start = Date.now();
   const strat = getStrategy(adapter.id);

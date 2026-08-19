@@ -57,6 +57,8 @@ rl.on('line', (line) => {
 const MOCK_SCRIPT_QUOTA = `
 const readline = require('readline');
 const rl = readline.createInterface({ input: process.stdin });
+let promptCount = 0;
+let configDone = false;
 function send(msg) { process.stdout.write(JSON.stringify(msg) + '\\n'); }
 rl.on('line', (line) => {
   const msg = JSON.parse(line);
@@ -65,8 +67,19 @@ rl.on('line', (line) => {
     send({ jsonrpc:'2.0', id, result:{ protocolVersion:1, agentCapabilities:{}, agentInfo:{ name:'mock', version:'1' } } });
   } else if (method === 'session/new') {
     send({ jsonrpc:'2.0', id, result:{ sessionId:'sess-1' } });
+    send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'agent_message_chunk', content:{ type:'text', text:'mock reply' } } } });
   } else if (method === 'session/prompt') {
-    send({ jsonrpc:'2.0', id, error:{ code:-32000, message:'You exceeded your current quota, please check your plan and billing details.' } });
+    promptCount++;
+    if (promptCount === 1) {
+      send({ jsonrpc:'2.0', id, error:{ code:-32000, message:'You exceeded your current quota, please check your plan and billing details.' } });
+    } else if (!configDone) {
+      send({ jsonrpc:'2.0', id, error:{ code:-32000, message:'second prompt arrived before set_config_option' } });
+    } else {
+      send({ jsonrpc:'2.0', id, result:{ stopReason:'end_turn', usage:{ totalTokens:7, inputTokens:2, outputTokens:5 } } });
+    }
+  } else if (method === 'session/set_config_option') {
+    configDone = true;
+    send({ jsonrpc:'2.0', id, result:{} });
   }
 });
 `;
@@ -207,6 +220,15 @@ describe("callAcpAgentStream", () => {
     expect(err).toBeInstanceOf(AgentCallError);
     expect((err as AgentCallError).kind).toBe("quota");
     expect((err as AgentCallError).message).toMatch(/quota/);
+  });
+
+  it("quota → downgradeTo → second prompt succeeds: resolves with downgradedTo on the result", async () => {
+    registerAcpStrategy(fakeAcpStrategyQuota("acp-test-agent"));
+    const handle = callAcpAgentStream(ADAPTER, "hello", undefined, "claude-haiku");
+    const result = await handle.promise;
+
+    expect(result.content).toBe("mock reply");
+    expect(result.downgradedTo).toBe("claude-haiku");
   });
 
   it("feeds rendered tool-call lines through the facade", async () => {

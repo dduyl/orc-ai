@@ -46,6 +46,11 @@ export interface StepOutcome {
   failureReason?: string;
   /** ADR-022: zod-valid quota payload when the step failed because the provider quota is exhausted. */
   quota?: QuotaInfo;
+  /**
+   * ADR-022: model the step was downgraded to after a quota error
+   * (either the step then succeeded, or the downgraded retry failed too).
+   */
+  downgradedTo?: string;
 }
 
 export type StepHandler = (step: WorkflowStep, ctx: RunContext) => Promise<StepOutcome>;

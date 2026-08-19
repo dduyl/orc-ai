@@ -34,6 +34,12 @@ export interface AcpTurnOptions {
   events?: AcpClientEvents;
   /** Abort → sends `session/cancel` and settles with the partial content. */
   signal?: AbortSignal;
+  /**
+   * ADR-022: model to downgrade to (via a same-session
+   * `session/set_config_option` + a second prompt) when the first prompt
+   * fails with a quota error. Never touches the child process.
+   */
+  downgradeTo?: string;
 }
 
 export function normalizeUsage(input?: Usage | null): AgentUsage {
@@ -76,7 +82,7 @@ function scheduleKill(child: ChildProcess): void {
  */
 export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
   const start = Date.now();
-  const { spawn: spec, cwd, env, prompt, permissionGate, events, signal } = opts;
+  const { spawn: spec, cwd, env, prompt, permissionGate, events, signal, downgradeTo } = opts;
 
   const child = spawn(spec.command, spec.args, {
     cwd,
@@ -156,43 +162,70 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
         { once: true },
       );
 
-      const promptPromise = session.prompt(prompt);
-      let stopReason: AcpStopReason = "end_turn";
-      for (;;) {
-        const msg = await session.nextUpdate();
-        if (msg.kind === "stop") {
-          stopReason = msg.stopReason;
-          finalUsage = normalizeUsage(msg.response.usage);
-          break;
-        }
-        const update = msg.update;
-        switch (update.sessionUpdate) {
-          case "agent_message_chunk": {
-            if (update.content?.type === "text") {
-              content.push(update.content.text);
-              events?.onText?.(update.content.text);
-            }
+      // One prompt round-trip. Reused for the same-session downgrade retry
+      // (ADR-022): the session stays open across both prompts.
+      const runPromptOnce = async (): Promise<AcpStopReason> => {
+        const promptPromise = session.prompt(prompt);
+        let stopReason: AcpStopReason = "end_turn";
+        for (;;) {
+          const msg = await session.nextUpdate();
+          if (msg.kind === "stop") {
+            stopReason = msg.stopReason;
+            finalUsage = normalizeUsage(msg.response.usage);
             break;
           }
-          case "tool_call":
-            events?.onToolCall?.(update);
-            break;
-          case "tool_call_update":
-            events?.onToolCallUpdate?.(update);
-            break;
-          default:
-            // plans / session_info / usage_update pass through as no-ops.
-            break;
+          const update = msg.update;
+          switch (update.sessionUpdate) {
+            case "agent_message_chunk": {
+              if (update.content?.type === "text") {
+                content.push(update.content.text);
+                events?.onText?.(update.content.text);
+              }
+              break;
+            }
+            case "tool_call":
+              events?.onToolCall?.(update);
+              break;
+            case "tool_call_update":
+              events?.onToolCallUpdate?.(update);
+              break;
+            default:
+              // plans / session_info / usage_update pass through as no-ops.
+              break;
+          }
         }
+        const promptResponse = await promptPromise;
+        const promptUsage = normalizeUsage(promptResponse.usage);
+        if (promptUsage.totalTokens > 0) finalUsage = promptUsage;
+        return stopReason;
+      };
+
+      try {
+        return { stopReason: await runPromptOnce() };
+      } catch (err) {
+        const agentErr = classifyAgentError(err);
+        if (downgradeTo && agentErr.kind === "quota") {
+          try {
+            await ctx.request(methods.agent.session.setConfigOption, {
+              sessionId: session.sessionId,
+              configId: "model",
+              value: downgradeTo,
+            });
+          } catch {
+            // Config switch refused: the downgrade cannot happen. Surface the
+            // ORIGINAL quota error (its reset window is what the harness must
+            // act on), not the config-option rejection.
+            throw agentErr;
+          }
+          const stopReason = await runPromptOnce();
+          return { stopReason, downgraded: true };
+        }
+        throw agentErr;
       }
-      const promptResponse = await promptPromise;
-      const promptUsage = normalizeUsage(promptResponse.usage);
-      if (promptUsage.totalTokens > 0) finalUsage = promptUsage;
-      return { stopReason };
     });
   });
 
-  let settled: { stopReason: AcpStopReason } | null = null;
+  let settled: { stopReason: AcpStopReason; downgraded?: boolean } | null = null;
   try {
     settled = await Promise.race([turn, spawnFailed.promise.then(err => Promise.reject(err))]);
   } catch (err) {
@@ -233,5 +266,6 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
     content: content.join(""),
     usage: finalUsage,
     duration: Date.now() - start,
+    ...(settled!.downgraded ? { downgraded: true } : {}),
   };
 }

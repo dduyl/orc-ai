@@ -146,6 +146,7 @@ export function callAcpAgentStream(
   adapter: AdapterDef,
   prompt: string,
   hookFilePath?: string,
+  downgradeTo?: string,
 ): AgentACPStreamHandle {
   const strat = getAcpStrategy(adapter.id);
   if (!strat || !strat.available) {
@@ -184,6 +185,7 @@ export function callAcpAgentStream(
     prompt,
     permissionGate: gate,
     signal: facade.signal,
+    ...(downgradeTo ? { downgradeTo } : {}),
     events: {
       onText: text => facade.feed(text),
       onToolCall: call => {
@@ -226,6 +228,7 @@ export function callAcpAgentStream(
         tokensUsed: turn.usage.totalTokens,
         duration: turn.duration,
         usage: turn.usage,
+        ...(turn.downgraded && downgradeTo ? { downgradedTo: downgradeTo } : {}),
       };
     })
     .catch((err: unknown) => {

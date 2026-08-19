@@ -26,6 +26,11 @@ export const QuotaInfo = z.object({
   resetAtMs: z.number().int().positive().optional(),
   providerCode: z.string().optional(),
   message: z.string(),
+  /**
+   * ADR-022: model the failed step was downgraded to when a
+   * quota-triggered downgrade was attempted (failed its retry too).
+   */
+  downgradedTo: z.string().optional(),
 });
 export type QuotaInfo = z.infer<typeof QuotaInfo>;
 

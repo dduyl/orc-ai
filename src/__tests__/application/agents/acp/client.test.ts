@@ -16,8 +16,12 @@ import type { AcpSpawnSpec } from "../../../../application/agents/acp/types.js";
 const MOCK_SCRIPT = `
 const readline = require('readline');
 const mode = process.env.MOCK_MODE || 'stream';
+const second = process.env.MOCK_SECOND || 'stream';
+const cfg = process.env.MOCK_CFG || 'ok';
 const rl = readline.createInterface({ input: process.stdin });
 let pendingPrompt = null;
+let promptCount = 0;
+let configDone = false;
 function send(msg) { process.stdout.write(JSON.stringify(msg) + '\\n'); }
 function sendUpdate(sessionId, text) {
   send({ jsonrpc:'2.0', method:'session/update', params: {
@@ -30,6 +34,12 @@ function answerPrompt(result) {
   const { id } = pendingPrompt;
   pendingPrompt = null;
   send({ jsonrpc:'2.0', id, result });
+}
+function sendPromptError(message) {
+  if (!pendingPrompt) return;
+  const { id } = pendingPrompt;
+  pendingPrompt = null;
+  send({ jsonrpc:'2.0', id, error:{ code:-32000, message } });
 }
 const hardTimeout = setTimeout(() => {
   answerPrompt({ stopReason:'cancelled', usage:{ totalTokens:1, inputTokens:1, outputTokens:0 } });
@@ -61,12 +71,34 @@ rl.on('line', (line) => {
       break;
     case 'session/prompt':
       pendingPrompt = { id };
+      promptCount++;
       if (mode === 'stream') {
         answerPrompt({ stopReason:'end_turn', usage:{ totalTokens:42, inputTokens:10, outputTokens:32 } });
       } else if (mode === 'exit') {
         process.exit(0);
       } else if (mode === 'quota') {
-        send({ jsonrpc:'2.0', id, error:{ code:-32000, message:'You exceeded your current quota, please check your plan and billing details.' } });
+        sendPromptError('You exceeded your current quota, please check your plan and billing details.');
+} else if (mode === 'quota-downgrade') {
+        if (promptCount === 1) {
+          sendPromptError('You exceeded your current quota for this request [first attempt]');
+        } else if (!configDone) {
+          // The downgrade path must call set_config_option before the second prompt.
+          sendPromptError('second prompt arrived before set_config_option');
+        } else if (second === 'quota') {
+          sendPromptError('You exceeded your current quota for this request [second attempt]');
+        } else if (second === 'exit') {
+          process.exit(0);
+        } else {
+          answerPrompt({ stopReason:'end_turn', usage:{ totalTokens:7, inputTokens:3, outputTokens:4 } });
+        }
+      }
+      break;
+    case 'session/set_config_option':
+      if (mode === 'quota-downgrade' && cfg === 'reject') {
+        send({ jsonrpc:'2.0', id, error:{ code:-32001, message:'unknown config id: model' } });
+      } else {
+        configDone = true;
+        send({ jsonrpc:'2.0', id, result: {} });
       }
       break;
     case 'session/cancel':
@@ -84,8 +116,8 @@ function spawnSpec(mode: string): AcpSpawnSpec {
   return { command: process.execPath, args: ["-e", MOCK_SCRIPT] };
 }
 
-function env(mode: string): Record<string, string> {
-  return { MOCK_MODE: mode, PATH: process.env.PATH ?? "" };
+function env(mode: string, extra: Record<string, string> = {}): Record<string, string> {
+  return { MOCK_MODE: mode, PATH: process.env.PATH ?? "", ...extra };
 }
 
 describe("runAcpTurn", () => {
@@ -204,5 +236,90 @@ describe("runAcpTurn", () => {
     expect(err).toBeInstanceOf(AgentCallError);
     expect((err as AgentCallError).kind).toBe("quota");
     expect((err as AgentCallError).message).toMatch(/quota/);
+  });
+
+  it("quota → downgradeTo → second prompt succeeds: resolves with downgraded=true", async () => {
+    const turn = await runAcpTurn({
+      spawn: spawnSpec("quota-downgrade"),
+      cwd: process.cwd(),
+      env: env("quota-downgrade", { MOCK_SECOND: "stream" }),
+      prompt: "hello",
+      downgradeTo: "claude-haiku",
+      permissionGate: new PermissionGate(),
+    });
+
+    expect(turn.stopReason).toBe("end_turn");
+    expect(turn.downgraded).toBe(true);
+    expect(turn.error).toBeUndefined();
+  });
+
+  it("quota → downgradeTo → set_config_option rejects: rethrows the ORIGINAL quota error (no second prompt)", async () => {
+    const err = await runAcpTurn({
+      spawn: spawnSpec("quota-downgrade"),
+      cwd: process.cwd(),
+      env: env("quota-downgrade", { MOCK_CFG: "reject" }),
+      prompt: "hello",
+      downgradeTo: "claude-haiku",
+      permissionGate: new PermissionGate(),
+    }).then(
+      () => null,
+      e => e,
+    );
+
+expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("quota");
+    expect((err as AgentCallError).message).toBe("You exceeded your current quota for this request [first attempt]");
+  });
+
+  it("quota → downgradeTo → second prompt quota-fails: rethrows the SECOND quota error", async () => {
+    const err = await runAcpTurn({
+      spawn: spawnSpec("quota-downgrade"),
+      cwd: process.cwd(),
+      env: env("quota-downgrade", { MOCK_SECOND: "quota" }),
+      prompt: "hello",
+      downgradeTo: "claude-haiku",
+      permissionGate: new PermissionGate(),
+    }).then(
+      () => null,
+      e => e,
+    );
+
+expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("quota");
+    expect((err as AgentCallError).message).toBe("You exceeded your current quota for this request [second attempt]");
+  });
+
+  it("quota → downgradeTo → second prompt non-quota (connection close): propagates the non-quota error", async () => {
+    const err = await runAcpTurn({
+      spawn: spawnSpec("quota-downgrade"),
+      cwd: process.cwd(),
+      env: env("quota-downgrade", { MOCK_SECOND: "exit" }),
+      prompt: "hello",
+      downgradeTo: "claude-haiku",
+      permissionGate: new PermissionGate(),
+    }).then(
+      () => null,
+      e => e,
+    );
+
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("connection");
+  });
+
+  it("non-quota first rejection with downgradeTo set: no downgrade attempted, original error rethrown", async () => {
+    const err = await runAcpTurn({
+      spawn: spawnSpec("exit"),
+      cwd: process.cwd(),
+      env: env("exit"),
+      prompt: "hello",
+      downgradeTo: "claude-haiku",
+      permissionGate: new PermissionGate(),
+    }).then(
+      () => null,
+      e => e,
+    );
+
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("connection");
   });
 });

@@ -34,6 +34,12 @@ export interface AcpTurnResult {
   duration: number;
   /** Set when the turn settled on an error path (e.g. cancelled mid-connect). */
   error?: AgentCallError | string;
+  /**
+   * ADR-022: set when the turn failed on the first prompt with a quota
+   * error and succeeded after a same-session `session/set_config_option`
+   * model downgrade + second prompt.
+   */
+  downgraded?: boolean;
 }
 
 /** Command + args to spawn an ACP server in stdio mode. */

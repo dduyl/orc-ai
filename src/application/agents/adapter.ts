@@ -12,6 +12,8 @@ export interface AgentCallResult {
   usage?: AgentUsage;
   /** Classified failure carried to callers when a turn fails (ADR-022). */
   error?: AgentCallError;
+  /** ADR-022: set when the call succeeded after a quota-triggered model downgrade. */
+  downgradedTo?: string;
 }
 
 export interface AdapterDef {

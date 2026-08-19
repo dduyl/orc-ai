@@ -84,8 +84,15 @@ export function createStepHandler(options: {
   onProgress?: (event: ProgressEvent) => void;
   /** Injectable for tests; defaults to a CommandExecutor bound to commandsTomlPath(). */
   commandExecutor?: CommandExecutor;
+  /**
+   * ADR-022: seam consulted when a step's first agent call fails with a
+   * quota error. Returning a non-empty model id different from `triedModel`
+   * re-invokes the step once with that model via a same-session downgrade.
+   * Returning undefined (or throwing) leaves the quota error to fail the step.
+   */
+  resolveDowngradeModel?: (role: string, triedModel: string) => string | undefined;
 }): StepHandler {
-  const { adapter, agentPrompts, completedSummaries, emitter, task, tracker, onProgress, commandExecutor } = options;
+  const { adapter, agentPrompts, completedSummaries, emitter, task, tracker, onProgress, commandExecutor, resolveDowngradeModel } = options;
   const activeAdapter = adapter;
   const forAgent = (_name: string): AdapterDef => activeAdapter;
   const runId = tracker?.runId;
@@ -189,7 +196,14 @@ export function createStepHandler(options: {
       return await runScriptStep(step, ctx);
     }
 
-    for (let attempt = 0; attempt <= ctx.maxRetries; attempt++) {
+    let downgradeTried = false;
+    let downgradeTo: string | undefined;
+
+    // While-loop (not for): the quota downgrade re-invokes the SAME attempt
+    // without consuming a transient-retry slot, so only the transient backoff
+    // path increments `attempt`.
+    let attempt = 0;
+    while (attempt <= ctx.maxRetries) {
       try {
         const name = step.agent;
         if (!name) {
@@ -221,7 +235,7 @@ export function createStepHandler(options: {
           : agentInfo.systemPrompt + "\n\n" + buildStepContext(step, completedSummaries, task, agentInfo, completionKey);
         const hookFile = createHookFile(step.id);
         try {
-          const handle = callAgentStream(callFor, combinedPrompt, hookFile);
+          const handle = callAgentStream(callFor, combinedPrompt, hookFile, downgradeTo);
           onProgress?.({ type: "step_pty", runId, stepId: step.id, pty: handle.pty });
           const abortSignal = ctx.signal;
           // Register before attaching the abort listener: the sync aborted
@@ -285,8 +299,12 @@ export function createStepHandler(options: {
           summary: summary.summary,
           artifact: summary.artifact,
           affectedFiles: summary.affectedFiles,
-          signal: orcResult?.signal
+          signal: orcResult?.signal,
+          ...(result.downgradedTo ? { downgradedTo: result.downgradedTo } : {}),
         };
+        if (result.downgradedTo) {
+          log.info(`step '${step.id}' quota — completed on downgraded model '${result.downgradedTo}'`);
+        }
         tracker?.tracker.setStepCompleted(tracker.runId, step.id, "completed");
         onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "completed", duration: result.duration });
         emitter.stepFinish(step.id, "stop", "", { total: 0, input: 0, output: output.length, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
@@ -320,8 +338,35 @@ export function createStepHandler(options: {
         //  - rate_limit / connection / spawn / unknown: bounded backoff, then fail.
         switch (agentErr.kind) {
           case "quota": {
-            const quotaInfo = toQuotaInfo(agentErr);
-            return fail({ failureReason: FailureReason.QuotaExhausted, quota: quotaInfo }, quotaInfo);
+            // ADR-022: one same-session model downgrade is allowed
+            // before giving up on the step. The callback is consulted at most
+            // once per step; a valid variant re-invokes the SAME attempt with
+            // `downgradeTo` (no backoff — backing off against a quota is wasted).
+            if (!downgradeTried && resolveDowngradeModel) {
+              let variant: string | undefined;
+              try {
+                variant = resolveDowngradeModel(step.agent ?? "", activeAdapter.id);
+              } catch (cbErr) {
+                log.warn(`step '${step.id}' quota — resolveDowngradeModel threw: ${(cbErr as Error).message}`);
+              }
+              const trimmed = typeof variant === "string" ? variant.trim() : "";
+              if (trimmed === "" || trimmed === activeAdapter.id) {
+                log.warn(`step '${step.id}' quota — resolveDowngradeModel returned no usable model ('${variant ?? ""}'), failing step`);
+              } else {
+                downgradeTried = true;
+                downgradeTo = trimmed;
+                log.info(`step '${step.id}' quota — downgrading model '${activeAdapter.id}' -> '${downgradeTo}'`);
+                continue;
+              }
+            }
+            const quotaInfo = {
+              ...toQuotaInfo(agentErr),
+              ...(downgradeTried && downgradeTo ? { downgradedTo: downgradeTo } : {}),
+            };
+            return fail(
+              { failureReason: FailureReason.QuotaExhausted, quota: quotaInfo, ...(quotaInfo.downgradedTo ? { downgradedTo: quotaInfo.downgradedTo } : {}) },
+              quotaInfo,
+            );
           }
           case "auth":
             return fail();
@@ -330,6 +375,7 @@ export function createStepHandler(options: {
               const waitMs = backoffFor(agentErr, attempt);
               log.info(`step '${step.id}' ${agentErr.kind} — retrying in ${waitMs}ms (attempt ${attempt + 1}/${ctx.maxRetries})`);
               await sleep(waitMs);
+              attempt++;
               continue;
             }
             return fail();
