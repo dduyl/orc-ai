@@ -76,12 +76,10 @@ src/
       server.ts             — HTTP Streamable HTTP MCP server
       sdk-server-factory.ts, http-transport.ts
       handlers/
-        rpc.ts                — JSON-RPC request dispatch
-        tool-exec.ts          — tool execution + workflow runner
         capabilities.ts       — list tools/resources/prompts
         workflow-handlers.ts  — workflow lifecycle (validation + create_workflow)
         workflow-validation.ts — pure workflow-definition validation
-        constants.ts, content.ts, formatting.ts, result-handlers.ts, state.ts
+        content.ts, formatting.ts, result-handlers.ts, state.ts
     hooks/                  — lifecycle hooks (endpoint.ts, types.ts, index.ts)
     stream/                 — typed event stream (emitter.ts, types.ts, index.ts)
   delivery/                 — user-facing entry points

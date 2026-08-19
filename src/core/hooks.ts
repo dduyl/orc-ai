@@ -21,7 +21,11 @@ export interface ToolResultEvent {
 export interface StepQuotaInfo {
   kind: "quota";
   resetAtMs?: number;
+  /** Provider error code when one is surfaced (e.g. "insufficient_quota"). */
+  providerCode?: string;
   message: string;
+  /** Model the failed step was downgraded to before the quota persisted. */
+  downgradedTo?: string;
 }
 
 export interface StepFinishEvent {

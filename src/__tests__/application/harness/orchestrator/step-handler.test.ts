@@ -513,7 +513,7 @@ describe("step-handler abort", () => {
     expect(out.error).toBe("You exceeded your current quota");
     expect(out.failureReason).toBe("quota_exhausted");
     expect(out.quota).toEqual({ kind: "quota", resetAtMs: 1755600000000, message: "You exceeded your current quota" });
-    // Phase 1: quota is a no-retry kind — the exact resetAtMs that entered the
+    // quota is a no-retry kind — the exact resetAtMs that entered the
     // classifier reaches the outcome un-cut, and callAgentStream runs once.
     expect(agentCalls.length).toBe(1);
   });
