@@ -149,4 +149,32 @@ describe("Tracker run status", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("rejects reviving a completed run as running (illegal transition)", () => {
+    const { dir, path: db } = tmpDb();
+    try {
+      const t = new Tracker(db);
+      t.createRun("r7", "wf", "WF", "t", "a", [{ stepId: "s1", agent: "a", task: null, signals: [] }]);
+      t.updateRunStatus("r7", "completed");
+      expect(() => t.updateRunStatus("r7", "running")).toThrow(/Illegal status transition: completed -> running/);
+      expect(t.getRun("r7")!.status).toBe("completed");
+      t.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects reviving a failed run as running", () => {
+    const { dir, path: db } = tmpDb();
+    try {
+      const t = new Tracker(db);
+      t.createRun("r8", "wf", "WF", "t", "a", [{ stepId: "s1", agent: "a", task: null, signals: [] }]);
+      t.updateRunStatus("r8", "failed");
+      expect(() => t.updateRunStatus("r8", "running")).toThrow(/Illegal status transition: failed -> running/);
+      expect(t.getRun("r8")!.status).toBe("failed");
+      t.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

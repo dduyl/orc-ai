@@ -120,6 +120,16 @@ export class Tracker {
   updateRunStatus(runId: string, status: RunStatus): void {
     const now = Date.now();
     const completedAt = status === "completed" || status === "failed" || status === "cancelled" ? now : null;
+    // Guard the resume path: a finished run (completed/failed/cancelled) must
+    // never be revived as "running" — that would resurrect a dead workflow as a
+    // live background job. `paused -> running` is the legitimate resume
+    // transition and stays allowed.
+    if (status === "running") {
+      const current = this.getRun(runId);
+      if (current && (current.status === "completed" || current.status === "failed" || current.status === "cancelled")) {
+        throw new Error(`Illegal status transition: ${current.status} -> running`);
+      }
+    }
     // Leaving a paused run (resume, or any other terminal transition) clears the
     // pause metadata — it only describes the paused window itself.
     this.db.prepare(`
