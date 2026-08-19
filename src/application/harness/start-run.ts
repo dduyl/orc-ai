@@ -65,7 +65,12 @@ export async function startRun(
   if (!found) throw new Error(`Unknown workflowId: ${workflowId}`);
 
   const plan: PlannerResult = { workflow: found.definition, source: "registered", registration: found };
-  const runId = opts?.runId ?? crypto.randomUUID();
+  // ADR-022 fix: a manual resume that supplies no runId must resume the most
+  // recent paused run for this task/workflow rather than minting a fresh row —
+  // otherwise the paused run's wake timer would later resurrect a superseded
+  // run. Callers that already resolved the runId (the quota wake itself) pass
+  // it explicitly and skip this lookup.
+  const runId = opts?.runId ?? (resume ? resolvePausedRunId(host, task, workflowId) : undefined) ?? crypto.randomUUID();
   const workflowName = plan.workflow.workflow.name;
 
   const stepEntries = plan.workflow.workflow.steps.map((s: any) => ({
@@ -81,6 +86,12 @@ export async function startRun(
   // metadata) so run history and steps_json survive instead of a PK conflict.
   const existing = resume ? host.tracker.getRun(runId) : null;
   if (existing) {
+    // Disarm any pending wake timer for this runId: the run is being resumed
+    // NOW (either by the wake firing, or by a manual resume that just claimed
+    // this paused run). Without this, a manual resume of a paused run would
+    // leave its scheduled auto-resume armed, firing a duplicate orchestrate()
+    // on the same runId after the quota window elapsed.
+    host.clearPausedRunResume(runId);
     host.tracker.updateRunStatus(runId, "running");
   } else {
     host.tracker.createRun(runId, plan.workflow.workflow.id, workflowName, task, host.adapter.id, stepEntries);
@@ -187,4 +198,21 @@ export function reconcileStaleRuns(host: RunHost): void {
       try { host.tracker.updateRunStatus(run.runId, "failed"); } catch { /* ignore */ }
     }
   }
+}
+
+/**
+ * Resolves the most recent `paused` run for a task/workflow, or undefined.
+ *
+ * A manual resume must continue the run that was actually paused by quota
+ * exhaustion — not start a brand-new run that would leave the paused one's
+ * wake timer armed to resurrect a superseded workflow. `listRuns()` returns
+ * newest-first, so the first match is the latest pause window.
+ */
+export function resolvePausedRunId(host: RunHost, task: string, workflowId: string): string | undefined {
+  for (const run of host.tracker.listRuns()) {
+    if (run.status === "paused" && run.task === task && run.workflowId === workflowId) {
+      return run.runId;
+    }
+  }
+  return undefined;
 }

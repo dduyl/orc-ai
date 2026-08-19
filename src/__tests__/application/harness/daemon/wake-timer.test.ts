@@ -116,4 +116,21 @@ describe("RunHost paused-run wake timer (ADR-022)", () => {
     expect(tracker.getRun("w4")!.status).toBe("paused");
     tracker.close();
   });
+
+  it("clearPausedRunResume disarms a scheduled wake (manual-resume path)", () => {
+    const { host, tracker } = makeHost({ quotaResumeDelayMs: 60_000 });
+    tracker.createRun("w5", "wf", "WF", "t", "test", [{ stepId: "s1", agent: null, task: null, signals: [] }]);
+    tracker.pauseRun("w5");
+
+    expect(host.schedulePausedRunResume("w5", "task", "wf")).toBe(true);
+
+    // A manual resume of this paused run disarms its stale wake so it can
+    // never fire a duplicate orchestrate() on the same runId later.
+    host.clearPausedRunResume("w5");
+
+    vi.advanceTimersByTime(10 * 60 * 1000);
+    expect(mockedStartRun).not.toHaveBeenCalled();
+    expect(tracker.getRun("w5")!.status).toBe("paused");
+    tracker.close();
+  });
 });

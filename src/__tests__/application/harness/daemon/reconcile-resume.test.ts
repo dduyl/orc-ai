@@ -7,7 +7,7 @@ import type { AdapterDef } from "../../../../application/agents/adapter.js";
 import { Tracker } from "../../../../application/harness/persistence/Tracker.js";
 import { Checkpointer } from "../../../../application/harness/persistence/Checkpointer.js";
 import { WorkflowRegistry } from "../../../../application/planner/registry.js";
-import { reconcileStaleRuns, startRun } from "../../../../application/harness/start-run.js";
+import { reconcileStaleRuns, startRun, resolvePausedRunId } from "../../../../application/harness/start-run.js";
 import { restoreSession } from "../../../../application/harness/orchestrator/resume.js";
 import type { RunTracker } from "../../../../application/harness/orchestrator/types.js";
 
@@ -97,6 +97,21 @@ describe("E3 lifecycle verify-only", () => {
       expect(tracker.getRun("paused-1")!.status).toBe("paused");
       expect(tracker.getRun("paused-1")!.resetAtMs).toBe(1755600000000);
     });
+
+    it("resolvePausedRunId returns the paused run for the task/workflow", () => {
+      tracker.createRun("paused-2", "smoke", "smoke", "task-a", "test", [{ stepId: "gate", agent: null, task: null, signals: ["__start__"] }]);
+      tracker.pauseRun("paused-2", 1755600000000);
+      tracker.createRun("running-1", "smoke", "smoke", "task-a", "test", [{ stepId: "gate", agent: null, task: null, signals: ["__start__"] }]);
+
+      expect(resolvePausedRunId(host, "task-a", "smoke")).toBe("paused-2");
+    });
+
+    it("resolvePausedRunId returns undefined when nothing is paused for the task/workflow", () => {
+      tracker.createRun("done-1", "smoke", "smoke", "task-b", "test", [{ stepId: "gate", agent: null, task: null, signals: ["__start__"] }]);
+      tracker.updateRunStatus("done-1", "completed");
+
+      expect(resolvePausedRunId(host, "task-b", "smoke")).toBeUndefined();
+    });
   });
 
   describe("restoreSession (resume:true)", () => {
@@ -185,6 +200,31 @@ describe("E3 lifecycle verify-only", () => {
       const host = new RunHost(ADAPTER, { projectDir, tracker, registry });
 
       const { runId } = await startRun(host, "resume-task", "smoke", true, { runId: "resume-full-1" });
+      await host.bgRuns.get(runId);
+
+      const run = tracker.getRun(runId);
+      expect(run!.status).toBe("completed");
+      expect(run!.steps.find(s => s.stepId === "gate")!.status).toBe("completed");
+      tracker.close();
+    });
+
+    it("resume:true with no runId reuses the paused run instead of minting a fresh one", async () => {
+      const projectDir = tmpDir("full2");
+      const workflowsDir = path.join(projectDir, "workflows");
+      fs.mkdirSync(workflowsDir, { recursive: true });
+      fs.writeFileSync(path.join(workflowsDir, "smoke.json"), JSON.stringify(scriptWorkflow("smoke", 'exec "echo resumed"')));
+      const tracker = new Tracker(path.join(projectDir, ".orc", "runs.sqlite"));
+      const registry = new WorkflowRegistry({ userDir: workflowsDir, builtinDir: tmpDir("builtin") });
+      registry.loadAll();
+      const host = new RunHost(ADAPTER, { projectDir, tracker, registry });
+
+      tracker.createRun("paused-resume-1", "smoke", "smoke", "resume-reuse-task", "test", [
+        { stepId: "gate", agent: null, task: null, signals: ["__start__"] },
+      ]);
+      tracker.pauseRun("paused-resume-1", 1755600000000);
+
+      const { runId } = await startRun(host, "resume-reuse-task", "smoke", true);
+      expect(runId).toBe("paused-resume-1");
       await host.bgRuns.get(runId);
 
       const run = tracker.getRun(runId);

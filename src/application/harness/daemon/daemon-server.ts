@@ -26,7 +26,7 @@ import {
 import type { AdapterDef } from "../../agents/adapter.js";
 import { getAdapter, BUILTIN_ADAPTERS } from "../../agents/adapter.js";
 import { RunHost } from "../run-host.js";
-import { startRun, reconcileStaleRuns, type StartRunResult } from "../start-run.js";
+import { startRun, reconcileStaleRuns, resolvePausedRunId, type StartRunResult } from "../start-run.js";
 import { WorkflowRegistry } from "../../planner/registry.js";
 import type { Tracker, RunRecord } from "../persistence/Tracker.js";
 import { TerminalStore, type PtyLike } from "./terminal-store.js";
@@ -464,7 +464,12 @@ export class DaemonServer {
     const workflowId = params?.workflowId;
     if (!task || !workflowId) throw new Error("Missing task or workflowId");
     const controller = new AbortController();
-    const runId = crypto.randomUUID();
+    // A resume with no explicit runId must continue the paused run — reusing
+    // its row disarms the stale quota wake (startRun clears it) and keeps run
+    // history contiguous. Fall back to a fresh runId when nothing is paused.
+    const runId = params?.resume === true
+      ? resolvePausedRunId(this.host, task, workflowId) ?? crypto.randomUUID()
+      : crypto.randomUUID();
     // Register the run's controller + active marker BEFORE the run can
     // complete. If the workflow finishes before startRun's await resolves, the
     // workflow_complete fan-out removes the registration — re-registering after
@@ -506,9 +511,14 @@ export class DaemonServer {
   }
 
   private handleCancel(params: CancelParams): CancelResult {
-    const controller = this.controllers.get(params?.runId);
+    const runId = params?.runId;
+    // Cancelling a paused run means "do not auto-resume it" — disarm any
+    // scheduled quota wake so it can never resurrect the workflow later. The
+    // run stays paused (manual resume remains possible) until the user acts.
+    this.host.clearPausedRunResume(runId);
+    const controller = this.controllers.get(runId);
     if (!controller) {
-      return { cancelled: false, reason: `no active run: ${params?.runId}` };
+      return { cancelled: false, reason: `no active run: ${runId}` };
     }
     controller.abort();
     return { cancelled: true };
