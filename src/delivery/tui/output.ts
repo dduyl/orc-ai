@@ -5,7 +5,9 @@ import { createRequire } from "node:module";
 
 if (false) { require("@xterm/headless"); require("@xterm/addon-serialize"); }
 
-const _require = createRequire(import.meta.url);
+const _require = createRequire(
+  typeof import.meta.url === "string" && import.meta.url ? import.meta.url : __filename,
+);
 const Terminal: new (opts: Record<string, any>) => TerminalType = _require("@xterm/headless").Terminal as any;
 
 const ESC = "\x1b";

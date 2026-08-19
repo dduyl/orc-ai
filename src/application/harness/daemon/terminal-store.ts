@@ -7,7 +7,9 @@ import { log } from "../../../core/log.js";
 import { CoalescingTransform, SCREEN_STEP_ID, writeEofFrame, writeFrame } from "./frame-transport.js";
 import type { RunLog, RunLogStore } from "./run-log.js";
 
-const req = createRequire(import.meta.url);
+const req = createRequire(
+  typeof import.meta.url === "string" && import.meta.url ? import.meta.url : __filename,
+);
 
 const xtermHeadlessModule = req("@xterm/headless");
 const HeadlessTerminal: new (opts: Record<string, unknown>) => Terminal = (xtermHeadlessModule.Terminal || xtermHeadlessModule.default?.Terminal || xtermHeadlessModule) as any;
