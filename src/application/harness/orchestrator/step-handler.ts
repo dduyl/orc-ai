@@ -20,8 +20,16 @@ import type { OrcReturnResult, ProgressEvent, RunTracker, StepSummary } from "./
 const BACKOFF_BASE_MS = 1000;
 const BACKOFF_CAP_MS = 30_000;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+/** Resolves when `ms` elapses — or immediately if `signal` aborts first. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>(resolve => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+  });
 }
 
 /** Backoff for a transient failure: `Retry-After`/`retry_after` wins, else `base * 2^attempt`. */
@@ -393,7 +401,10 @@ export function createStepHandler(options: {
             if (attempt < ctx.maxRetries) {
               const waitMs = backoffFor(agentErr, attempt);
               log.info(`step '${step.id}' ${agentErr.kind} — retrying in ${waitMs}ms (attempt ${attempt + 1}/${ctx.maxRetries})`);
-              await sleep(waitMs);
+              await sleep(waitMs, ctx.signal);
+              // A cancel issued during the backoff must take effect the moment
+              // the wait ends — do NOT re-dispatch another agent call.
+              if (ctx.signal?.aborted) return cancelled(step.id, attempt, true);
               attempt++;
               continue;
             }

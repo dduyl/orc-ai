@@ -588,6 +588,30 @@ describe("step-handler ADR-022 retry policy", () => {
     });
   });
 
+  it("aborts immediately when the signal fires during a backoff sleep (no re-dispatch)", async () => {
+    vi.useFakeTimers();
+    try {
+      mockState.rejectWith = new AgentCallError("rate_limit", "429 too many requests");
+      const ctrl = new AbortController();
+      const c = ctx();
+      c.signal = ctrl.signal;
+      const p = makeHandler()(agentStep(), c);
+
+      await vi.advanceTimersByTimeAsync(0); // first call rejects; backoff sleep(1000) armed
+      expect(agentCalls.length).toBe(1);
+
+      ctrl.abort(); // cancel issued mid-backoff
+      await vi.advanceTimersByTimeAsync(1000); // sleep resolves via the abort listener
+
+      const out = await p;
+      expect(agentCalls.length).toBe(1); // no second dispatch
+      expect(out.status).toBe("failed");
+      expect(out.error).toBe("cancelled");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("auth: fails fast with no retry and no sleep", async () => {
     mockState.rejectWith = new AgentCallError("auth", "invalid api key");
     await withRecordedSleep(async delays => {
