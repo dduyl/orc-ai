@@ -26,7 +26,7 @@ import {
 import type { AdapterDef } from "../../agents/adapter.js";
 import { getAdapter, BUILTIN_ADAPTERS } from "../../agents/adapter.js";
 import { RunHost } from "../run-host.js";
-import { startRun, reconcileStaleRuns, type StartRunResult } from "../start-run.js";
+import { startRun, reconcileStaleRuns, reconcilePausedRuns, resolvePausedRunId, type StartRunResult } from "../start-run.js";
 import { WorkflowRegistry } from "../../planner/registry.js";
 import type { Tracker, RunRecord } from "../persistence/Tracker.js";
 import { TerminalStore, type PtyLike } from "./terminal-store.js";
@@ -201,6 +201,8 @@ export class DaemonServer {
     // transport and must not re-run these.
     setupInfrastructure();
     reconcileStaleRuns(this.host);
+    // Paused runs survive restarts — re-arm their quota wakes so they resume.
+    reconcilePausedRuns(this.host);
     if (this.mcp) {
       this.mcpServer = new McpServer(this.host, () => this.touch());
       await this.mcpServer.startHttp(this.mcp.port);
@@ -305,6 +307,9 @@ export class DaemonServer {
     for (const controller of this.controllers.values()) controller.abort();
     this.controllers.clear();
     this.activeRunIds.clear();
+    // Cancel any pending quota-resume wakes — a stopped daemon must not fire
+    // timers that would resurrect runs after shutdown.
+    this.host.stopWakeTimers();
 
     // Await in-flight runs BEFORE closing an owned tracker: the abort path's
     // updateRunStatus("cancelled") write must land on a live DB, not throw into
@@ -461,7 +466,12 @@ export class DaemonServer {
     const workflowId = params?.workflowId;
     if (!task || !workflowId) throw new Error("Missing task or workflowId");
     const controller = new AbortController();
-    const runId = crypto.randomUUID();
+    // A resume with no explicit runId must continue the paused run — reusing
+    // its row disarms the stale quota wake (startRun clears it) and keeps run
+    // history contiguous. Fall back to a fresh runId when nothing is paused.
+    const runId = params?.resume === true
+      ? resolvePausedRunId(this.host, task, workflowId) ?? crypto.randomUUID()
+      : crypto.randomUUID();
     // Register the run's controller + active marker BEFORE the run can
     // complete. If the workflow finishes before startRun's await resolves, the
     // workflow_complete fan-out removes the registration — re-registering after
@@ -503,9 +513,14 @@ export class DaemonServer {
   }
 
   private handleCancel(params: CancelParams): CancelResult {
-    const controller = this.controllers.get(params?.runId);
+    const runId = params?.runId;
+    // Cancelling a paused run means "do not auto-resume it" — disarm any
+    // scheduled quota wake so it can never resurrect the workflow later. The
+    // run stays paused (manual resume remains possible) until the user acts.
+    this.host.clearPausedRunResume(runId);
+    const controller = this.controllers.get(runId);
     if (!controller) {
-      return { cancelled: false, reason: `no active run: ${params?.runId}` };
+      return { cancelled: false, reason: `no active run: ${runId}` };
     }
     controller.abort();
     return { cancelled: true };
@@ -609,19 +624,28 @@ export class DaemonServer {
     }
     if (event.type === "workflow_complete") {
       if (event.runId) {
-        // Flush the terminal to its live clients (remaining frames + EOF) BEFORE
-        // evicting/disposing it. A fire-and-forget complete() lets the sync
-        // evictTerminal()->delete()->dispose() destroy client sockets before the
-        // async flush delivers EOF, so an attached client never sees the final
-        // data / EOF (F2 race). Eviction is deferred behind that flush.
-        void this.finalizeRun(event.runId);
-        this.stepPtys.delete(event.runId);
-        this.activeRunIds.delete(event.runId);
-        this.controllers.delete(event.runId);
-        // Apply the disk-log caps now that the run's log is final (LRU evicts
-        // oldest logs once the total store exceeds ~50MB or ~100 runs). Live
-        // runs' logs are excluded so a concurrent run is never clipped mid-run.
-        this.runLogStore?.enforceTotal(this.activeRunIds);
+        // ADR-022: a PAUSED run stays active — keep its terminal,
+        // controller, and activeRunIds entry so an attach mid-pause shows the
+        // paused banner, the idle auto-exit cannot kill the daemon before the
+        // wake timer fires, and the wake resume reuses the same terminal. The
+        // eventual workflow_complete(completed) on resume takes this finalize
+        // path normally.
+        if (event.status !== "paused") {
+          // Flush the terminal to its live clients (remaining frames + EOF)
+          // BEFORE evicting/disposing it. A fire-and-forget complete() lets the
+          // sync evictTerminal()->delete()->dispose() destroy client sockets
+          // before the async flush delivers EOF, so an attached client never
+          // sees the final data / EOF (F2 race). Eviction is deferred behind
+          // that flush.
+          void this.finalizeRun(event.runId);
+          this.stepPtys.delete(event.runId);
+          this.activeRunIds.delete(event.runId);
+          this.controllers.delete(event.runId);
+          // Apply the disk-log caps now that the run's log is final (LRU evicts
+          // oldest logs once the total store exceeds ~50MB or ~100 runs). Live
+          // runs' logs are excluded so a concurrent run is never clipped mid-run.
+          this.runLogStore?.enforceTotal(this.activeRunIds);
+        }
       }
       this.broadcast(RpcNotification.workflowComplete, {
         runId: event.runId,

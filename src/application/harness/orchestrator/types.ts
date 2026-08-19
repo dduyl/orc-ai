@@ -1,6 +1,7 @@
 import { type IPty } from "node-pty";
 import type { StepOutcome } from "../execution/step-runner.js";
 import type { Tracker } from "../persistence/Tracker.js";
+import type { QuotaInfo } from "../../agents/errors.js";
 
 export interface RunReport {
   workflowId: string;
@@ -9,6 +10,8 @@ export interface RunReport {
   totalSteps: number;
   completed: number;
   failed: number;
+  /** ADR-022: number of steps that paused the run (quota), 0 or 1. */
+  paused: number;
 }
 
 export interface ProgressEvent {
@@ -20,6 +23,7 @@ export interface ProgressEvent {
   status?: string;
   duration?: number;
   error?: string;
+  quota?: QuotaInfo;
   pty?: IPty;
   report?: RunReport;
 }

@@ -9,6 +9,7 @@ import { registerAcpStrategy, getAcpStrategy, registerStrategy } from "../../../
 import { callAgentStream } from "../../../../application/agents/adapter-pty.js";
 import type { AdapterDef } from "../../../../application/agents/adapter.js";
 import type { AcpStrategy } from "../../../../application/agents/acp/types.js";
+import { AgentCallError } from "../../../../application/agents/errors.js";
 import {
   createHookFile,
   removeHookFile,
@@ -53,6 +54,36 @@ rl.on('line', (line) => {
 });
 `;
 
+const MOCK_SCRIPT_QUOTA = `
+const readline = require('readline');
+const rl = readline.createInterface({ input: process.stdin });
+let promptCount = 0;
+let configDone = false;
+function send(msg) { process.stdout.write(JSON.stringify(msg) + '\\n'); }
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  const { id, method } = msg;
+  if (method === 'initialize') {
+    send({ jsonrpc:'2.0', id, result:{ protocolVersion:1, agentCapabilities:{}, agentInfo:{ name:'mock', version:'1' } } });
+  } else if (method === 'session/new') {
+    send({ jsonrpc:'2.0', id, result:{ sessionId:'sess-1' } });
+    send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'agent_message_chunk', content:{ type:'text', text:'mock reply' } } } });
+  } else if (method === 'session/prompt') {
+    promptCount++;
+    if (promptCount === 1) {
+      send({ jsonrpc:'2.0', id, error:{ code:-32000, message:'You exceeded your current quota, please check your plan and billing details.' } });
+    } else if (!configDone) {
+      send({ jsonrpc:'2.0', id, error:{ code:-32000, message:'second prompt arrived before set_config_option' } });
+    } else {
+      send({ jsonrpc:'2.0', id, result:{ stopReason:'end_turn', usage:{ totalTokens:7, inputTokens:2, outputTokens:5 } } });
+    }
+  } else if (method === 'session/set_config_option') {
+    configDone = true;
+    send({ jsonrpc:'2.0', id, result:{} });
+  }
+});
+`;
+
 const origEnv = { ...process.env };
 
 afterEach(() => {
@@ -74,6 +105,15 @@ function fakeAcpStrategyWithTool(id: string): AcpStrategy {
     available: true,
     label: "mock-acp",
     buildSpawn: () => ({ command: process.execPath, args: ["-e", MOCK_SCRIPT_WITH_TOOL] }),
+  };
+}
+
+function fakeAcpStrategyQuota(id: string): AcpStrategy {
+  return {
+    id,
+    available: true,
+    label: "mock-acp",
+    buildSpawn: () => ({ command: process.execPath, args: ["-e", MOCK_SCRIPT_QUOTA] }),
   };
 }
 
@@ -169,6 +209,28 @@ describe("callAcpAgentStream", () => {
     )).toThrow(/unavailable/);
   });
 
+  it("rejects with the classified quota AgentCallError (kind survives the whole chain)", async () => {
+    registerAcpStrategy(fakeAcpStrategyQuota("acp-test-agent"));
+    const handle = callAcpAgentStream(ADAPTER, "hello");
+    const err = await handle.promise.then(
+      () => null,
+      e => e,
+    );
+
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("quota");
+    expect((err as AgentCallError).message).toMatch(/quota/);
+  });
+
+  it("quota → downgradeTo → second prompt succeeds: resolves with downgradedTo on the result", async () => {
+    registerAcpStrategy(fakeAcpStrategyQuota("acp-test-agent"));
+    const handle = callAcpAgentStream(ADAPTER, "hello", undefined, "claude-haiku");
+    const result = await handle.promise;
+
+    expect(result.content).toBe("mock reply");
+    expect(result.downgradedTo).toBe("claude-haiku");
+  });
+
   it("feeds rendered tool-call lines through the facade", async () => {
     registerAcpStrategy(fakeAcpStrategyWithTool("acp-test-agent"));
     const handle = callAcpAgentStream(ADAPTER, "hello");
@@ -204,6 +266,32 @@ describe("callAcpAgentStream", () => {
         stepId: "step-acp-test",
         reason: "end_turn",
         tokens: { total: 7, input: 2, output: 5 },
+      });
+    } finally {
+      removeHookFile(hookFile);
+    }
+  });
+
+  it("writes a quota step_finish hook event carrying the structured quota payload", async () => {
+    registerAcpStrategy(fakeAcpStrategyQuota("acp-test-agent"));
+    const hookFile = createHookFile("step-acp-quota");
+    try {
+      const handle = callAcpAgentStream(ADAPTER, "hello", hookFile);
+      await handle.promise.then(
+        () => null,
+        e => e,
+      );
+
+      const events = readHookEvents(hookFile);
+      const finish = events.find(e => e.type === "step_finish");
+      expect(finish).toMatchObject({
+        type: "step_finish",
+        stepId: "step-acp-quota",
+        reason: "quota",
+      });
+      expect((finish as { quota?: { kind: string; message: string } }).quota).toEqual({
+        kind: "quota",
+        message: "You exceeded your current quota, please check your plan and billing details.",
       });
     } finally {
       removeHookFile(hookFile);

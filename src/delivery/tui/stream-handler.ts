@@ -30,6 +30,7 @@ export function bindStreamEvents(
       }
     } else if (event.type === "step_finish") {
       counters.stepActiveCount = Math.max(0, counters.stepActiveCount - 1);
+      const isQuota = event.part.reason === "quota";
       const stepStatus: TreeNodeData["status"] = event.part.reason === "stop" ? "completed"
         : event.part.reason === "build_failed" ? "failed"
         : event.part.reason === "error" || event.part.reason === "max_retries" ? "failed"
@@ -37,7 +38,16 @@ export function bindStreamEvents(
         : "failed";
       tree.updateStatus(event.part.id, stepStatus);
       status.updateSteps(counters.stepActiveCount, counters.stepTotalCount);
-      status.updateStatus(stepStatus === "completed" ? "Step completed" : `Step ${stepStatus}`);
+      if (isQuota) {
+        const resetAt = event.part.quota?.resetAtMs;
+        status.updateStatus(
+          resetAt
+            ? `Quota exhausted — will retry after ${new Date(resetAt).toLocaleString()}`
+            : "Quota exhausted — paused",
+        );
+      } else {
+        status.updateStatus(stepStatus === "completed" ? "Step completed" : `Step ${stepStatus}`);
+      }
       screen.render();
     }
   });

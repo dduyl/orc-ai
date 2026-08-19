@@ -65,7 +65,12 @@ export async function startRun(
   if (!found) throw new Error(`Unknown workflowId: ${workflowId}`);
 
   const plan: PlannerResult = { workflow: found.definition, source: "registered", registration: found };
-  const runId = opts?.runId ?? crypto.randomUUID();
+  // ADR-022 fix: a manual resume that supplies no runId must resume the most
+  // recent paused run for this task/workflow rather than minting a fresh row —
+  // otherwise the paused run's wake timer would later resurrect a superseded
+  // run. Callers that already resolved the runId (the quota wake itself) pass
+  // it explicitly and skip this lookup.
+  const runId = opts?.runId ?? (resume ? resolvePausedRunId(host, task, workflowId) : undefined) ?? crypto.randomUUID();
   const workflowName = plan.workflow.workflow.name;
 
   const stepEntries = plan.workflow.workflow.steps.map((s: any) => ({
@@ -76,7 +81,21 @@ export async function startRun(
   }));
   const totalSteps = stepEntries.length;
 
-  host.tracker.createRun(runId, plan.workflow.workflow.id, workflowName, task, host.adapter.id, stepEntries);
+  // ADR-022: the quota wake timer resumes the SAME runId it paused.
+  // Reuse the existing row (paused -> running; updateRunStatus clears the pause
+  // metadata) so run history and steps_json survive instead of a PK conflict.
+  const existing = resume ? host.tracker.getRun(runId) : null;
+  if (existing) {
+    // Disarm any pending wake timer for this runId: the run is being resumed
+    // NOW (either by the wake firing, or by a manual resume that just claimed
+    // this paused run). Without this, a manual resume of a paused run would
+    // leave its scheduled auto-resume armed, firing a duplicate orchestrate()
+    // on the same runId after the quota window elapsed.
+    host.clearPausedRunResume(runId);
+    host.tracker.updateRunStatus(runId, "running");
+  } else {
+    host.tracker.createRun(runId, plan.workflow.workflow.id, workflowName, task, host.adapter.id, stepEntries);
+  }
 
   const runTracker: RunTracker = { runId, tracker: host.tracker };
   const rootDir = host.projectDir ?? process.cwd();
@@ -101,6 +120,21 @@ export async function startRun(
   })
     .then((report) => {
       host.bgRuns.delete(runId);
+      if (report.paused > 0) {
+        // ADR-022: a paused run is NOT done — schedule the wake resume
+        // and skip the completion prompt (the eventual resume completion fires
+        // it). The daemon keeps the run active so attach mid-pause works.
+        const pausedOutcome = report.outcomes.find(o => o.status === "paused");
+        log.warn(`[run ${runId}] Workflow "${workflowId}" paused (quota) — scheduling auto-resume`);
+        host.schedulePausedRunResume(runId, task, workflowId, pausedOutcome?.quota?.resetAtMs, {
+          // Forward the run's abort signal + event observer to the wake-resumed
+          // run: a cancel during the pause aborts the resume, and completion
+          // still fans out to the daemon's cleanup path.
+          signal: opts?.signal,
+          onEvent: opts?.onEvent,
+        });
+        return report;
+      }
       log.info(`[run ${runId}] Workflow "${workflowId}" completed: ${report.completed}/${report.totalSteps} completed`);
       notifyMainPty(buildCompletionPrompt(runId, workflowName, report));
       return report;
@@ -125,11 +159,13 @@ export async function startRun(
           stepId: s.stepId,
           status: s.status === "completed" ? "completed" : "failed",
           error: s.error ?? undefined,
+          quota: s.quota ?? undefined,
           retries: 0,
         })),
         totalSteps,
         completed,
         failed: totalSteps - completed,
+        paused: 0,
       };
       notify({ type: "workflow_complete", runId, status: "failed", report: failReport });
       notifyMainPty(buildCompletionPrompt(runId, workflowName, failReport));
@@ -166,6 +202,43 @@ export function reconcileStaleRuns(host: RunHost): void {
     if (run.status === "running" && !host.bgRuns.has(run.runId)) {
       log.warn(`[run ${run.runId}] Orphaned running run (no active background job) — marking failed`);
       try { host.tracker.updateRunStatus(run.runId, "failed"); } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * Resolves the most recent `paused` run for a task/workflow, or undefined.
+ *
+ * A manual resume must continue the run that was actually paused by quota
+ * exhaustion — not start a brand-new run that would leave the paused one's
+ * wake timer armed to resurrect a superseded workflow. `listRuns()` returns
+ * newest-first, so the first match is the latest pause window.
+ */
+export function resolvePausedRunId(host: RunHost, task: string, workflowId: string): string | undefined {
+  for (const run of host.tracker.listRuns()) {
+    if (run.status === "paused" && run.task === task && run.workflowId === workflowId) {
+      return run.runId;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Re-arms the quota wake timer for paused runs found at startup.
+ *
+ * A paused run's wake timer lives in memory (`host.wakeTimers`) and is lost on
+ * a daemon restart — the run would otherwise sit paused forever with no way to
+ * auto-resume. Runs that already have a live background job (or a fresh timer)
+ * are left untouched. Called once when the server starts, right after
+ * `reconcileStaleRuns`.
+ */
+export function reconcilePausedRuns(host: RunHost): void {
+  for (const run of host.tracker.listRuns()) {
+    if (run.status === "paused" && !host.bgRuns.has(run.runId)) {
+      log.warn(`[run ${run.runId}] Paused run found at startup — re-arming its quota wake`);
+      // A resetAtMs that has already passed schedules an immediate wake
+      // (delay clamps to 0) — the run resumes as soon as the daemon is up.
+      host.schedulePausedRunResume(run.runId, run.task, run.workflowId, run.resetAtMs ?? undefined);
     }
   }
 }

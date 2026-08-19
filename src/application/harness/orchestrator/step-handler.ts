@@ -11,8 +11,34 @@ import type { StepHandler, StepOutcome, RunContext } from "../execution/step-run
 import type { WorkflowStep } from "../../../core/schemas.js";
 import { StreamEmitter } from "../../../adapters/stream/emitter.js";
 import { log } from "../../../core/log.js";
+import { FailureReason } from "../../../core/types.js";
+import { AgentCallError, classifyAgentError, toQuotaInfo, type QuotaInfo } from "../../agents/errors.js";
 import { buildStepContext, buildResponseInstructions } from "./context-builder.js";
 import type { OrcReturnResult, ProgressEvent, RunTracker, StepSummary } from "./types.js";
+
+/** Bounded exponential backoff: 1s -> 2s -> 4s ... capped at 30s. */
+const BACKOFF_BASE_MS = 1000;
+const BACKOFF_CAP_MS = 30_000;
+
+/** Resolves when `ms` elapses — or immediately if `signal` aborts first. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>(resolve => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+  });
+}
+
+/** Backoff for a transient failure: `Retry-After`/`retry_after` wins, else `base * 2^attempt`. */
+function backoffFor(err: AgentCallError, attempt: number): number {
+  if (typeof err.retryAfterMs === "number" && err.retryAfterMs > 0) {
+    return Math.min(err.retryAfterMs, BACKOFF_CAP_MS);
+  }
+  return Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_CAP_MS);
+}
 
 function extractOrcResult(hooks: import("../../../core/hooks.js").HookEvent[]): OrcReturnResult | null {
   for (let i = hooks.length - 1; i >= 0; i--) {
@@ -66,8 +92,15 @@ export function createStepHandler(options: {
   onProgress?: (event: ProgressEvent) => void;
   /** Injectable for tests; defaults to a CommandExecutor bound to commandsTomlPath(). */
   commandExecutor?: CommandExecutor;
+  /**
+   * ADR-022: seam consulted when a step's first agent call fails with a
+   * quota error. Returning a non-empty model id different from `triedModel`
+   * re-invokes the step once with that model via a same-session downgrade.
+   * Returning undefined (or throwing) leaves the quota error to fail the step.
+   */
+  resolveDowngradeModel?: (role: string, triedModel: string) => string | undefined;
 }): StepHandler {
-  const { adapter, agentPrompts, completedSummaries, emitter, task, tracker, onProgress, commandExecutor } = options;
+  const { adapter, agentPrompts, completedSummaries, emitter, task, tracker, onProgress, commandExecutor, resolveDowngradeModel } = options;
   const activeAdapter = adapter;
   const forAgent = (_name: string): AdapterDef => activeAdapter;
   const runId = tracker?.runId;
@@ -171,7 +204,14 @@ export function createStepHandler(options: {
       return await runScriptStep(step, ctx);
     }
 
-    for (let attempt = 0; attempt <= ctx.maxRetries; attempt++) {
+    let downgradeTried = false;
+    let downgradeTo: string | undefined;
+
+    // While-loop (not for): the quota downgrade re-invokes the SAME attempt
+    // without consuming a transient-retry slot, so only the transient backoff
+    // path increments `attempt`.
+    let attempt = 0;
+    while (attempt <= ctx.maxRetries) {
       try {
         const name = step.agent;
         if (!name) {
@@ -203,7 +243,7 @@ export function createStepHandler(options: {
           : agentInfo.systemPrompt + "\n\n" + buildStepContext(step, completedSummaries, task, agentInfo, completionKey);
         const hookFile = createHookFile(step.id);
         try {
-          const handle = callAgentStream(callFor, combinedPrompt, hookFile);
+          const handle = callAgentStream(callFor, combinedPrompt, hookFile, downgradeTo);
           onProgress?.({ type: "step_pty", runId, stepId: step.id, pty: handle.pty });
           const abortSignal = ctx.signal;
           // Register before attaching the abort listener: the sync aborted
@@ -267,8 +307,12 @@ export function createStepHandler(options: {
           summary: summary.summary,
           artifact: summary.artifact,
           affectedFiles: summary.affectedFiles,
-          signal: orcResult?.signal
+          signal: orcResult?.signal,
+          ...(result.downgradedTo ? { downgradedTo: result.downgradedTo } : {}),
         };
+        if (result.downgradedTo) {
+          log.info(`step '${step.id}' quota — completed on downgraded model '${result.downgradedTo}'`);
+        }
         tracker?.tracker.setStepCompleted(tracker.runId, step.id, "completed");
         onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "completed", duration: result.duration });
         emitter.stepFinish(step.id, "stop", "", { total: 0, input: 0, output: output.length, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
@@ -279,12 +323,93 @@ export function createStepHandler(options: {
           // the race rejected before handle.promise settled, so bail cleanly.
           return cancelled(step.id, attempt, true);
         }
-        if (attempt < ctx.maxRetries) continue;
-        const o: StepOutcome = { stepId: step.id, status: "failed", error: err.message, retries: attempt };
-        tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", err.message);
-        onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "failed", error: err.message });
-        emitter.stepFinish(step.id, "error", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
-        return o;
+        const agentErr = err instanceof AgentCallError ? err : classifyAgentError(err);
+        const fail = (extra: Partial<StepOutcome> = {}, quota?: QuotaInfo): StepOutcome => {
+          const o: StepOutcome = { stepId: step.id, status: "failed", error: agentErr.message, retries: attempt, ...extra };
+          const trackerError = quota ? `[quota] ${agentErr.message}` : agentErr.message;
+          tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", trackerError, quota);
+          onProgress?.({
+            type: "step_complete",
+            runId,
+            stepId: step.id,
+            status: "failed",
+            error: agentErr.message,
+            ...(quota ? { quota } : {}),
+          });
+          emitter.stepFinish(step.id, quota ? "quota" : "error", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0, quota);
+          return o;
+        };
+        // ADR-022 retry policy — kind-aware, never blind:
+        //  - quota:     do NOT retry (backing off against a quota is wasted). Fail
+        //               immediately with QuotaExhausted and carry the payload.
+        //  - auth:      fail fast — retrying won't clear a bad key.
+        //  - rate_limit / connection / spawn / unknown: bounded backoff, then fail.
+        switch (agentErr.kind) {
+          case "quota": {
+            // ADR-022: one same-session model downgrade is allowed
+            // before giving up on the step. The callback is consulted at most
+            // once per step; a valid variant re-invokes the SAME attempt with
+            // `downgradeTo` (no backoff — backing off against a quota is wasted).
+            if (!downgradeTried && resolveDowngradeModel) {
+              let variant: string | undefined;
+              try {
+                variant = resolveDowngradeModel(step.agent ?? "", activeAdapter.id);
+              } catch (cbErr) {
+                log.warn(`step '${step.id}' quota — resolveDowngradeModel threw: ${(cbErr as Error).message}`);
+              }
+              const trimmed = typeof variant === "string" ? variant.trim() : "";
+              if (trimmed === "" || trimmed === activeAdapter.id) {
+                log.warn(`step '${step.id}' quota — resolveDowngradeModel returned no usable model ('${variant ?? ""}'), failing step`);
+              } else {
+                downgradeTried = true;
+                downgradeTo = trimmed;
+                log.info(`step '${step.id}' quota — downgrading model '${activeAdapter.id}' -> '${downgradeTo}'`);
+                continue;
+              }
+            }
+            const quotaInfo = toQuotaInfo(agentErr, downgradeTried && downgradeTo ? downgradeTo : undefined);
+            // ADR-022: quota remains with no recovery path (no
+            // usable downgrade callback, or the downgraded retry hit quota again)
+            // — the run PAUSES instead of failing. The tracker still records the
+            // step as "failed" (the resume path re-runs it and the `[quota]`
+            // marker persists), but the outcome/progress surface the paused state
+            // so the daemon can auto-resume once the quota window resets.
+            const pausedOutcome: StepOutcome = {
+              stepId: step.id,
+              status: "paused",
+              error: agentErr.message,
+              retries: attempt,
+              failureReason: FailureReason.QuotaExhausted,
+              quota: quotaInfo,
+              ...(quotaInfo.downgradedTo ? { downgradedTo: quotaInfo.downgradedTo } : {}),
+            };
+            tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", `[quota] ${agentErr.message}`, quotaInfo);
+            onProgress?.({
+              type: "step_complete",
+              runId,
+              stepId: step.id,
+              status: "paused",
+              error: agentErr.message,
+              quota: quotaInfo,
+            });
+            emitter.stepFinish(step.id, "quota", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0, quotaInfo);
+            return pausedOutcome;
+          }
+          case "auth":
+            return fail();
+          default:
+            if (attempt < ctx.maxRetries) {
+              const waitMs = backoffFor(agentErr, attempt);
+              log.info(`step '${step.id}' ${agentErr.kind} — retrying in ${waitMs}ms (attempt ${attempt + 1}/${ctx.maxRetries})`);
+              await sleep(waitMs, ctx.signal);
+              // A cancel issued during the backoff must take effect the moment
+              // the wait ends — do NOT re-dispatch another agent call.
+              if (ctx.signal?.aborted) return cancelled(step.id, attempt, true);
+              attempt++;
+              continue;
+            }
+            return fail();
+        }
       }
     }
 

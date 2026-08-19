@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import * as path from "node:path";
 import * as fs from "node:fs";
+import type { QuotaInfo } from "../../agents/errors.js";
 
 export interface StepStatusRecord {
   stepId: string;
@@ -12,9 +13,10 @@ export interface StepStatusRecord {
   completedAt: number | null;
   duration: number | null;
   error: string | null;
+  quota: QuotaInfo | null;
 }
 
-export type RunStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+export type RunStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "paused";
 
 export interface RunRecord {
   runId: string;
@@ -28,6 +30,10 @@ export interface RunRecord {
   createdAt: number;
   updatedAt: number;
   completedAt: number | null;
+  /** ADR-022: epoch-ms at which the run's quota window resets (paused runs). */
+  resetAtMs?: number;
+  /** ADR-022: why the run is paused (e.g. `quota_exhausted`). */
+  pauseReason?: string;
 }
 
 export class Tracker {
@@ -53,9 +59,22 @@ export class Tracker {
         current_step_id TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        completed_at INTEGER
+        completed_at INTEGER,
+        reset_at_ms INTEGER,
+        pause_reason TEXT
       )
     `);
+    // Migration: add the ADR-022 pause columns to databases created
+    // before this schema existed.
+    const cols = new Set(
+      (this.db.prepare("PRAGMA table_info(runs)").all() as any[]).map((c: any) => c.name),
+    );
+    if (!cols.has("reset_at_ms")) {
+      this.db.exec("ALTER TABLE runs ADD COLUMN reset_at_ms INTEGER");
+    }
+    if (!cols.has("pause_reason")) {
+      this.db.exec("ALTER TABLE runs ADD COLUMN pause_reason TEXT");
+    }
   }
 
   createRun(
@@ -77,6 +96,7 @@ export class Tracker {
       completedAt: null,
       duration: null,
       error: null,
+      quota: null,
     }));
     const stmt = this.db.prepare(`
       INSERT INTO runs (run_id, workflow_id, workflow_name, task, adapter_id, status, steps_json, current_step_id, created_at, updated_at)
@@ -100,9 +120,32 @@ export class Tracker {
   updateRunStatus(runId: string, status: RunStatus): void {
     const now = Date.now();
     const completedAt = status === "completed" || status === "failed" || status === "cancelled" ? now : null;
+    // Guard the resume path: a finished run (completed/failed/cancelled) must
+    // never be revived as "running" — that would resurrect a dead workflow as a
+    // live background job. `paused -> running` is the legitimate resume
+    // transition and stays allowed.
+    if (status === "running") {
+      const current = this.getRun(runId);
+      if (current && (current.status === "completed" || current.status === "failed" || current.status === "cancelled")) {
+        throw new Error(`Illegal status transition: ${current.status} -> running`);
+      }
+    }
+    // Leaving a paused run (resume, or any other terminal transition) clears the
+    // pause metadata — it only describes the paused window itself.
     this.db.prepare(`
-      UPDATE runs SET status = ?, updated_at = ?, completed_at = ? WHERE run_id = ?
+      UPDATE runs SET status = ?, reset_at_ms = NULL, pause_reason = NULL, updated_at = ?, completed_at = ? WHERE run_id = ?
     `).run(status, now, completedAt, runId);
+  }
+
+  /**
+   * ADR-022: mark a run as paused (quota exhaustion) and record when
+   * the quota window resets so the daemon can schedule an auto-resume.
+   */
+  pauseRun(runId: string, resetAtMs?: number, pauseReason = "quota_exhausted"): void {
+    const now = Date.now();
+    this.db.prepare(`
+      UPDATE runs SET status = 'paused', reset_at_ms = ?, pause_reason = ?, updated_at = ?, completed_at = NULL WHERE run_id = ?
+    `).run(resetAtMs ?? null, pauseReason, now, runId);
   }
 
   setStepRunning(runId: string, stepId: string): void {
@@ -115,11 +158,12 @@ export class Tracker {
     });
   }
 
-  setStepCompleted(runId: string, stepId: string, status: "completed" | "failed", error?: string): void {
+  setStepCompleted(runId: string, stepId: string, status: "completed" | "failed", error?: string, quota?: QuotaInfo): void {
     this.mutateStep(runId, stepId, (step, now) => {
       step.status = status;
       step.completedAt = now;
       step.error = error || null;
+      step.quota = quota ?? null;
       if (step.startedAt) {
         step.duration = now - step.startedAt;
       }
@@ -173,6 +217,8 @@ export class Tracker {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       completedAt: row.completed_at || null,
+      resetAtMs: row.reset_at_ms ?? undefined,
+      pauseReason: row.pause_reason ?? undefined,
     };
   }
 }

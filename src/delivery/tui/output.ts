@@ -3,9 +3,15 @@ import type { Terminal as TerminalType } from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { createRequire } from "node:module";
 
+// Temp-disable guard (deliberately kept per review finding #9): statically
+// referencing the @xterm addons here keeps them in the bundle so the runtime
+// `createRequire` resolution below has something to load, while `false`
+// guarantees the require never executes at runtime.
 if (false) { require("@xterm/headless"); require("@xterm/addon-serialize"); }
 
-const _require = createRequire(import.meta.url);
+const _require = createRequire(
+  typeof import.meta.url === "string" && import.meta.url ? import.meta.url : __filename,
+);
 const Terminal: new (opts: Record<string, any>) => TerminalType = _require("@xterm/headless").Terminal as any;
 
 const ESC = "\x1b";

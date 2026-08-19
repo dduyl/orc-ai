@@ -318,4 +318,36 @@ describe("step-runner", () => {
     expect(ctx.stepResults.get("c")?.error).toBe("cancelled");
     expect(outcomes.filter(o => o.status === "failed").length).toBe(2);
   });
+
+  it("a paused outcome halts the run: downstream stays pending, no signal emitted", async () => {
+    const steps: WorkflowStep[] = [
+      { type: "agent", id: "a", agent: "a1", emits: [sig("done")], on: ["__start__"], context: [] },
+      { type: "agent", id: "b", agent: "b1", emits: [sig("done")], on: ["a.done"], context: [] },
+    ];
+    const ctx = mkCtx();
+    let bCalls = 0;
+    const outcomes = await runWorkflow(steps, async (step) => {
+      if (step.id === "a") {
+        return {
+          stepId: "a",
+          status: "paused" as const,
+          retries: 0,
+          error: "[quota] You exceeded your current quota",
+          failureReason: "quota_exhausted",
+          quota: { kind: "quota", resetAtMs: 1755600000000, message: "quota exceeded" },
+        };
+      }
+      bCalls++;
+      return { stepId: step.id, status: "completed", signal: step.emits[0].name, retries: 0 };
+    }, ctx);
+
+    // The paused step is recorded with its full quota payload...
+    expect(ctx.stepResults.get("a")?.status).toBe("paused");
+    expect(ctx.stepResults.get("a")?.quota).toEqual({ kind: "quota", resetAtMs: 1755600000000, message: "quota exceeded" });
+    // ...but downstream never dispatches and the run resolves (paused), not hangs.
+    expect(bCalls).toBe(0);
+    expect(ctx.stepResults.get("b")).toBeUndefined();
+    expect(outcomes.map(o => o.stepId)).toEqual(["a"]);
+    expect(outcomes[0].status).toBe("paused");
+  });
 });

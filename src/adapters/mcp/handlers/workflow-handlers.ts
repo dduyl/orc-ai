@@ -1,6 +1,6 @@
 import { WorkflowDefinition, validateWorkflowGraph } from "../../../core/schemas.js";
 import { CallToolResult, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types";
-import { startRun } from "../../../application/harness/start-run.js";
+import { startRun, resolvePausedRunId } from "../../../application/harness/start-run.js";
 import { hasPtyWriter } from "../../../application/harness/signalling/pty-notifier.js";
 import { host, registry, tracker, bgRuns } from "./state.js";
 import { getValidAgentNames } from "./formatting.js";
@@ -123,6 +123,10 @@ export async function handleRunWorkflow(args: any, extra: RunHandlerExtra): Prom
     // `found` is already loaded from the registry above — skip the second
     // loadAll()+get() that startRun would otherwise perform.
     registration: found,
+    // A resume with no explicit runId must continue the paused run (same fix
+    // as the daemon door): reusing its row disarms the stale quota wake and
+    // keeps run history contiguous.
+    runId: resume ? resolvePausedRunId(host, task, workflowId) : undefined,
     onEvent: (event) => {
       if (event.type === "step_pty") return;
 
@@ -132,7 +136,7 @@ export async function handleRunWorkflow(args: any, extra: RunHandlerExtra): Prom
       const message = event.type === "step_start"
         ? `Starting: ${event.agent || event.stepId}`
         : event.type === "step_complete"
-          ? `Step ${event.stepId}: ${event.status}${event.error ? ` — ${event.error}` : ""}`
+          ? `Step ${event.stepId}: ${event.status}${event.error ? ` — ${event.error}` : ""}${event.quota ? ` (quota: ${event.quota.message})` : ""}`
           : event.type === "workflow_complete"
             ? `Workflow: ${event.status}`
             : `Error: ${event.error || "unknown"}`;
@@ -201,6 +205,10 @@ export async function handleGetRunStatusTool(args: any): Promise<CallToolResult>
       createdAt: run.createdAt,
       updatedAt: run.updatedAt,
       completedAt: run.completedAt,
+      // ADR-022: pause metadata so a client can tell a paused run when it
+      // will auto-resume (or that it is waiting on manual resume).
+      resetAtMs: run.resetAtMs ?? null,
+      pauseReason: run.pauseReason ?? null,
     }, null, 2) }],
   };
 }

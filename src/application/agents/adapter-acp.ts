@@ -1,6 +1,6 @@
 import type { IDisposable, IPty } from "node-pty";
 import type { AdapterDef, AgentCallResult } from "./adapter.js";
-import { HOOK_FILE_ENV } from "../../core/hooks.js";
+import { HOOK_FILE_ENV, type StepQuotaInfo } from "../../core/hooks.js";
 import type { AcpSpawnSpec } from "./acp/types.js";
 import { gateFromEnv } from "./acp/permission.js";
 import { runAcpTurn } from "./acp/client.js";
@@ -9,6 +9,7 @@ import { getAgentCwd } from "./agent-cwd.js";
 import { createHookFile, removeHookFile, appendHookEvent, stepIdFromHookFile } from "../../adapters/hooks/endpoint.js";
 import { renderToolCall, renderToolCallUpdate } from "./acp/render.js";
 import { log } from "../../core/log.js";
+import { AgentCallError, classifyAgentError, toQuotaInfo } from "./errors.js";
 
 /** Env switch that routes supported adapters through ACP instead of the PTY. */
 export const ACP_ENABLED_ENV = "ORC_ACP_ENABLED";
@@ -145,6 +146,7 @@ export function callAcpAgentStream(
   adapter: AdapterDef,
   prompt: string,
   hookFilePath?: string,
+  downgradeTo?: string,
 ): AgentACPStreamHandle {
   const strat = getAcpStrategy(adapter.id);
   if (!strat || !strat.available) {
@@ -160,13 +162,18 @@ export function callAcpAgentStream(
   const feedLines = (lines: string[]): void => {
     for (const line of lines) facade.feed(line + "\r\n");
   };
-  const appendStepFinish = (reason: string, tokens?: { total: number; input: number; output: number }): void => {
+  const appendStepFinish = (
+    reason: string,
+    tokens?: { total: number; input: number; output: number },
+    quota?: StepQuotaInfo,
+  ): void => {
     appendHookEvent(hookFile, {
       type: "step_finish",
       timestamp: Date.now(),
       stepId,
       reason,
       tokens,
+      ...(quota ? { quota } : {}),
     });
   };
 
@@ -178,6 +185,7 @@ export function callAcpAgentStream(
     prompt,
     permissionGate: gate,
     signal: facade.signal,
+    ...(downgradeTo ? { downgradeTo } : {}),
     events: {
       onText: text => facade.feed(text),
       onToolCall: call => {
@@ -220,11 +228,13 @@ export function callAcpAgentStream(
         tokensUsed: turn.usage.totalTokens,
         duration: turn.duration,
         usage: turn.usage,
+        ...(turn.downgraded && downgradeTo ? { downgradedTo: downgradeTo } : {}),
       };
     })
     .catch((err: unknown) => {
       facade.finish(1);
-      appendStepFinish("error");
+      const agentErr = err instanceof AgentCallError ? err : classifyAgentError(err);
+      appendStepFinish(agentErr.kind === "quota" ? "quota" : "error", undefined, agentErr.kind === "quota" ? toQuotaInfo(agentErr) : undefined);
       if (!hookFilePath) removeHookFile(hookFile);
       throw err;
     });

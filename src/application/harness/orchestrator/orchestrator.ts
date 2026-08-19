@@ -52,7 +52,16 @@ export async function orchestrate(
       task,
       tracker,
       onProgress,
+      // ADR-022 note (model routing): a quota hit on the step's primary model
+      // triggers a one-shot downgrade to a cheaper/fallback variant via
+      // `resolveDowngradeModel`, which today is wired to a fixed variant list
+      // keyed by the configured provider. No routing by step role/model tier
+      // exists yet — that is a future phase and intentionally out of scope here.
     });
+
+    // ADR-022: the quota payload of the step that paused the run, used
+    // to persist resetAtMs on the run record and in the checkpoint context.
+    let pausedQuota: import("../execution/step-runner.js").StepOutcome["quota"] | undefined;
 
     const ctx: RunContext = {
       workflowId: plan.workflow.workflow.id,
@@ -66,7 +75,10 @@ export async function orchestrate(
     function collectCheckpoint(): Record<string, StepResumeSnapshot> {
       const out: Record<string, StepResumeSnapshot> = {};
       for (const [stepId, o] of ctx.stepResults) {
-        out[stepId] = { status: o.status, output: o.output, error: o.error, retries: o.retries, hooks: o.hooks };
+        // ADR-022: a paused step maps to a failed snapshot so the
+        // resume path re-runs it (restoreSession drops non-... failed rows).
+        const status = o.status === "completed" ? "completed" : "failed";
+        out[stepId] = { status, output: o.output, error: o.error, retries: o.retries, hooks: o.hooks };
       }
       return out;
     }
@@ -77,7 +89,10 @@ export async function orchestrate(
         sessionId,
         agentId: activeAdapter.id,
         stepResults: collectCheckpoint(),
-        context: { task },
+        context: {
+          task,
+          ...(pausedQuota ? { quota: { resetAtMs: pausedQuota.resetAtMs, downgradedTo: pausedQuota.downgradedTo } } : {}),
+        },
       }, runId);
     }
 
@@ -87,12 +102,22 @@ export async function orchestrate(
       ctx,
       (step, outcome) => {
         allOutcomes.push(outcome);
+        if (outcome.status === "paused") pausedQuota = outcome.quota;
         saveCheckpoint();
         // Steps the runner fails without dispatching (abort tail in tryFinish,
         // upstream-failure cascade in propagateFailure) never ran through the
         // handler, so their tracker rows would otherwise stay "pending". This is
         // idempotent for steps the handler already marked.
-        tracker?.tracker.setStepCompleted(tracker.runId, step.id, outcome.status, outcome.error);
+        //
+        // ADR-022: a paused step keeps a "failed" tracker row (so the
+        // `[quota]` marker and quota payload persist for the resume re-run); the
+        // run itself is what carries the paused state.
+        tracker?.tracker.setStepCompleted(
+          tracker.runId, step.id,
+          outcome.status === "paused" ? "failed" : outcome.status,
+          outcome.quota ? `[quota] ${outcome.error ?? ""}` : outcome.error,
+          outcome.quota,
+        );
       },
     );
 
@@ -105,20 +130,26 @@ export async function orchestrate(
       totalSteps: outcomes.length,
       completed: outcomes.filter(o => o.status === "completed").length,
       failed: outcomes.filter(o => o.status === "failed").length,
+      paused: outcomes.filter(o => o.status === "paused").length,
     };
 
+    const finalStatus: "cancelled" | "paused" | "failed" | "completed" = signal?.aborted
+      ? "cancelled"
+      : pausedQuota ? "paused" : report.failed > 0 ? "failed" : "completed";
+
     if (tracker) {
-      const finalStatus = signal?.aborted
-        ? "cancelled" as const
-        : report.failed > 0 ? "failed" as const : "completed" as const;
-      tracker.tracker.updateRunStatus(tracker.runId, finalStatus);
+      if (finalStatus === "paused") {
+        tracker.tracker.pauseRun(tracker.runId, pausedQuota?.resetAtMs);
+      } else {
+        tracker.tracker.updateRunStatus(tracker.runId, finalStatus);
+      }
     }
 
-    onProgress?.({ type: "workflow_complete", runId, status: signal?.aborted ? "cancelled" : report.failed > 0 ? "failed" : "completed", report });
+    onProgress?.({ type: "workflow_complete", runId, status: finalStatus, report });
 
     return report;
   } finally {
-    if (report && report.failed === 0) {
+    if (report && report.failed === 0 && report.paused === 0) {
       // Owner-scoped: only removes this run's own checkpoint, so a concurrent
       // same-task run's live row survives.
       cp.prune(task, runId);
