@@ -305,6 +305,9 @@ export class DaemonServer {
     for (const controller of this.controllers.values()) controller.abort();
     this.controllers.clear();
     this.activeRunIds.clear();
+    // Cancel any pending quota-resume wakes — a stopped daemon must not fire
+    // timers that would resurrect runs after shutdown.
+    this.host.stopWakeTimers();
 
     // Await in-flight runs BEFORE closing an owned tracker: the abort path's
     // updateRunStatus("cancelled") write must land on a live DB, not throw into
@@ -609,19 +612,28 @@ export class DaemonServer {
     }
     if (event.type === "workflow_complete") {
       if (event.runId) {
-        // Flush the terminal to its live clients (remaining frames + EOF) BEFORE
-        // evicting/disposing it. A fire-and-forget complete() lets the sync
-        // evictTerminal()->delete()->dispose() destroy client sockets before the
-        // async flush delivers EOF, so an attached client never sees the final
-        // data / EOF (F2 race). Eviction is deferred behind that flush.
-        void this.finalizeRun(event.runId);
-        this.stepPtys.delete(event.runId);
-        this.activeRunIds.delete(event.runId);
-        this.controllers.delete(event.runId);
-        // Apply the disk-log caps now that the run's log is final (LRU evicts
-        // oldest logs once the total store exceeds ~50MB or ~100 runs). Live
-        // runs' logs are excluded so a concurrent run is never clipped mid-run.
-        this.runLogStore?.enforceTotal(this.activeRunIds);
+        // ADR-022: a PAUSED run stays active — keep its terminal,
+        // controller, and activeRunIds entry so an attach mid-pause shows the
+        // paused banner, the idle auto-exit cannot kill the daemon before the
+        // wake timer fires, and the wake resume reuses the same terminal. The
+        // eventual workflow_complete(completed) on resume takes this finalize
+        // path normally.
+        if (event.status !== "paused") {
+          // Flush the terminal to its live clients (remaining frames + EOF)
+          // BEFORE evicting/disposing it. A fire-and-forget complete() lets the
+          // sync evictTerminal()->delete()->dispose() destroy client sockets
+          // before the async flush delivers EOF, so an attached client never
+          // sees the final data / EOF (F2 race). Eviction is deferred behind
+          // that flush.
+          void this.finalizeRun(event.runId);
+          this.stepPtys.delete(event.runId);
+          this.activeRunIds.delete(event.runId);
+          this.controllers.delete(event.runId);
+          // Apply the disk-log caps now that the run's log is final (LRU evicts
+          // oldest logs once the total store exceeds ~50MB or ~100 runs). Live
+          // runs' logs are excluded so a concurrent run is never clipped mid-run.
+          this.runLogStore?.enforceTotal(this.activeRunIds);
+        }
       }
       this.broadcast(RpcNotification.workflowComplete, {
         runId: event.runId,

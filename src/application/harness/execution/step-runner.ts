@@ -31,7 +31,7 @@ export interface RepairFeedback {
 
 export interface StepOutcome {
   stepId: string;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "paused";
   output?: string;
   error?: string;
   retries: number;
@@ -98,6 +98,10 @@ export async function runWorkflow(
 
   const running = new Set<string>();
   let finished = false;
+  // ADR-022: once a step pauses the run (quota exhaustion),
+  // the scheduler stops dispatching new steps. Downstream steps stay pending
+  // and re-dispatch when the run resumes after the quota window resets.
+  let paused = false;
   let resolvePromise!: (v: StepOutcome[]) => void;
   const p = new Promise<StepOutcome[]>(resolve => { resolvePromise = resolve; });
 
@@ -208,6 +212,7 @@ export async function runWorkflow(
   }
 
   async function maybeRun(s: WorkflowStep) {
+    if (paused) return;
     if (ctx.signal?.aborted) return;
     if (running.has(s.id)) return;
     if (!isReady(s)) return;
@@ -251,6 +256,21 @@ export async function runWorkflow(
     }
     ctx.pendingRepair = undefined;
     running.delete(s.id);
+
+    if (outcome.status === "paused") {
+      // ADR-022: a quota-exhausted step pauses the run instead of
+      // failing it. Emit nothing, consume no refs, mark nothing terminal, and
+      // propagate no failure: the step's own failed tracker row (written by the
+      // handler) is what makes it re-run on resume. Downstream steps stay
+      // pending and re-dispatch once the run resumes.
+      ctx.stepResults.set(s.id, outcome);
+      upsertOutcome(outcome);
+      onStepComplete?.(s, outcome);
+      paused = true;
+      pump();
+      tryFinish();
+      return;
+    }
 
     if (outcome.status === "completed") {
       const signal = outcome.signal;
@@ -315,6 +335,14 @@ export async function runWorkflow(
   function tryFinish() {
     if (finished) return;
     if (running.size > 0) return;
+    if (paused) {
+      // ADR-022: the run is paused, not finished — resolve once no
+      // step is in flight so the orchestrator can persist the pause. Remaining
+      // steps were left pending on purpose for the resume dispatch.
+      finished = true;
+      resolvePromise(outcomes);
+      return;
+    }
     if (!ctx.signal?.aborted && steps.some(s => isReady(s))) return;
     finished = true;
     if (ctx.signal?.aborted) {

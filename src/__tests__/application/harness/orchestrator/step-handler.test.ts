@@ -492,7 +492,7 @@ describe("step-handler abort", () => {
     expect(out.error).toBe("cancelled");
   });
 
-  it("quota: fails immediately with QuotaExhausted and zero retries, quota payload preserved", async () => {
+  it("quota: pauses the run immediately with QuotaExhausted and zero retries, quota payload preserved", async () => {
     mockState.rejectWith = new AgentCallError("quota", "You exceeded your current quota", {
       resetAtMs: 1755600000000,
     });
@@ -509,7 +509,7 @@ describe("step-handler abort", () => {
 
     const out = await handler(agentStep, ctx());
 
-    expect(out.status).toBe("failed");
+    expect(out.status).toBe("paused");
     expect(out.error).toBe("You exceeded your current quota");
     expect(out.failureReason).toBe("quota_exhausted");
     expect(out.quota).toEqual({ kind: "quota", resetAtMs: 1755600000000, message: "You exceeded your current quota" });
@@ -553,12 +553,12 @@ describe("step-handler ADR-022 retry policy", () => {
     });
   }
 
-  it("quota: no retry, no backoff sleep, QuotaExhausted with payload", async () => {
+  it("quota: no retry, no backoff sleep, run pauses with QuotaExhausted payload", async () => {
     mockState.rejectWith = new AgentCallError("quota", "quota exceeded", { resetAtMs: 1755600000000 });
     await withRecordedSleep(async delays => {
       const out = await makeHandler()(agentStep(), ctx());
       expect(delays).toEqual([]);
-      expect(out.status).toBe("failed");
+      expect(out.status).toBe("paused");
       expect(out.failureReason).toBe("quota_exhausted");
       expect(out.quota?.resetAtMs).toBe(1755600000000);
       expect(agentCalls.length).toBe(1);
@@ -675,12 +675,12 @@ describe("step-handler quota surfacing chain", () => {
       const out = await h.handler(agentStep(), ctx());
       const expected = { kind: "quota", resetAtMs: 1755600000000, message: "You exceeded your current quota" };
 
-      expect(out.status).toBe("failed");
+      expect(out.status).toBe("paused");
       expect(out.failureReason).toBe("quota_exhausted");
       expect(out.quota).toEqual(expected);
 
       const complete = h.progress.find((e: any) => e.type === "step_complete");
-      expect(complete.status).toBe("failed");
+      expect(complete.status).toBe("paused");
       expect(complete.error).toBe("You exceeded your current quota");
       expect(complete.quota).toEqual(expected);
 
@@ -718,7 +718,7 @@ describe("step-handler quota surfacing chain", () => {
     }
   });
 
-  it("quota → downgrade → second quota: fails with downgradedTo value-equal across outcome, progress, tracker, stream", async () => {
+  it("quota → downgrade → second quota: pauses with downgradedTo value-equal across outcome, progress, tracker, stream", async () => {
     mockState.sequence = [
       { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111 }) },
       { rejectWith: new AgentCallError("quota", "second quota", { resetAtMs: 222 }) },
@@ -738,7 +738,7 @@ describe("step-handler quota surfacing chain", () => {
       const out = await h.handler(agentStep(), ctx());
       const expected = { kind: "quota", resetAtMs: 222, message: "second quota", downgradedTo: "claude-haiku" };
 
-      expect(out.status).toBe("failed");
+      expect(out.status).toBe("paused");
       expect(out.failureReason).toBe("quota_exhausted");
       expect(out.downgradedTo).toBe("claude-haiku");
       expect(out.quota).toEqual(expected);
@@ -747,7 +747,7 @@ describe("step-handler quota surfacing chain", () => {
       expect(mockState.downgradeParams).toEqual([undefined, "claude-haiku"]);
 
       const complete = h.progress.find((e: any) => e.type === "step_complete");
-      expect(complete.status).toBe("failed");
+      expect(complete.status).toBe("paused");
       expect(complete.error).toBe("second quota");
       expect(complete.quota).toEqual(expected);
 
@@ -809,7 +809,7 @@ describe("step-handler quota surfacing chain", () => {
     ["empty string", (): string => ""],
     ["whitespace", (): string => "   "],
     ["throws", (): string => { throw new Error("boom"); }],
-  ] as const)("quota with unusable resolveDowngradeModel (%s): fails with no downgrade and a single adapter call", async (_label, callback) => {
+  ] as const)("quota with unusable resolveDowngradeModel (%s): pauses with no downgrade and a single adapter call", async (_label, callback) => {
     mockState.rejectWith = new AgentCallError("quota", "quota exceeded", { resetAtMs: 333 });
     mockState.sequence = undefined;
     const h = buildHarness();
@@ -826,7 +826,7 @@ describe("step-handler quota surfacing chain", () => {
     try {
       const out = await h.handler(agentStep(), ctx());
 
-      expect(out.status).toBe("failed");
+      expect(out.status).toBe("paused");
       expect(out.failureReason).toBe("quota_exhausted");
       expect(out.quota).toEqual({ kind: "quota", resetAtMs: 333, message: "quota exceeded" });
       expect(out.downgradedTo).toBeUndefined();

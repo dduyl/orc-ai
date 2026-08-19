@@ -106,4 +106,21 @@ describe("Checkpointer", () => {
     expect(cp.load("legacy")?.sessionId).toBe("sess-2");
     cp.close();
   });
+
+  it("round-trips an ADR-022 quota context (resetAtMs + downgradedTo) additively — no schema change needed", () => {
+    const cp = new Checkpointer(tmpDb());
+    const quotaContext = {
+      task: "demo",
+      quota: { resetAtMs: 1755600000000, downgradedTo: "claude-haiku" },
+    };
+    cp.save("quota-task", { ...state("sess-quota"), context: quotaContext });
+    expect(cp.load("quota-task")?.context).toEqual(quotaContext);
+
+    // A run that never hit quota keeps the key absent from context.
+    cp.save("plain-task", { ...state("sess-plain"), context: { task: "plain" } });
+    const plain = cp.load("plain-task")!;
+    expect(plain.context).toEqual({ task: "plain" });
+    expect("quota" in plain.context).toBe(false);
+    cp.close();
+  });
 });

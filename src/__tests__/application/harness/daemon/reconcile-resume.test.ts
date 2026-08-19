@@ -87,6 +87,16 @@ describe("E3 lifecycle verify-only", () => {
 
       expect(tracker.getRun("dead-1")!.status).toBe("failed");
     });
+
+    it("leaves a paused run intact (quota window pending, not an orphan)", () => {
+      tracker.createRun("paused-1", "smoke", "smoke", "t", "w", [{ stepId: "gate", agent: null, task: null, signals: ["__start__"] }]);
+      tracker.pauseRun("paused-1", 1755600000000);
+
+      reconcileStaleRuns(host);
+
+      expect(tracker.getRun("paused-1")!.status).toBe("paused");
+      expect(tracker.getRun("paused-1")!.resetAtMs).toBe(1755600000000);
+    });
   });
 
   describe("restoreSession (resume:true)", () => {
@@ -129,6 +139,37 @@ describe("E3 lifecycle verify-only", () => {
       expect(res.sessionId.length).toBe(36); // a new UUID
       expect(res.restoredStepResults.size).toBe(0);
       cp.close();
+    });
+
+    it("excludes a quota-failed step from the restored set so it re-dispatches on resume", () => {
+      const dir = tmpDir("cpq");
+      const cp = new Checkpointer(path.join(dir, "checkpoints.sqlite"));
+      cp.save("quota-task", {
+        workflowId: "smoke",
+        sessionId: "seed-session",
+        agentId: "test",
+        stepResults: {
+          gate: {
+            status: "failed",
+            error: "[quota] You exceeded your current quota",
+            retries: 0,
+          },
+        },
+        context: { task: "quota-task", quota: { resetAtMs: 1755600000000 } },
+      });
+
+      const tracker = new Tracker(path.join(dir, "runs.sqlite"));
+      tracker.createRun("quota-run", "smoke", "smoke", "quota-task", "test", [
+        { stepId: "gate", agent: null, task: null, signals: [] },
+      ]);
+      const runTracker: RunTracker = { runId: "quota-run", tracker };
+      const res = restoreSession("quota-task", true, cp, runTracker, () => {});
+
+      expect(res.sessionId).toBe("seed-session");
+      expect(res.restoredStepResults.size).toBe(0);
+      expect(tracker.getRun("quota-run")!.steps.find(s => s.stepId === "gate")!.status).toBe("pending");
+      cp.close();
+      tracker.close();
     });
   });
 

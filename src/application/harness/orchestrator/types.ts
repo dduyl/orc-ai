@@ -10,6 +10,8 @@ export interface RunReport {
   totalSteps: number;
   completed: number;
   failed: number;
+  /** ADR-022: number of steps that paused the run (quota), 0 or 1. */
+  paused: number;
 }
 
 export interface ProgressEvent {

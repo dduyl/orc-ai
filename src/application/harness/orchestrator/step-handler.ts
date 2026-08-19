@@ -363,10 +363,32 @@ export function createStepHandler(options: {
               ...toQuotaInfo(agentErr),
               ...(downgradeTried && downgradeTo ? { downgradedTo: downgradeTo } : {}),
             };
-            return fail(
-              { failureReason: FailureReason.QuotaExhausted, quota: quotaInfo, ...(quotaInfo.downgradedTo ? { downgradedTo: quotaInfo.downgradedTo } : {}) },
-              quotaInfo,
-            );
+            // ADR-022: quota remains with no recovery path (no
+            // usable downgrade callback, or the downgraded retry hit quota again)
+            // — the run PAUSES instead of failing. The tracker still records the
+            // step as "failed" (the resume path re-runs it and the `[quota]`
+            // marker persists), but the outcome/progress surface the paused state
+            // so the daemon can auto-resume once the quota window resets.
+            const pausedOutcome: StepOutcome = {
+              stepId: step.id,
+              status: "paused",
+              error: agentErr.message,
+              retries: attempt,
+              failureReason: FailureReason.QuotaExhausted,
+              quota: quotaInfo,
+              ...(quotaInfo.downgradedTo ? { downgradedTo: quotaInfo.downgradedTo } : {}),
+            };
+            tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", `[quota] ${agentErr.message}`, quotaInfo);
+            onProgress?.({
+              type: "step_complete",
+              runId,
+              stepId: step.id,
+              status: "paused",
+              error: agentErr.message,
+              quota: quotaInfo,
+            });
+            emitter.stepFinish(step.id, "quota", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0, quotaInfo);
+            return pausedOutcome;
           }
           case "auth":
             return fail();

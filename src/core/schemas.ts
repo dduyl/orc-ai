@@ -277,7 +277,7 @@ export const ChangeLogEntry = z.object({
     status: z.enum(["completed", "failed"]),
     artifactType: z.string().optional(),
   })),
-  finalStatus: z.enum(["completed", "failed", "needs_human"]),
+  finalStatus: z.enum(["completed", "failed", "needs_human", "paused"]),
 });
 export type ChangeLogEntry = z.infer<typeof ChangeLogEntry>;
 

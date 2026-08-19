@@ -33,8 +33,13 @@ export function restoreSession(
         const run = tracker.tracker.getRun(tracker.runId);
         if (run) {
           for (const [stepId, r] of restoredStepResults) {
-            tracker.tracker.setStepCompleted(tracker.runId, stepId, r.status, r.error);
-            onProgress?.({ type: "step_complete", runId: tracker.runId, stepId, status: r.status, error: r.error });
+            // Only non-failed steps are restored, and StepResumeSnapshot.status
+            // is "completed" | "failed" — so every restored row is "completed".
+            // Narrow explicitly: StepOutcome.status also carries "paused".
+            if (r.status === "completed") {
+              tracker.tracker.setStepCompleted(tracker.runId, stepId, "completed", r.error);
+              onProgress?.({ type: "step_complete", runId: tracker.runId, stepId, status: "completed", error: r.error });
+            }
           }
         }
       }

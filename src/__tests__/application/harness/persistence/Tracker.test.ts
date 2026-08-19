@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { Tracker } from "../../../../application/harness/persistence/Tracker.js";
 
 function tmpDb(): { dir: string; path: string } {
@@ -56,6 +57,93 @@ describe("Tracker run status", () => {
       const got = t.getRun("r3")!;
       expect(got.status).toBe("paused");
       expect(got.completedAt).toBeNull();
+      t.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("pauseRun persists reset_at_ms + pause_reason and reads them back", () => {
+    const { dir, path: db } = tmpDb();
+    try {
+      const t = new Tracker(db);
+      t.createRun("r4", "wf", "WF", "t", "a", [{ stepId: "s1", agent: "a", task: null, signals: [] }]);
+      t.pauseRun("r4", 1755600000000, "quota_exhausted");
+
+      const got = t.getRun("r4")!;
+      expect(got.status).toBe("paused");
+      expect(got.resetAtMs).toBe(1755600000000);
+      expect(got.pauseReason).toBe("quota_exhausted");
+      expect(got.completedAt).toBeNull();
+      t.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("pauseRun defaults the reason and leaves resetAtMs unset when absent", () => {
+    const { dir, path: db } = tmpDb();
+    try {
+      const t = new Tracker(db);
+      t.createRun("r5", "wf", "WF", "t", "a", [{ stepId: "s1", agent: "a", task: null, signals: [] }]);
+      t.pauseRun("r5");
+
+      const got = t.getRun("r5")!;
+      expect(got.status).toBe("paused");
+      expect(got.pauseReason).toBe("quota_exhausted");
+      expect(got.resetAtMs).toBeUndefined();
+      t.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("updateRunStatus('running') clears the pause metadata (resume transition)", () => {
+    const { dir, path: db } = tmpDb();
+    try {
+      const t = new Tracker(db);
+      t.createRun("r6", "wf", "WF", "t", "a", [{ stepId: "s1", agent: "a", task: null, signals: [] }]);
+      t.pauseRun("r6", 1755600000000);
+      t.updateRunStatus("r6", "running");
+
+      const got = t.getRun("r6")!;
+      expect(got.status).toBe("running");
+      expect(got.resetAtMs).toBeUndefined();
+      expect(got.pauseReason).toBeUndefined();
+      expect(got.completedAt).toBeNull();
+      t.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates a pre-pause-schema DB (no reset_at_ms/pause_reason) and accepts pauseRun", () => {
+    const { dir, path: db } = tmpDb();
+    try {
+      const old = new DatabaseSync(db);
+      old.exec(`CREATE TABLE runs (
+          run_id TEXT PRIMARY KEY,
+          workflow_id TEXT NOT NULL,
+          workflow_name TEXT NOT NULL DEFAULT '',
+          task TEXT NOT NULL DEFAULT '',
+          adapter_id TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending',
+          steps_json TEXT NOT NULL DEFAULT '[]',
+          current_step_id TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          completed_at INTEGER
+        )`);
+      old.prepare(
+        "INSERT INTO runs (run_id, workflow_id, workflow_name, task, adapter_id, status, steps_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+      ).run("legacy", "wf", "WF", "t", "a", "completed", "[]", 1, 1);
+      old.close();
+
+      const t = new Tracker(db);
+      expect(t.getRun("legacy")!.status).toBe("completed");
+      t.pauseRun("legacy", 42);
+      expect(t.getRun("legacy")!.status).toBe("paused");
+      expect(t.getRun("legacy")!.resetAtMs).toBe(42);
       t.close();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

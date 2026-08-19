@@ -76,7 +76,15 @@ export async function startRun(
   }));
   const totalSteps = stepEntries.length;
 
-  host.tracker.createRun(runId, plan.workflow.workflow.id, workflowName, task, host.adapter.id, stepEntries);
+  // ADR-022: the quota wake timer resumes the SAME runId it paused.
+  // Reuse the existing row (paused -> running; updateRunStatus clears the pause
+  // metadata) so run history and steps_json survive instead of a PK conflict.
+  const existing = resume ? host.tracker.getRun(runId) : null;
+  if (existing) {
+    host.tracker.updateRunStatus(runId, "running");
+  } else {
+    host.tracker.createRun(runId, plan.workflow.workflow.id, workflowName, task, host.adapter.id, stepEntries);
+  }
 
   const runTracker: RunTracker = { runId, tracker: host.tracker };
   const rootDir = host.projectDir ?? process.cwd();
@@ -101,6 +109,15 @@ export async function startRun(
   })
     .then((report) => {
       host.bgRuns.delete(runId);
+      if (report.paused > 0) {
+        // ADR-022: a paused run is NOT done — schedule the wake resume
+        // and skip the completion prompt (the eventual resume completion fires
+        // it). The daemon keeps the run active so attach mid-pause works.
+        const pausedOutcome = report.outcomes.find(o => o.status === "paused");
+        log.warn(`[run ${runId}] Workflow "${workflowId}" paused (quota) — scheduling auto-resume`);
+        host.schedulePausedRunResume(runId, task, workflowId, pausedOutcome?.quota?.resetAtMs);
+        return report;
+      }
       log.info(`[run ${runId}] Workflow "${workflowId}" completed: ${report.completed}/${report.totalSteps} completed`);
       notifyMainPty(buildCompletionPrompt(runId, workflowName, report));
       return report;
@@ -131,6 +148,7 @@ export async function startRun(
         totalSteps,
         completed,
         failed: totalSteps - completed,
+        paused: 0,
       };
       notify({ type: "workflow_complete", runId, status: "failed", report: failReport });
       notifyMainPty(buildCompletionPrompt(runId, workflowName, failReport));
