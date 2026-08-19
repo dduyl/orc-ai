@@ -232,6 +232,9 @@ const QUOTA_PATTERNS = [
   /\bmonthly\s+spend\b/i,
   /\bbilling\s+limit\b/i,
   /\bdaily\s+request\s+limit\b/i,
+  // Anthropic: "…the credit balance is too low to run it" (surfaces as a 429 +
+  // rate_limit_error, so the wording check must beat the rate-limit branch).
+  /credit\s+balance\s+is\s+too\s+low/i,
 ];
 
 const RATE_LIMIT_PATTERNS = [

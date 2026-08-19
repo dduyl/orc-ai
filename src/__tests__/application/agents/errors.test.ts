@@ -17,6 +17,7 @@ describe("classifyAgentError corpus", () => {
     ["You have reached the billing limit for your organization", "quota"],
     ["You've reached your daily request limit for the free tier", "quota"],
     ["Your quota usage is at 100% — no further requests allowed", "quota"],
+    ["This request is larger than the model's context window and the credit balance is too low to run it", "quota"],
   ] as const)("classifies quota: %s", (msg, kind) => {
     expect(classifyAgentError(new Error(msg)).kind).toBe(kind);
   });
