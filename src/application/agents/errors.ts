@@ -1,9 +1,11 @@
 import { z } from "zod";
 
 /**
- * Failure kinds for agent calls (ADR-022). Ordered specific → general; the
- * classifier checks them in this order so a provider message that mentions
- * both e.g. "quota" and "429" resolves to the more specific kind.
+ * Failure kinds for agent calls (ADR-022). This enumerates the possible kinds
+ * — it is NOT the classifier's check order (see {@link classifyAgentError}):
+ * explicit auth signals (401 / auth-family codes) always win, then quota
+ * wording, then softer auth wording / 403, then rate-limit, connection, spawn,
+ * unknown.
  */
 export const AGENT_CALL_ERROR_KINDS = [
   "quota",
@@ -81,13 +83,18 @@ export class AgentCallError extends Error {
   }
 }
 
-/** Serializes to a stable shape for the data-flow validity assertions. */
-export function toQuotaInfo(err: AgentCallError): QuotaInfo {
+/**
+ * Serializes to a stable shape for the data-flow validity assertions.
+ * `downgradedTo` (optional) stamps the quota payload with the model the failed
+ * step was downgraded to, mirroring `QuotaInfo.downgradedTo`.
+ */
+export function toQuotaInfo(err: AgentCallError, downgradedTo?: string): QuotaInfo {
   return QuotaInfo.parse({
     kind: err.kind,
     message: err.message,
     ...(err.resetAtMs !== undefined ? { resetAtMs: err.resetAtMs } : {}),
     ...(err.providerCode !== undefined ? { providerCode: err.providerCode } : {}),
+    ...(downgradedTo !== undefined && downgradedTo !== "" ? { downgradedTo } : {}),
   });
 }
 
@@ -219,7 +226,9 @@ const AUTH_PATTERNS = [
   /\bunauthenticated\b/i,
   /\bunauthorized\b/i,
   /\bpermission\s+denied\b/i,
-  /\bforbidden\b/i,
+  // Bare "forbidden" is too broad — require an access/request/operation scope
+  // so a quota or other message that merely contains the word stays quota.
+  /(access|request|operation)\s+forbidden/i,
   /\b401\b/,
   /\b403\b/,
 ];
@@ -238,7 +247,10 @@ const QUOTA_PATTERNS = [
 ];
 
 const RATE_LIMIT_PATTERNS = [
-  /\bretry\s+after\b/i,
+  // "retry after" only counts when a time hint follows — a vague "retry after
+  // approval" is not a rate limit. (The structural retry_after/Retry-After
+  // fields are handled by extractRetryAfterMs regardless of wording.)
+  /\bretry\s+after\s+\d+\s*(?:seconds?|minutes?|hours?|ms|milliseconds?)?/i,
   /\btoo\s+many\s+requests\b/i,
   /\brate\s+limit\b/i,
   /\brate_limit/i,
@@ -268,7 +280,6 @@ const CONNECTION_PATTERNS = [
 
 const SPAWN_PATTERNS = [
   /failed\s+to\s+spawn/i,
-  /\bspawn\b/i,
   /\benoent\b/i,
   /\beacces\b/i,
   /command\s+not\s+found/i,
@@ -288,8 +299,17 @@ function hasTryAgainWithTime(message: string): boolean {
 
 function matchAuth(message: string, status: number | undefined, code: string | undefined): boolean {
   if (status === 401 || status === 403) return true;
-  if (code === "invalid_api_key" || code === "authentication_error" || code === "permission_error") return true;
   return AUTH_PATTERNS.some(re => re.test(message));
+}
+
+/**
+ * Explicit auth signals that always win regardless of message wording. A 401
+ * status or an auth-family error code is unambiguous — it stays `auth` even
+ * when the message also mentions quota/rate-limit phrasing.
+ */
+function hardAuth(status: number | undefined, code: string | undefined): boolean {
+  if (status === 401) return true;
+  return code === "invalid_api_key" || code === "authentication_error" || code === "permission_error";
 }
 
 function matchQuota(message: string, status: number | undefined, code: string | undefined): boolean {
@@ -309,9 +329,14 @@ function matchRateLimit(message: string, status: number | undefined, code: strin
  * same input → same kind, no I/O, no state. The **only** place provider
  * message strings are matched (ADR-022).
  *
- * Match order is specific → general: auth → quota → rate_limit → connection →
- * spawn → unknown. `unknown` is the escape hatch — the classifier never
- * guesses.
+ * Check order:
+ *  1. explicit auth — a 401 status or an auth-family error code always wins,
+ *     even if the message also carries quota/rate-limit wording;
+ *  2. quota wording — an exhausted quota can surface under many HTTP statuses,
+ *     so its message beats the status-403 auth guess;
+ *  3. softer auth — auth wording or a bare 401/403 status;
+ *  4. rate-limit, connection, spawn;
+ *  5. `unknown` — the escape hatch, the classifier never guesses.
  */
 export function classifyAgentError(err: unknown): AgentCallError {
   if (err instanceof AgentCallError) return err;
@@ -319,11 +344,14 @@ export function classifyAgentError(err: unknown): AgentCallError {
   const status = extractStatus(err);
   const providerCode = extractProviderCode(err);
 
-  if (matchAuth(message, status, providerCode)) {
+  if (hardAuth(status, providerCode)) {
     return new AgentCallError("auth", message, { providerCode });
   }
   if (matchQuota(message, status, providerCode)) {
     return new AgentCallError("quota", message, { providerCode, resetAtMs: extractResetAtMs(err, message) });
+  }
+  if (matchAuth(message, status, providerCode)) {
+    return new AgentCallError("auth", message, { providerCode });
   }
   if (matchRateLimit(message, status, providerCode) || hasTryAgainWithTime(message)) {
     return new AgentCallError("rate_limit", message, { providerCode, retryAfterMs: extractRetryAfterMs(err) });

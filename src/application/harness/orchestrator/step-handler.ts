@@ -359,10 +359,7 @@ export function createStepHandler(options: {
                 continue;
               }
             }
-            const quotaInfo = {
-              ...toQuotaInfo(agentErr),
-              ...(downgradeTried && downgradeTo ? { downgradedTo: downgradeTo } : {}),
-            };
+            const quotaInfo = toQuotaInfo(agentErr, downgradeTried && downgradeTo ? downgradeTo : undefined);
             // ADR-022: quota remains with no recovery path (no
             // usable downgrade callback, or the downgraded retry hit quota again)
             // — the run PAUSES instead of failing. The tracker still records the

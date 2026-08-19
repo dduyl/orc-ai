@@ -118,6 +118,18 @@ describe("classifyAgentError precedence (specific → general)", () => {
     expect(classifyAgentError("401 invalid api key, quota could not be checked").kind).toBe("auth");
   });
 
+  it("quota wording beats a status-403 auth guess (quota can surface under many statuses)", () => {
+    expect(classifyAgentError({ message: "You exceeded your current quota", status: 403 }).kind).toBe("quota");
+  });
+
+  it("a bare 403 with no quota wording still classifies as auth", () => {
+    expect(classifyAgentError({ message: "403 Forbidden", status: 403 }).kind).toBe("auth");
+  });
+
+  it("an auth-family code beats quota wording regardless of the message", () => {
+    expect(classifyAgentError({ message: "quota exceeded", error: { type: "authentication_error" } }).kind).toBe("auth");
+  });
+
   it("rate_limit beats connection when both are present", () => {
     expect(classifyAgentError("429 Too Many Requests (connection dropped)").kind).toBe("rate_limit");
   });
@@ -171,6 +183,18 @@ describe("classifyAgentError timing hints", () => {
     const quota = classifyAgentError("You exceeded your current quota");
     expect(quota.resetAtMs).toBeUndefined();
   });
+
+  it("bare 'retry after' with no time hint is not a rate limit", () => {
+    expect(classifyAgentError("The request will be handled after an approval. Retry after we resume.").kind).toBe("unknown");
+  });
+
+  it("'retry after <time>' is a rate limit", () => {
+    expect(classifyAgentError("Please retry after 60 seconds").kind).toBe("rate_limit");
+  });
+
+  it("bare 'forbidden' without an access/request/operation scope is not auth", () => {
+    expect(classifyAgentError("The operation returned: forbidden").kind).toBe("unknown");
+  });
 });
 
 describe("AgentCallError identity", () => {
@@ -199,6 +223,19 @@ describe("AgentCallError identity", () => {
     const info = toQuotaInfo(err);
     expect(info).toEqual({ kind: "quota", message: "quota exceeded" });
     expect("resetAtMs" in info).toBe(false);
+  });
+
+  it("toQuotaInfo stamps downgradedTo when a downgrade happened", () => {
+    const err = new AgentCallError("quota", "quota exceeded", { resetAtMs: 1755600000000 });
+    const info = toQuotaInfo(err, "gpt-4o-mini");
+    expect(info.downgradedTo).toBe("gpt-4o-mini");
+    expect(info.resetAtMs).toBe(1755600000000);
+  });
+
+  it("toQuotaInfo keeps downgradedTo absent when no downgrade happened", () => {
+    const err = new AgentCallError("quota", "quota exceeded");
+    const info = toQuotaInfo(err);
+    expect("downgradedTo" in info).toBe(false);
   });
 
   it("serializes a stable JSON shape", () => {
