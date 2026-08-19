@@ -108,8 +108,19 @@ export class RunHost {
    * without one (the provider did not say when) the `quotaPauseDelayMs` config
    * value in `~/.orc/config.json` is used. Returns false when no timer could be
    * scheduled (unknown reset + no config) — the run then resumes manually.
+   *
+   * `opts.signal`/`opts.onEvent` are forwarded to the wake-resumed run so it
+   * participates in the daemon's abort/registration fan-out exactly like the
+   * run that paused: a cancel during the pause window aborts the resume, and
+   * the eventual workflow_complete still reaches the daemon's cleanup path.
    */
-  schedulePausedRunResume(runId: string, task: string, workflowId: string, resetAtMs?: number): boolean {
+  schedulePausedRunResume(
+    runId: string,
+    task: string,
+    workflowId: string,
+    resetAtMs?: number,
+    opts?: { signal?: AbortSignal; onEvent?: (event: ProgressEvent) => void },
+  ): boolean {
     let delayMs: number;
     if (resetAtMs !== undefined) {
       delayMs = Math.max(0, resetAtMs - Date.now());
@@ -123,8 +134,12 @@ export class RunHost {
     this.clearPausedRunResume(runId);
     const timer = setTimeout(() => {
       this.wakeTimers.delete(runId);
+      if (opts?.signal?.aborted) {
+        log.warn(`[run ${runId}] Quota wake skipped — run was cancelled while paused`);
+        return;
+      }
       log.warn(`[run ${runId}] Quota window reset — resuming workflow "${workflowId}"`);
-      void startRun(this, task, workflowId, true, { runId }).catch((err: any) => {
+      void startRun(this, task, workflowId, true, { runId, signal: opts?.signal, onEvent: opts?.onEvent }).catch((err: any) => {
         log.warn(`[run ${runId}] Quota resume attempt failed: ${err?.message ?? err}`);
       });
     }, delayMs);

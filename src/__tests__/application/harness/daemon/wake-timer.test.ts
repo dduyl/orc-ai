@@ -133,4 +133,38 @@ describe("RunHost paused-run wake timer (ADR-022)", () => {
     expect(tracker.getRun("w5")!.status).toBe("paused");
     tracker.close();
   });
+
+  it("forwards signal and onEvent to the wake-resumed startRun", () => {
+    const { host, tracker } = makeHost({ quotaResumeDelayMs: 5_000 });
+    const onEvent = vi.fn();
+    const controller = new AbortController();
+    tracker.createRun("w6", "wf", "WF", "t", "test", [{ stepId: "s1", agent: null, task: null, signals: [] }]);
+    tracker.pauseRun("w6");
+
+    expect(host.schedulePausedRunResume("w6", "task", "wf", undefined, { signal: controller.signal, onEvent })).toBe(true);
+
+    vi.advanceTimersByTime(5_000);
+    expect(mockedStartRun).toHaveBeenCalledTimes(1);
+    expect(mockedStartRun).toHaveBeenCalledWith(host, "task", "wf", true, {
+      runId: "w6",
+      signal: controller.signal,
+      onEvent,
+    });
+    tracker.close();
+  });
+
+  it("skips the wake resume when the signal was already aborted", () => {
+    const { host, tracker } = makeHost({ quotaResumeDelayMs: 5_000 });
+    const controller = new AbortController();
+    controller.abort();
+    tracker.createRun("w7", "wf", "WF", "t", "test", [{ stepId: "s1", agent: null, task: null, signals: [] }]);
+    tracker.pauseRun("w7");
+
+    expect(host.schedulePausedRunResume("w7", "task", "wf", undefined, { signal: controller.signal })).toBe(true);
+
+    vi.advanceTimersByTime(5_000);
+    expect(mockedStartRun).not.toHaveBeenCalled();
+    expect(tracker.getRun("w7")!.status).toBe("paused");
+    tracker.close();
+  });
 });

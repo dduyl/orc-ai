@@ -126,7 +126,13 @@ export async function startRun(
         // it). The daemon keeps the run active so attach mid-pause works.
         const pausedOutcome = report.outcomes.find(o => o.status === "paused");
         log.warn(`[run ${runId}] Workflow "${workflowId}" paused (quota) — scheduling auto-resume`);
-        host.schedulePausedRunResume(runId, task, workflowId, pausedOutcome?.quota?.resetAtMs);
+        host.schedulePausedRunResume(runId, task, workflowId, pausedOutcome?.quota?.resetAtMs, {
+          // Forward the run's abort signal + event observer to the wake-resumed
+          // run: a cancel during the pause aborts the resume, and completion
+          // still fans out to the daemon's cleanup path.
+          signal: opts?.signal,
+          onEvent: opts?.onEvent,
+        });
         return report;
       }
       log.info(`[run ${runId}] Workflow "${workflowId}" completed: ${report.completed}/${report.totalSteps} completed`);
