@@ -132,7 +132,7 @@ export async function handleRunWorkflow(args: any, extra: RunHandlerExtra): Prom
       const message = event.type === "step_start"
         ? `Starting: ${event.agent || event.stepId}`
         : event.type === "step_complete"
-          ? `Step ${event.stepId}: ${event.status}${event.error ? ` — ${event.error}` : ""}`
+          ? `Step ${event.stepId}: ${event.status}${event.error ? ` — ${event.error}` : ""}${event.quota ? ` (quota: ${event.quota.message})` : ""}`
           : event.type === "workflow_complete"
             ? `Workflow: ${event.status}`
             : `Error: ${event.error || "unknown"}`;

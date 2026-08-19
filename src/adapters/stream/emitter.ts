@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { StreamEvent } from "./types.js";
+import type { QuotaInfo } from "../../application/agents/errors.js";
 
 let seqCounter = 0;
 
@@ -75,6 +76,7 @@ export class StreamEmitter extends EventEmitter {
     snapshot: string,
     tokens: { total: number; input: number; output: number; reasoning: number; cache: { write: number; read: number } },
     cost: number,
+    quota?: QuotaInfo,
   ): void {
     this.write({
       type: "step_finish",
@@ -89,6 +91,7 @@ export class StreamEmitter extends EventEmitter {
         snapshot,
         tokens,
         cost,
+        ...(quota ? { quota } : {}),
       },
     });
     this.stepStartTimes.delete(stepId);

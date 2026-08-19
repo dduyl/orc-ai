@@ -1,6 +1,7 @@
 import { START_SIGNAL, validateWorkflowGraph, type WorkflowStep } from "../../../core/schemas.js";
 import type { HookEvent } from "../../../core/hooks.js";
 import type { CommandExecutionResult } from "./CommandExecutor.js";
+import type { QuotaInfo } from "../../agents/errors.js";
 import { log } from "../../../core/log.js";
 
 export interface RunContext {
@@ -41,6 +42,10 @@ export interface StepOutcome {
   summary?: string;
   artifact?: string;
   affectedFiles?: string[];
+  /** ADR-022: reason the step failed (e.g. `quota_exhausted`) when the error is classified. */
+  failureReason?: string;
+  /** ADR-022: zod-valid quota payload when the step failed because the provider quota is exhausted. */
+  quota?: QuotaInfo;
 }
 
 export type StepHandler = (step: WorkflowStep, ctx: RunContext) => Promise<StepOutcome>;

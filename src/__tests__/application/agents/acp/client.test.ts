@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { runAcpTurn } from "../../../../application/agents/acp/client.js";
 import { PermissionGate } from "../../../../application/agents/acp/permission.js";
+import { AgentCallError } from "../../../../application/agents/errors.js";
 import type { AcpSpawnSpec } from "../../../../application/agents/acp/types.js";
 
 /**
@@ -64,6 +65,8 @@ rl.on('line', (line) => {
         answerPrompt({ stopReason:'end_turn', usage:{ totalTokens:42, inputTokens:10, outputTokens:32 } });
       } else if (mode === 'exit') {
         process.exit(0);
+      } else if (mode === 'quota') {
+        send({ jsonrpc:'2.0', id, error:{ code:-32000, message:'You exceeded your current quota, please check your plan and billing details.' } });
       }
       break;
     case 'session/cancel':
@@ -165,8 +168,9 @@ describe("runAcpTurn", () => {
       e => e,
     );
 
-    expect(err).toBeInstanceOf(Error);
-    expect(String((err as Error).message)).toMatch(/Failed to spawn ACP agent/);
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("spawn");
+    expect((err as AgentCallError).message).toMatch(/Failed to spawn ACP agent/);
   });
 
   it("rejects when the server closes the connection mid-turn", async () => {
@@ -181,6 +185,24 @@ describe("runAcpTurn", () => {
       e => e,
     );
 
-    expect(err).toBeInstanceOf(Error);
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("connection");
+  });
+
+  it("wraps a quota session/prompt rejection as a thrown AgentCallError (kind preserved)", async () => {
+    const err = await runAcpTurn({
+      spawn: spawnSpec("quota"),
+      cwd: process.cwd(),
+      env: env("quota"),
+      prompt: "hello",
+      permissionGate: new PermissionGate(),
+    }).then(
+      () => null,
+      e => e,
+    );
+
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("quota");
+    expect((err as AgentCallError).message).toMatch(/quota/);
   });
 });

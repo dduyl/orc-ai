@@ -1,6 +1,7 @@
 import { type IPty } from "node-pty";
 import type { StepOutcome } from "../execution/step-runner.js";
 import type { Tracker } from "../persistence/Tracker.js";
+import type { QuotaInfo } from "../../agents/errors.js";
 
 export interface RunReport {
   workflowId: string;
@@ -20,6 +21,7 @@ export interface ProgressEvent {
   status?: string;
   duration?: number;
   error?: string;
+  quota?: QuotaInfo;
   pty?: IPty;
   report?: RunReport;
 }

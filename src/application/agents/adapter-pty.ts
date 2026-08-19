@@ -1,5 +1,6 @@
 import { spawn, type IPty } from "node-pty";
 import type { AdapterDef, AgentCallResult } from "./adapter.js";
+import { classifyAgentError } from "./errors.js";
 import { HOOK_FILE_ENV } from "../../core/hooks.js";
 import { getStrategy } from "./strategy.js";
 import { acpEnabledFor, callAcpAgentStream } from "./adapter-acp.js";
@@ -68,7 +69,8 @@ export function callAgentStream(
     const dummyPty = { onData: () => {}, onExit: () => {}, write: () => {}, resize: () => {}, kill: () => {}, pid: 0, cols: 0, rows: 0 } as unknown as IPty;
     return {
       pty: dummyPty,
-      promise: Promise.reject(new Error(`Failed to spawn PTY for ${adapter.command}: ${(pErr as Error).message}`)),
+      // Classified as kind:"spawn" (ADR-022) — never message-matched on PTY stdout.
+      promise: Promise.reject(classifyAgentError(new Error(`Failed to spawn PTY for ${adapter.command}: ${(pErr as Error).message}`))),
     };
   }
 

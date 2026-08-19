@@ -25,6 +25,7 @@ export enum FailureReason {
   TransientError = "transient_error",
   BudgetExceeded = "budget_exceeded",
   LoopDetected = "loop_detected",
+  QuotaExhausted = "quota_exhausted",
 }
 
 export interface AgentAdapterConfig {

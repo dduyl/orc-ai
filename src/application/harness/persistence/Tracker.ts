@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import * as path from "node:path";
 import * as fs from "node:fs";
+import type { QuotaInfo } from "../../agents/errors.js";
 
 export interface StepStatusRecord {
   stepId: string;
@@ -12,9 +13,10 @@ export interface StepStatusRecord {
   completedAt: number | null;
   duration: number | null;
   error: string | null;
+  quota: QuotaInfo | null;
 }
 
-export type RunStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+export type RunStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "paused";
 
 export interface RunRecord {
   runId: string;
@@ -77,6 +79,7 @@ export class Tracker {
       completedAt: null,
       duration: null,
       error: null,
+      quota: null,
     }));
     const stmt = this.db.prepare(`
       INSERT INTO runs (run_id, workflow_id, workflow_name, task, adapter_id, status, steps_json, current_step_id, created_at, updated_at)
@@ -115,11 +118,12 @@ export class Tracker {
     });
   }
 
-  setStepCompleted(runId: string, stepId: string, status: "completed" | "failed", error?: string): void {
+  setStepCompleted(runId: string, stepId: string, status: "completed" | "failed", error?: string, quota?: QuotaInfo): void {
     this.mutateStep(runId, stepId, (step, now) => {
       step.status = status;
       step.completedAt = now;
       step.error = error || null;
+      step.quota = quota ?? null;
       if (step.startedAt) {
         step.duration = now - step.startedAt;
       }

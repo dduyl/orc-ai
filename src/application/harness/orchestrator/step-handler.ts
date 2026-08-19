@@ -11,8 +11,26 @@ import type { StepHandler, StepOutcome, RunContext } from "../execution/step-run
 import type { WorkflowStep } from "../../../core/schemas.js";
 import { StreamEmitter } from "../../../adapters/stream/emitter.js";
 import { log } from "../../../core/log.js";
+import { FailureReason } from "../../../core/types.js";
+import { AgentCallError, classifyAgentError, toQuotaInfo, type QuotaInfo } from "../../agents/errors.js";
 import { buildStepContext, buildResponseInstructions } from "./context-builder.js";
 import type { OrcReturnResult, ProgressEvent, RunTracker, StepSummary } from "./types.js";
+
+/** Bounded exponential backoff: 1s -> 2s -> 4s ... capped at 30s. */
+const BACKOFF_BASE_MS = 1000;
+const BACKOFF_CAP_MS = 30_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/** Backoff for a transient failure: `Retry-After`/`retry_after` wins, else `base * 2^attempt`. */
+function backoffFor(err: AgentCallError, attempt: number): number {
+  if (typeof err.retryAfterMs === "number" && err.retryAfterMs > 0) {
+    return Math.min(err.retryAfterMs, BACKOFF_CAP_MS);
+  }
+  return Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_CAP_MS);
+}
 
 function extractOrcResult(hooks: import("../../../core/hooks.js").HookEvent[]): OrcReturnResult | null {
   for (let i = hooks.length - 1; i >= 0; i--) {
@@ -279,12 +297,43 @@ export function createStepHandler(options: {
           // the race rejected before handle.promise settled, so bail cleanly.
           return cancelled(step.id, attempt, true);
         }
-        if (attempt < ctx.maxRetries) continue;
-        const o: StepOutcome = { stepId: step.id, status: "failed", error: err.message, retries: attempt };
-        tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", err.message);
-        onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "failed", error: err.message });
-        emitter.stepFinish(step.id, "error", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
-        return o;
+        const agentErr = err instanceof AgentCallError ? err : classifyAgentError(err);
+        const fail = (extra: Partial<StepOutcome> = {}, quota?: QuotaInfo): StepOutcome => {
+          const o: StepOutcome = { stepId: step.id, status: "failed", error: agentErr.message, retries: attempt, ...extra };
+          const trackerError = quota ? `[quota] ${agentErr.message}` : agentErr.message;
+          tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", trackerError, quota);
+          onProgress?.({
+            type: "step_complete",
+            runId,
+            stepId: step.id,
+            status: "failed",
+            error: agentErr.message,
+            ...(quota ? { quota } : {}),
+          });
+          emitter.stepFinish(step.id, quota ? "quota" : "error", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0, quota);
+          return o;
+        };
+        // ADR-022 retry policy — kind-aware, never blind:
+        //  - quota:     do NOT retry (backing off against a quota is wasted). Fail
+        //               immediately with QuotaExhausted and carry the payload.
+        //  - auth:      fail fast — retrying won't clear a bad key.
+        //  - rate_limit / connection / spawn / unknown: bounded backoff, then fail.
+        switch (agentErr.kind) {
+          case "quota": {
+            const quotaInfo = toQuotaInfo(agentErr);
+            return fail({ failureReason: FailureReason.QuotaExhausted, quota: quotaInfo }, quotaInfo);
+          }
+          case "auth":
+            return fail();
+          default:
+            if (attempt < ctx.maxRetries) {
+              const waitMs = backoffFor(agentErr, attempt);
+              log.info(`step '${step.id}' ${agentErr.kind} — retrying in ${waitMs}ms (attempt ${attempt + 1}/${ctx.maxRetries})`);
+              await sleep(waitMs);
+              continue;
+            }
+            return fail();
+        }
       }
     }
 

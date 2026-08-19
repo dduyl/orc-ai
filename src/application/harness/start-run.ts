@@ -125,6 +125,7 @@ export async function startRun(
           stepId: s.stepId,
           status: s.status === "completed" ? "completed" : "failed",
           error: s.error ?? undefined,
+          quota: s.quota ?? undefined,
           retries: 0,
         })),
         totalSteps,

@@ -18,6 +18,12 @@ export interface ToolResultEvent {
   files?: string[];
 }
 
+export interface StepQuotaInfo {
+  kind: "quota";
+  resetAtMs?: number;
+  message: string;
+}
+
 export interface StepFinishEvent {
   type: "step_finish";
   timestamp: number;
@@ -28,6 +34,7 @@ export interface StepFinishEvent {
     input: number;
     output: number;
   };
+  quota?: StepQuotaInfo;
 }
 
 export type HookEvent = ToolCallEvent | ToolResultEvent | StepFinishEvent;

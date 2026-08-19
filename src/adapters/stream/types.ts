@@ -1,3 +1,5 @@
+import type { QuotaInfo } from "../../application/agents/errors.js";
+
 export interface EventPartBase {
   id: string;
   messageID: string;
@@ -27,6 +29,7 @@ export interface StepFinishPart extends EventPartBase {
     cache: { write: number; read: number };
   };
   cost: number;
+  quota?: QuotaInfo;
 }
 
 export type StreamPart = StepStartPart | TextPart | StepFinishPart;

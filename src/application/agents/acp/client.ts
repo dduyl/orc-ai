@@ -11,6 +11,7 @@ import {
 import type { Usage, ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
 import type { AcpSpawnSpec, AcpStopReason, AcpTurnResult, AgentUsage } from "./types.js";
 import type { PermissionGate } from "./permission.js";
+import { classifyAgentError } from "../errors.js";
 import { log } from "../../../core/log.js";
 
 export interface AcpClientEvents {
@@ -201,7 +202,7 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
         content: content.join(""),
         usage: finalUsage,
         duration: Date.now() - start,
-        error: (err as Error).message,
+        error: classifyAgentError(err),
       };
     }
     // With cross-spawn a missing command is launched through cmd.exe, which
@@ -219,9 +220,9 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
         spawnFailed.promise,
         new Promise<null>(resolve => setTimeout(() => resolve(null), 50)),
       ]);
-      if (spawnErr) throw spawnErr;
+      if (spawnErr) throw classifyAgentError(spawnErr);
     }
-    throw err;
+    throw classifyAgentError(err);
   } finally {
     scheduleKill(child);
     signal?.removeEventListener("abort", onAbort);

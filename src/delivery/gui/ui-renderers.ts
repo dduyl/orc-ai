@@ -100,7 +100,18 @@ export function renderStepTree(run: RunRecord, container: HTMLElement): void {
       `<span class="label"><span style="color:${color}">${dot}</span> ${escapeHtml(label)}</span>` +
       `<span class="value">${duration}</span>`;
 
-    if (step.error) {
+    if (step.quota) {
+      const quotaEl = document.createElement("div");
+      quotaEl.className = "quota-banner";
+      quotaEl.style.paddingLeft = "16px";
+      quotaEl.style.color = TOK.warn;
+      quotaEl.textContent =
+        `[quota] ${step.quota.message}` +
+        (step.quota.resetAtMs
+          ? ` — paused until ${new Date(step.quota.resetAtMs).toLocaleString()}`
+          : " — paused");
+      container.appendChild(quotaEl);
+    } else if (step.error) {
       const errEl = document.createElement("div");
       errEl.className = "event-entry";
       errEl.style.paddingLeft = "16px";

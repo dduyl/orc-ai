@@ -1,4 +1,5 @@
 import type { AgentUsage } from "./acp/types.js";
+import type { AgentCallError } from "./errors.js";
 
 export type AgentMode = "interactive" | "headless";
 
@@ -9,6 +10,8 @@ export interface AgentCallResult {
   duration: number;
   /** Detailed token breakdown when the call produced usage telemetry (ACP). */
   usage?: AgentUsage;
+  /** Classified failure carried to callers when a turn fails (ADR-022). */
+  error?: AgentCallError;
 }
 
 export interface AdapterDef {

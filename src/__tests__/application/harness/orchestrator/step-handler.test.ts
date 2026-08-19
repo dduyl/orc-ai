@@ -1,9 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { StreamEmitter } from "../../../../adapters/stream/emitter.js";
 import { parseRun } from "../../../../application/harness/execution/CommandExecutor.js";
 import type { CommandExecutionResult } from "../../../../application/harness/execution/CommandExecutor.js";
 import type { RunContext } from "../../../../application/harness/execution/step-runner.js";
 import { createStepHandler, buildRepairPrompt } from "../../../../application/harness/orchestrator/step-handler.js";
+import { Tracker } from "../../../../application/harness/persistence/Tracker.js";
+import { AgentCallError } from "../../../../application/agents/errors.js";
 import type { WorkflowStep } from "../../../../core/schemas.js";
 
 const { agentCalls, mockState } = vi.hoisted(() => {
@@ -12,6 +17,7 @@ const { agentCalls, mockState } = vi.hoisted(() => {
     pending: boolean;
     killSettles: boolean;
     resolve?: (v?: unknown) => void;
+    rejectWith?: unknown;
   } = { killed: 0, pending: false, killSettles: true };
   return { agentCalls: [] as string[], mockState };
 });
@@ -34,7 +40,9 @@ vi.mock("../../../../application/agents/adapter-pty.js", () => ({
       pty,
       promise: mockState.pending
         ? new Promise(resolve => { mockState.resolve = resolve; })
-        : Promise.resolve({ content: "mock", model: "mock", tokensUsed: 0, duration: 0 }),
+        : mockState.rejectWith !== undefined
+          ? Promise.reject(mockState.rejectWith)
+          : Promise.resolve({ content: "mock", model: "mock", tokensUsed: 0, duration: 0 }),
     };
   },
 }));
@@ -395,6 +403,7 @@ describe("step-handler abort", () => {
     mockState.pending = false;
     mockState.killSettles = true;
     mockState.resolve = undefined;
+    mockState.rejectWith = undefined;
   });
 
   it("kills the in-flight PTY and returns a cancelled outcome on abort", async () => {
@@ -471,5 +480,222 @@ describe("step-handler abort", () => {
     expect(mockState.killed).toBe(1);
     expect(out.status).toBe("failed");
     expect(out.error).toBe("cancelled");
+  });
+
+  it("quota: fails immediately with QuotaExhausted and zero retries, quota payload preserved", async () => {
+    mockState.rejectWith = new AgentCallError("quota", "You exceeded your current quota", {
+      resetAtMs: 1755600000000,
+    });
+    const agentStep: WorkflowStep = {
+      id: "code", type: "agent", agent: "codegen", emits: [sig("sig_done")], on: ["__start__"], context: [],
+    };
+    const handler = createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: emitter(),
+      task: "t",
+    });
+
+    const out = await handler(agentStep, ctx());
+
+    expect(out.status).toBe("failed");
+    expect(out.error).toBe("You exceeded your current quota");
+    expect(out.failureReason).toBe("quota_exhausted");
+    expect(out.quota).toEqual({ kind: "quota", resetAtMs: 1755600000000, message: "You exceeded your current quota" });
+    // Phase 1: quota is a no-retry kind — the exact resetAtMs that entered the
+    // classifier reaches the outcome un-cut, and callAgentStream runs once.
+    expect(agentCalls.length).toBe(1);
+  });
+});
+
+describe("step-handler ADR-022 retry policy", () => {
+  const agentStep = (): WorkflowStep => ({
+    id: "code", type: "agent", agent: "codegen", emits: [sig("sig_done")], on: ["__start__"], context: [],
+  });
+  const makeHandler = () =>
+    createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: emitter(),
+      task: "t",
+    });
+
+  beforeEach(() => {
+    agentCalls.length = 0;
+    mockState.pending = false;
+    mockState.killSettles = true;
+    mockState.resolve = undefined;
+    mockState.rejectWith = undefined;
+  });
+
+  /** Record the requested sleep durations while firing them near-instantly so the handler completes for real. */
+  function withRecordedSleep(run: (delays: number[]) => Promise<void>): Promise<void> {
+    const delays: number[] = [];
+    const orig = globalThis.setTimeout;
+    (globalThis as any).setTimeout = (fn: (...args: unknown[]) => void, ms: number, ...rest: unknown[]) => {
+      delays.push(ms);
+      return orig(fn, Math.min(ms, 5), ...rest);
+    };
+    return run(delays).finally(() => {
+      (globalThis as any).setTimeout = orig;
+    });
+  }
+
+  it("quota: no retry, no backoff sleep, QuotaExhausted with payload", async () => {
+    mockState.rejectWith = new AgentCallError("quota", "quota exceeded", { resetAtMs: 1755600000000 });
+    await withRecordedSleep(async delays => {
+      const out = await makeHandler()(agentStep(), ctx());
+      expect(delays).toEqual([]);
+      expect(out.status).toBe("failed");
+      expect(out.failureReason).toBe("quota_exhausted");
+      expect(out.quota?.resetAtMs).toBe(1755600000000);
+      expect(agentCalls.length).toBe(1);
+    });
+  });
+
+  it("rate_limit: bounded backoff base*2^attempt between retries, then fail", async () => {
+    mockState.rejectWith = new AgentCallError("rate_limit", "429 too many requests");
+    const c = ctx();
+    c.maxRetries = 3;
+    await withRecordedSleep(async delays => {
+      const out = await makeHandler()(agentStep(), c);
+      expect(delays).toEqual([1000, 2000, 4000]);
+      expect(out.status).toBe("failed");
+      expect(out.failureReason).toBeUndefined();
+      expect(agentCalls.length).toBe(4);
+    });
+  });
+
+  it("rate_limit: Retry-After overrides the exponential sequence", async () => {
+    mockState.rejectWith = new AgentCallError("rate_limit", "retry after", { retryAfterMs: 2500 });
+    await withRecordedSleep(async delays => {
+      const out = await makeHandler()(agentStep(), ctx());
+      expect(delays).toEqual([2500]);
+      expect(out.status).toBe("failed");
+      expect(agentCalls.length).toBe(2);
+    });
+  });
+
+  it("auth: fails fast with no retry and no sleep", async () => {
+    mockState.rejectWith = new AgentCallError("auth", "invalid api key");
+    await withRecordedSleep(async delays => {
+      const out = await makeHandler()(agentStep(), ctx());
+      expect(delays).toEqual([]);
+      expect(out.status).toBe("failed");
+      expect(agentCalls.length).toBe(1);
+    });
+  });
+
+  it.each(["connection", "spawn"] as const)("%s: bounded backoff then fail", async kind => {
+    mockState.rejectWith = new AgentCallError(kind, `${kind} failed`);
+    await withRecordedSleep(async delays => {
+      const out = await makeHandler()(agentStep(), ctx());
+      expect(delays).toEqual([1000]);
+      expect(out.status).toBe("failed");
+      expect(agentCalls.length).toBe(2);
+    });
+  });
+
+  it("unknown: one bounded backoff then fail (escape hatch)", async () => {
+    mockState.rejectWith = new Error("something unexpected");
+    await withRecordedSleep(async delays => {
+      const out = await makeHandler()(agentStep(), ctx());
+      expect(delays).toEqual([1000]);
+      expect(out.status).toBe("failed");
+      expect(out.error).toBe("something unexpected");
+      expect(agentCalls.length).toBe(2);
+    });
+  });
+});
+
+describe("step-handler quota surfacing chain", () => {
+  const agentStep = (): WorkflowStep => ({
+    id: "code", type: "agent", agent: "codegen", emits: [sig("sig_done")], on: ["__start__"], context: [],
+  });
+
+  function buildHarness() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orc-quota-chain-"));
+    const tracker = new Tracker(path.join(dir, "runs.sqlite"));
+    const runId = "run-chain-1";
+    tracker.createRun(runId, "wf", "WF", "t", "test", [{ stepId: "code", agent: "codegen", task: null, signals: [] }]);
+    const em = new StreamEmitter("ses-chain");
+    const streamEvents: any[] = [];
+    em.on("event", e => streamEvents.push(e));
+    const progress: any[] = [];
+    const handler = createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: em,
+      task: "t",
+      tracker: { runId, tracker },
+      onProgress: e => progress.push(e),
+    });
+    return {
+      dir,
+      tracker,
+      runId,
+      streamEvents,
+      progress,
+      handler,
+      cleanup: () => {
+        tracker.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it("quota: structured payload is value-equal across outcome, progress, tracker, and stream", async () => {
+    mockState.rejectWith = new AgentCallError("quota", "You exceeded your current quota", {
+      resetAtMs: 1755600000000,
+    });
+    const h = buildHarness();
+    try {
+      const out = await h.handler(agentStep(), ctx());
+      const expected = { kind: "quota", resetAtMs: 1755600000000, message: "You exceeded your current quota" };
+
+      expect(out.status).toBe("failed");
+      expect(out.failureReason).toBe("quota_exhausted");
+      expect(out.quota).toEqual(expected);
+
+      const complete = h.progress.find((e: any) => e.type === "step_complete");
+      expect(complete.status).toBe("failed");
+      expect(complete.error).toBe("You exceeded your current quota");
+      expect(complete.quota).toEqual(expected);
+
+      const step = h.tracker.getRun(h.runId)!.steps[0];
+      expect(step.status).toBe("failed");
+      expect(step.error).toBe("[quota] You exceeded your current quota");
+      expect(step.quota).toEqual(expected);
+
+      const finish = h.streamEvents.find((e: any) => e.type === "step_finish");
+      expect(finish.part.reason).toBe("quota");
+      expect(finish.part.quota).toEqual(expected);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("non-quota completion: quota stays absent across progress, tracker, and stream", async () => {
+    mockState.rejectWith = undefined;
+    const h = buildHarness();
+    try {
+      const out = await h.handler(agentStep(), ctx());
+      expect(out.status).toBe("completed");
+
+      const complete = h.progress.find((e: any) => e.type === "step_complete");
+      expect(complete.quota).toBeUndefined();
+
+      const step = h.tracker.getRun(h.runId)!.steps[0];
+      expect(step.quota).toBeNull();
+
+      const finish = h.streamEvents.find((e: any) => e.type === "step_finish");
+      expect(finish.part.quota).toBeUndefined();
+      expect(finish.part.reason).toBe("stop");
+    } finally {
+      h.cleanup();
+    }
   });
 });
