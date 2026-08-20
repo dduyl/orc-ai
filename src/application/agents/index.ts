@@ -1,5 +1,7 @@
 export { BUILTIN_ADAPTERS, getAdapter } from "./adapter.js";
 export type { AdapterDef, AgentCallResult, AgentMode } from "./adapter.js";
+export { classifyComplexity, readRepoState, COMPLEX_CHANGED_FILES } from "./complexity.js";
+export type { Complexity, RepoState, Exec } from "./complexity.js";
 export { getStrategy, registerStrategy, getAcpStrategy, registerAcpStrategy } from "./strategy.js";
 export type { AgentStrategy } from "./strategy.js";
 export { callAgent, callAgentStream } from "./adapter-pty.js";
