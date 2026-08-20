@@ -1,4 +1,5 @@
 import type { Tier } from "./config.js";
+import snapshot from "./models-snapshot.json";
 
 /**
  * Strong-tier input-price threshold, inclusive: a model whose $/1M input
@@ -131,4 +132,31 @@ export function pickVariantModel(
   }
   if (candidates.length > 0) return candidates[0];
   return undefined;
+}
+
+/**
+ * The vendored models.dev snapshot as a typed constant. Runtime seams (the ACP
+ * session model selection) import this so they never touch the raw JSON.
+ */
+export const MODELS_SNAPSHOT: ModelsSnapshot = snapshot as ModelsSnapshot;
+
+/**
+ * Convenience wrapper for the ACP session seam (ADR-021): classify the
+ * snapshot against `configuredProviders`, then pick the cheapest-of-tier
+ * advertised model (or the user override). `undefined` means "no usable
+ * candidate" — the caller proceeds with the agent's default model.
+ */
+export function selectVariantModel(
+  tier: Tier,
+  agentAdvertised: string[],
+  configuredProviders: string[],
+  snapshot: ModelsSnapshot = MODELS_SNAPSHOT,
+  userOverride?: string,
+): string | undefined {
+  return pickVariantModel(
+    tier,
+    agentAdvertised,
+    classifyModels(snapshot, configuredProviders),
+    userOverride,
+  );
 }

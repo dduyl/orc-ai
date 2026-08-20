@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { runAcpTurn } from "../../../../application/agents/acp/client.js";
 import { PermissionGate } from "../../../../application/agents/acp/permission.js";
 import { AgentCallError } from "../../../../application/agents/errors.js";
@@ -15,9 +18,13 @@ import type { AcpSpawnSpec } from "../../../../application/agents/acp/types.js";
  */
 const MOCK_SCRIPT = `
 const readline = require('readline');
+const fs = require('fs');
 const mode = process.env.MOCK_MODE || 'stream';
 const second = process.env.MOCK_SECOND || 'stream';
 const cfg = process.env.MOCK_CFG || 'ok';
+const modelCfg = process.env.MOCK_MODEL_CFG === '1';
+const advertised = (process.env.MOCK_MODEL_ADVERTISED || 'default,mock-strong-a,mock-strong-b,mock-cheap').split(',');
+const cfgLog = process.env.MOCK_CFG_LOG;
 const rl = readline.createInterface({ input: process.stdin });
 let pendingPrompt = null;
 let promptCount = 0;
@@ -45,7 +52,12 @@ const hardTimeout = setTimeout(() => {
   answerPrompt({ stopReason:'cancelled', usage:{ totalTokens:1, inputTokens:1, outputTokens:0 } });
   setTimeout(() => process.exit(0), 50);
 }, 2000);
+process.on('uncaughtException', (e) => {
+  if (process.env.MOCK_DIAG) { require('fs').appendFileSync(process.env.MOCK_DIAG, 'MOCK-UNCAUGHT: ' + (e && e.stack || e) + '\\n'); }
+  process.exit(1);
+});
 rl.on('line', (line) => {
+  try {
   const msg = JSON.parse(line);
   const { id, method } = msg;
   switch (method) {
@@ -61,7 +73,13 @@ rl.on('line', (line) => {
       }});
       break;
     case 'session/new':
-      send({ jsonrpc:'2.0', id, result: { sessionId: 'sess-1' } });
+      send({ jsonrpc:'2.0', id, result: {
+        sessionId: 'sess-1',
+        ...(modelCfg ? { configOptions: [
+          { id:'model', category:'model', type:'select', currentValue: advertised[0],
+            options: advertised.map(v => ({ value: v, name: v })) },
+        ] } : {}),
+      } });
       if (mode === 'stream' || mode === 'cancel') {
         sendUpdate('sess-1', 'hello ');
       }
@@ -94,7 +112,10 @@ rl.on('line', (line) => {
       }
       break;
     case 'session/set_config_option':
-      if (mode === 'quota-downgrade' && cfg === 'reject') {
+      if (cfgLog) {
+        fs.appendFileSync(cfgLog, JSON.stringify({ configId: msg.params.configId, value: msg.params.value }) + '\\n');
+      }
+      if (cfg === 'reject') {
         send({ jsonrpc:'2.0', id, error:{ code:-32001, message:'unknown config id: model' } });
       } else {
         configDone = true;
@@ -109,6 +130,10 @@ rl.on('line', (line) => {
         send({ jsonrpc:'2.0', id, error:{ code:-32601, message:'method not found: ' + method } });
       }
   }
+  } catch (e) {
+    if (process.env.MOCK_DIAG) { require('fs').appendFileSync(process.env.MOCK_DIAG, 'MOCK-LINE-ERR: ' + (e && e.stack || e) + '\\n'); }
+    process.exit(1);
+  }
 });
 `;
 
@@ -118,6 +143,18 @@ function spawnSpec(mode: string): AcpSpawnSpec {
 
 function env(mode: string, extra: Record<string, string> = {}): Record<string, string> {
   return { MOCK_MODE: mode, PATH: process.env.PATH ?? "", ...extra };
+}
+
+function tmpCfgLog(): string {
+  return path.join(os.tmpdir(), `acp-cfg-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.log`);
+}
+
+function readCfgLog(file: string): string[] {
+  try {
+    return fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 describe("runAcpTurn", () => {
@@ -321,5 +358,153 @@ expect(err).toBeInstanceOf(AgentCallError);
 
     expect(err).toBeInstanceOf(AgentCallError);
     expect((err as AgentCallError).kind).toBe("connection");
+  });
+
+  it("ADR-021 variantTier pre-configures the cheapest-of-tier advertised model before the first prompt", async () => {
+    const cfgLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("stream"),
+        cwd: process.cwd(),
+        env: env("stream", {
+          MOCK_MODEL_CFG: "1",
+          // Advertised strong models, cheapest listed SECOND: the selector must
+          // pick by price, not advertised order.
+          MOCK_MODEL_ADVERTISED: "claude-opus-4-7,claude-sonnet-4-6",
+          MOCK_CFG_LOG: cfgLog,
+        }),
+        prompt: "hello",
+        variantTier: "strong",
+        configuredProviders: ["anthropic"],
+        permissionGate: new PermissionGate(),
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.configuredModel).toBe("claude-sonnet-4-6");
+      // Recorded server-side: the set_config_option carried the selected model.
+      expect(readCfgLog(cfgLog)).toEqual(
+        expect.arrayContaining([expect.stringContaining('"value":"claude-sonnet-4-6"')]),
+      );
+    } finally {
+      if (fs.existsSync(cfgLog)) fs.unlinkSync(cfgLog);
+    }
+  });
+
+  it("ADR-021 variantModel override is applied even when not advertised", async () => {
+    const cfgLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("stream"),
+        cwd: process.cwd(),
+        env: env("stream", {
+          MOCK_MODEL_CFG: "1",
+          MOCK_MODEL_ADVERTISED: "claude-opus-4-7,claude-sonnet-4-6",
+          MOCK_CFG_LOG: cfgLog,
+        }),
+        prompt: "hello",
+        variantTier: "strong",
+        variantModel: "custom-flagged-model",
+        configuredProviders: ["anthropic"],
+        permissionGate: new PermissionGate(),
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.configuredModel).toBe("custom-flagged-model");
+      expect(readCfgLog(cfgLog)).toEqual(
+        expect.arrayContaining([expect.stringContaining('"value":"custom-flagged-model"')]),
+      );
+    } finally {
+      if (fs.existsSync(cfgLog)) fs.unlinkSync(cfgLog);
+    }
+  });
+
+  it("ADR-021 cheap tier pre-configures the cheapest-of-tier advertised cheap model", async () => {
+    const cfgLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("stream"),
+        cwd: process.cwd(),
+        env: env("stream", {
+          MOCK_MODEL_CFG: "1",
+          MOCK_MODEL_ADVERTISED: "claude-sonnet-4-6,claude-haiku-4-5",
+          MOCK_CFG_LOG: cfgLog,
+        }),
+        prompt: "hello",
+        variantTier: "cheap",
+        configuredProviders: ["anthropic"],
+        permissionGate: new PermissionGate(),
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.configuredModel).toBe("claude-haiku-4-5");
+      expect(readCfgLog(cfgLog)).toEqual(
+        expect.arrayContaining([expect.stringContaining('"value":"claude-haiku-4-5"')]),
+      );
+    } finally {
+      if (fs.existsSync(cfgLog)) fs.unlinkSync(cfgLog);
+    }
+  });
+
+  it("ADR-021 no advertised model select: tier is inert, agent default runs, no config sent", async () => {
+    const cfgLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("stream"),
+        cwd: process.cwd(),
+        env: env("stream", { MOCK_CFG_LOG: cfgLog }),
+        prompt: "hello",
+        variantTier: "strong",
+        configuredProviders: ["anthropic"],
+        permissionGate: new PermissionGate(),
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.configuredModel).toBeUndefined();
+      expect(readCfgLog(cfgLog)).toEqual([]);
+    } finally {
+      if (fs.existsSync(cfgLog)) fs.unlinkSync(cfgLog);
+    }
+  });
+
+  it("ADR-021 no configured providers: classification is empty, agent default runs, no config sent", async () => {
+    const cfgLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("stream"),
+        cwd: process.cwd(),
+        env: env("stream", {
+          MOCK_MODEL_CFG: "1",
+          MOCK_MODEL_ADVERTISED: "claude-sonnet-4-6,claude-haiku-4-5",
+          MOCK_CFG_LOG: cfgLog,
+        }),
+        prompt: "hello",
+        variantTier: "strong",
+        configuredProviders: [],
+        permissionGate: new PermissionGate(),
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.configuredModel).toBeUndefined();
+      expect(readCfgLog(cfgLog)).toEqual([]);
+    } finally {
+      if (fs.existsSync(cfgLog)) fs.unlinkSync(cfgLog);
+    }
+  });
+
+  it("ADR-021 rejected pre-emptive config never halts the turn (agent default)", async () => {
+    const turn = await runAcpTurn({
+      spawn: spawnSpec("stream"),
+      cwd: process.cwd(),
+      env: env("stream", { MOCK_MODEL_CFG: "1", MOCK_CFG: "reject" }),
+      prompt: "hello",
+      variantTier: "strong",
+      variantModel: "custom-flagged-model",
+      configuredProviders: ["anthropic"],
+      permissionGate: new PermissionGate(),
+    });
+
+    expect(turn.stopReason).toBe("end_turn");
+    expect(turn.configuredModel).toBeUndefined();
+    expect(turn.error).toBeUndefined();
   });
 });

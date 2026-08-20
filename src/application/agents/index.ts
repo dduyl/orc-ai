@@ -10,9 +10,12 @@ export {
   classifyModels,
   modelTier,
   pickVariantModel,
+  selectVariantModel,
+  MODELS_SNAPSHOT,
   STRONG_PRICE_PER_M_INPUT,
 } from "./models.js";
 export type { ModelMeta, ModelsSnapshot, SnapshotModel, SnapshotProvider } from "./models.js";
+export { readConfiguredProviders, opencodeAuthPath } from "./configured-providers.js";
 export { getStrategy, registerStrategy, getAcpStrategy, registerAcpStrategy } from "./strategy.js";
 export type { AgentStrategy } from "./strategy.js";
 export { callAgent, callAgentStream } from "./adapter-pty.js";

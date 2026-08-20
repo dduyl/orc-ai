@@ -3,7 +3,13 @@ import type { AcpStrategy } from "./acp/types.js";
 
 export interface AgentStrategy {
   id: string;
-  buildArgs(prompt: string): string[];
+  buildArgs(prompt: string, model?: string): string[];
+  /**
+   * ADR-021: whether this strategy can apply a concrete model via its CLI
+   * flags. When absent/false, the PTY path logs the intended model and
+   * proceeds with the tool default.
+   */
+  supportsModel?: boolean;
   keepAlive: boolean;
   isComplete(events: HookEvent[]): boolean;
   extractOutput(stdout: string): string;

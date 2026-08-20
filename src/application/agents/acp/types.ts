@@ -40,6 +40,12 @@ export interface AcpTurnResult {
    * model downgrade + second prompt.
    */
   downgraded?: boolean;
+  /**
+   * ADR-021: set when the session model was pre-configured via
+   * `session/set_config_option` after `session/new`, before the first prompt.
+   * The agent's own model selection is otherwise authoritative.
+   */
+  configuredModel?: string;
 }
 
 /** Command + args to spawn an ACP server in stdio mode. */

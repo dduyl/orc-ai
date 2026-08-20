@@ -20,6 +20,7 @@ import type { Complexity, RepoState } from "../../agents/complexity.js";
 import { loadModelRoutingConfig } from "../../agents/config.js";
 import type { ModelRoutingConfig } from "../../agents/config.js";
 import { resolveVariantTier, BUILTIN_TIERED_ROLES, type Tier } from "../../agents/variants.js";
+import { readConfiguredProviders } from "../../agents/configured-providers.js";
 
 /** Bounded exponential backoff: 1s -> 2s -> 4s ... capped at 30s. */
 const BACKOFF_BASE_MS = 1000;
@@ -139,6 +140,10 @@ export function createStepHandler(options: {
   // read at most once per run and shared by every tiered step.
   let repoStateCache: Promise<RepoState | undefined> | undefined;
   const repoState = (): Promise<RepoState | undefined> => (repoStateCache ??= readRepoState(root));
+  // Providers the user has credentials for, produced once per run (user config
+  // `providers` block + opencode auth.json) and threaded through to the ACP
+  // session seam as the ADR-021 provider filter input.
+  const configuredProviders = readConfiguredProviders(routingConfig);
   const forAgent = (_name: string): AdapterDef => activeAdapter;
   const runId = tracker?.runId;
   const executor = commandExecutor ?? new CommandExecutor(commandsTomlPath());
@@ -283,9 +288,13 @@ export function createStepHandler(options: {
         // ADR-021: decide the model tier at the call boundary (not inside
         // `forAgent`, which returns the active AdapterDef and ignores its
         // argument). The tier is carried to callAgentStream; the ACP session
-        // model is configured from it pre-emptively (Phase D).
+        // model is configured from it pre-emptively. A user override
+        // (`variants.<agent>.<tier>`) becomes a concrete `variantModel`; a
+        // bare tier biases the ACP selection to the cheapest-of-tier
+        // advertised model, and the PTY path logs the intent + tool default.
         const tier = tierResolver(name, complexity);
-        log.debug(`step ${step.id}: role '${name}' complexity '${complexity}' -> tier '${tier}'`);
+        const variantModel = routingConfig.variants?.[name]?.[tier]?.trim() || undefined;
+        log.debug(`step ${step.id}: role '${name}' complexity '${complexity}' -> tier '${tier}'${variantModel ? ` model '${variantModel}'` : ""}`);
 
         let result: AgentCallResult;
         let hooks: import("../../../core/hooks.js").HookEvent[] = [];
@@ -297,7 +306,7 @@ export function createStepHandler(options: {
           : agentInfo.systemPrompt + "\n\n" + buildStepContext(step, completedSummaries, task, agentInfo, completionKey);
         const hookFile = createHookFile(step.id);
         try {
-          const handle = callAgentStream(callFor, combinedPrompt, hookFile, downgradeTo, tier);
+          const handle = callAgentStream(callFor, combinedPrompt, hookFile, downgradeTo, tier, variantModel, configuredProviders);
           onProgress?.({ type: "step_pty", runId, stepId: step.id, pty: handle.pty });
           const abortSignal = ctx.signal;
           // Register before attaching the abort listener: the sync aborted

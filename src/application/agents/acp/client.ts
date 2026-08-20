@@ -11,6 +11,8 @@ import {
 import type { Usage, ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
 import type { AcpSpawnSpec, AcpStopReason, AcpTurnResult, AgentUsage } from "./types.js";
 import type { PermissionGate } from "./permission.js";
+import type { Tier } from "../config.js";
+import { MODELS_SNAPSHOT, selectVariantModel } from "../models.js";
 import { classifyAgentError } from "../errors.js";
 import { log } from "../../../core/log.js";
 
@@ -42,11 +44,23 @@ export interface AcpTurnOptions {
   downgradeTo?: string;
   /**
    * ADR-021: model tier ("cheap" | "strong") decided by the harness for this
-   * turn. Carried from the tier decision to the session seam; consumed in
-   * Phase D to pre-emptively configure the session model before the first
-   * prompt.
+   * turn. When a concrete model is not given (`variantModel`), the session
+   * model is pre-emptively configured to the cheapest-of-tier advertised
+   * model before the first prompt.
    */
-  variantTier?: string;
+  variantTier?: Tier;
+  /**
+   * ADR-021: concrete model chosen by the harness (the user's
+   * `variants.<agent>.<tier>` override). Applied pre-emptively via
+   * `session/set_config_option` before the first prompt; honored even when
+   * the model is not in the agent's advertised list.
+   */
+  variantModel?: string;
+  /**
+   * ADR-021: providers the user has credentials for (the provider filter
+   * input). Empty means "unknown" — selection degrades to the agent default.
+   */
+  configuredProviders?: string[];
 }
 
 export function normalizeUsage(input?: Usage | null): AgentUsage {
@@ -68,6 +82,40 @@ function deferred<T = void>(): { promise: Promise<T>; resolve: (v: T) => void; r
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+interface ModelSelector {
+  /** Config-option id of the agent's model selector (usually "model"). */
+  configId: string;
+  /** Model ids the agent advertised via `session/new` configOptions. */
+  advertised: string[];
+}
+
+/**
+ * The agent's model selector from the `session/new` response. Per the ACP
+ * spec the "model" category is a `select`; the option values are the agent's
+ * advertised model list (advertised order carries no signal). Absent a select
+ * of category "model", selection degrades to the agent default: configId
+ * "model" + an empty advertised list.
+ */
+function modelSelector(configOptions?: Array<unknown> | null): ModelSelector {
+  for (const raw of configOptions ?? []) {
+    if (!raw || typeof raw !== "object") continue;
+    const option = raw as {
+      id?: unknown;
+      category?: unknown;
+      type?: unknown;
+      options?: Array<{ value?: unknown }> | null;
+    };
+    if (option.category !== "model" || option.type !== "select") continue;
+    return {
+      configId: typeof option.id === "string" && option.id ? option.id : "model",
+      advertised: (option.options ?? [])
+        .map(o => (typeof o.value === "string" ? o.value : ""))
+        .filter(Boolean),
+    };
+  }
+  return { configId: "model", advertised: [] };
 }
 
 /** Best-effort post-turn cleanup so a per-step ACP server never lingers. */
@@ -153,7 +201,7 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
   const turn = app.connectWith(stream, async ctx => {
     await ctx.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: { session: {} },
+      clientCapabilities: { session: { configOptions: {} } },
       clientInfo: { name: "orc", version: "0.1.0" },
     });
     handshakeDone = true;
@@ -168,6 +216,34 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
         },
         { once: true },
       );
+
+      const { configId, advertised } = modelSelector(session.newSessionResponse.configOptions);
+      const setConfigOption = (modelId: string): Promise<unknown> =>
+        ctx.request(methods.agent.session.setConfigOption, {
+          sessionId: session.sessionId,
+          configId,
+          value: modelId,
+        });
+
+      // Pre-emptive seam (ADR-021): configure the session model from the
+      // harness-decided tier/selection BEFORE the first prompt, so the whole
+      // turn runs on the variant. A rejected config must never halt the step —
+      // fall back to the agent default and keep the turn going.
+      let configuredModel: string | undefined;
+      if (opts.variantModel || opts.variantTier) {
+        const candidate =
+          opts.variantModel ??
+          selectVariantModel(opts.variantTier!, advertised, opts.configuredProviders ?? [], MODELS_SNAPSHOT);
+        if (candidate) {
+          try {
+            await setConfigOption(candidate);
+            configuredModel = candidate;
+            log.debug(`acp: session model '${candidate}' pre-configured (config '${configId}')`);
+          } catch (err) {
+            log.warn(`acp: pre-emptive model config rejected (${(err as Error).message}) — using agent default`);
+          }
+        }
+      }
 
       // One prompt round-trip. Reused for the same-session downgrade retry
       // (ADR-022): the session stays open across both prompts.
@@ -208,16 +284,15 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
       };
 
       try {
-        return { stopReason: await runPromptOnce() };
+        return {
+          stopReason: await runPromptOnce(),
+          ...(configuredModel ? { configuredModel } : {}),
+        };
       } catch (err) {
         const agentErr = classifyAgentError(err);
         if (downgradeTo && agentErr.kind === "quota") {
           try {
-            await ctx.request(methods.agent.session.setConfigOption, {
-              sessionId: session.sessionId,
-              configId: "model",
-              value: downgradeTo,
-            });
+            await setConfigOption(downgradeTo);
           } catch {
             // Config switch refused: the downgrade cannot happen. Surface the
             // ORIGINAL quota error (its reset window is what the harness must
@@ -232,7 +307,7 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
     });
   });
 
-  let settled: { stopReason: AcpStopReason; downgraded?: boolean } | null = null;
+  let settled: { stopReason: AcpStopReason; downgraded?: boolean; configuredModel?: string } | null = null;
   try {
     settled = await Promise.race([turn, spawnFailed.promise.then(err => Promise.reject(err))]);
   } catch (err) {
@@ -274,5 +349,6 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
     usage: finalUsage,
     duration: Date.now() - start,
     ...(settled!.downgraded ? { downgraded: true } : {}),
+    ...(settled!.configuredModel ? { configuredModel: settled!.configuredModel } : {}),
   };
 }

@@ -1,5 +1,6 @@
 import type { IDisposable, IPty } from "node-pty";
 import type { AdapterDef, AgentCallResult } from "./adapter.js";
+import type { Tier } from "./config.js";
 import { HOOK_FILE_ENV, type StepQuotaInfo } from "../../core/hooks.js";
 import type { AcpSpawnSpec } from "./acp/types.js";
 import { gateFromEnv } from "./acp/permission.js";
@@ -147,7 +148,9 @@ export function callAcpAgentStream(
   prompt: string,
   hookFilePath?: string,
   downgradeTo?: string,
-  variantTier?: string,
+  variantTier?: Tier,
+  variantModel?: string,
+  configuredProviders?: string[],
 ): AgentACPStreamHandle {
   const strat = getAcpStrategy(adapter.id);
   if (!strat || !strat.available) {
@@ -188,6 +191,8 @@ export function callAcpAgentStream(
     signal: facade.signal,
     ...(downgradeTo ? { downgradeTo } : {}),
     ...(variantTier ? { variantTier } : {}),
+    ...(variantModel ? { variantModel } : {}),
+    ...(configuredProviders && configuredProviders.length > 0 ? { configuredProviders } : {}),
     events: {
       onText: text => facade.feed(text),
       onToolCall: call => {
@@ -223,6 +228,9 @@ export function callAcpAgentStream(
         input: turn.usage.inputTokens,
         output: turn.usage.outputTokens,
       });
+      if (turn.configuredModel) {
+        log.info(`acp: '${adapter.id}' running on pre-configured model '${turn.configuredModel}'`);
+      }
       if (!hookFilePath) removeHookFile(hookFile);
       return {
         content: turn.content,

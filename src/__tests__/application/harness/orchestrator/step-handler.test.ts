@@ -22,17 +22,21 @@ const { agentCalls, mockState } = vi.hoisted(() => {
     callCount: number;
     downgradeParams: Array<string | undefined>;
     variantTierParams: Array<string | undefined>;
+    variantModelParams: Array<string | undefined>;
+    configuredProvidersParams: Array<string[] | undefined>;
     sequence?: Array<{ rejectWith?: unknown; resolveValue?: unknown }>;
-  } = { killed: 0, pending: false, killSettles: true, callCount: 0, downgradeParams: [], variantTierParams: [] };
+  } = { killed: 0, pending: false, killSettles: true, callCount: 0, downgradeParams: [], variantTierParams: [], variantModelParams: [], configuredProvidersParams: [] };
   return { agentCalls: [] as string[], mockState };
 });
 
 vi.mock("../../../../application/agents/adapter-pty.js", () => ({
-  callAgentStream: (_adapter: unknown, prompt: string, _hook?: string, downgradeTo?: string, variantTier?: string) => {
+  callAgentStream: (_adapter: unknown, prompt: string, _hook?: string, downgradeTo?: string, variantTier?: string, variantModel?: string, configuredProviders?: string[]) => {
     agentCalls.push(prompt);
     mockState.callCount++;
     mockState.downgradeParams.push(downgradeTo);
     mockState.variantTierParams.push(variantTier);
+    mockState.variantModelParams.push(variantModel);
+    mockState.configuredProvidersParams.push(configuredProviders);
     const entry = mockState.sequence?.[mockState.callCount - 1];
     const rejectWith = entry?.rejectWith !== undefined ? entry.rejectWith : mockState.rejectWith;
     const resolveValue = entry?.resolveValue;
@@ -671,6 +675,8 @@ describe("step-handler ADR-021 tier routing", () => {
     mockState.callCount = 0;
     mockState.downgradeParams.length = 0;
     mockState.variantTierParams.length = 0;
+    mockState.variantModelParams.length = 0;
+    mockState.configuredProvidersParams.length = 0;
   });
 
   it("passes the resolved tier to callAgentStream (data-flow reachability)", async () => {
@@ -694,6 +700,33 @@ describe("step-handler ADR-021 tier routing", () => {
       expect(out.status).toBe("completed");
       expect(seen).toEqual(["codegen:simple"]);
       expect(mockState.variantTierParams).toEqual(["cheap"]);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards the concrete variant model and configured providers to callAgentStream", async () => {
+    // a real git repo with 2 changed files classifies as "simple" -> cheap
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "orc-tier-repo-"));
+    try {
+      execSync("git init -q", { cwd: repoDir, stdio: "ignore" });
+      fs.writeFileSync(path.join(repoDir, "a.txt"), "x");
+      fs.writeFileSync(path.join(repoDir, "b.txt"), "y");
+      const handler = baseHandler({
+        projectRoot: repoDir,
+        modelRoutingConfig: {
+          variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } },
+          providers: { anthropic: {}, openai: {} },
+        },
+        resolveVariantTier: (_role: string, complexity: string) => (complexity === "complex" ? "strong" : "cheap"),
+      });
+      const out = await handler(agentStep(), ctx());
+      expect(out.status).toBe("completed");
+      expect(mockState.variantTierParams).toEqual(["cheap"]);
+      expect(mockState.variantModelParams).toEqual(["model-cheap"]);
+      // the real homedir auth.json may add providers; assert the config block
+      // keys are included, not exact equality
+      expect(mockState.configuredProvidersParams[0]).toEqual(expect.arrayContaining(["anthropic", "openai"]));
     } finally {
       fs.rmSync(repoDir, { recursive: true, force: true });
     }
