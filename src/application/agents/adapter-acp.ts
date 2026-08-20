@@ -237,6 +237,9 @@ export function callAcpAgentStream(
       if (turn.configuredModel) {
         log.info(`acp: '${adapter.id}' running on pre-configured model '${turn.configuredModel}'`);
       }
+      if (turn.providerFailover) {
+        log.info(`acp: '${adapter.id}' switched provider on quota → '${turn.providerFailover}'`);
+      }
       if (!hookFilePath) removeHookFile(hookFile);
       return {
         content: turn.content,
@@ -245,6 +248,7 @@ export function callAcpAgentStream(
         duration: turn.duration,
         usage: turn.usage,
         ...(turn.downgraded && downgradeTo ? { downgradedTo: downgradeTo } : {}),
+        ...(turn.providerFailover ? { providerFailover: turn.providerFailover } : {}),
       };
     })
     .catch((err: unknown) => {
