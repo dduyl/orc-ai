@@ -1,5 +1,6 @@
 import { spawn, type IPty } from "node-pty";
 import type { AdapterDef, AgentCallResult } from "./adapter.js";
+import type { Tier } from "./config.js";
 import { classifyAgentError } from "./errors.js";
 import { HOOK_FILE_ENV } from "../../core/hooks.js";
 import { getStrategy } from "./strategy.js";
@@ -29,13 +30,15 @@ export function callAgentStream(
   prompt: string,
   hookFilePath?: string,
   downgradeTo?: string,
+  variantTier?: Tier,
 ): AgentPTYStreamHandle {
   if (acpEnabledFor(adapter.id)) {
-    return callAcpAgentStream(adapter, prompt, hookFilePath, downgradeTo);
+    return callAcpAgentStream(adapter, prompt, hookFilePath, downgradeTo, variantTier);
   }
 
-  // PTY path: no session model config to switch, so `downgradeTo` is accepted
-  // but inert. The harness decides the variant; the PTY branch cannot apply it.
+  // PTY path: no session model config to switch, so `downgradeTo` and
+  // `variantTier` are accepted but inert. The harness decides the variant; the
+  // PTY branch cannot apply it.
 
   const start = Date.now();
   const strat = getStrategy(adapter.id);

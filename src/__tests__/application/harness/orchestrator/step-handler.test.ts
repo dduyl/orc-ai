@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execSync } from "node:child_process";
 import { StreamEmitter } from "../../../../adapters/stream/emitter.js";
 import { parseRun } from "../../../../application/harness/execution/CommandExecutor.js";
 import type { CommandExecutionResult } from "../../../../application/harness/execution/CommandExecutor.js";
@@ -20,16 +21,18 @@ const { agentCalls, mockState } = vi.hoisted(() => {
     rejectWith?: unknown;
     callCount: number;
     downgradeParams: Array<string | undefined>;
+    variantTierParams: Array<string | undefined>;
     sequence?: Array<{ rejectWith?: unknown; resolveValue?: unknown }>;
-  } = { killed: 0, pending: false, killSettles: true, callCount: 0, downgradeParams: [] };
+  } = { killed: 0, pending: false, killSettles: true, callCount: 0, downgradeParams: [], variantTierParams: [] };
   return { agentCalls: [] as string[], mockState };
 });
 
 vi.mock("../../../../application/agents/adapter-pty.js", () => ({
-  callAgentStream: (_adapter: unknown, prompt: string, _hook?: string, downgradeTo?: string) => {
+  callAgentStream: (_adapter: unknown, prompt: string, _hook?: string, downgradeTo?: string, variantTier?: string) => {
     agentCalls.push(prompt);
     mockState.callCount++;
     mockState.downgradeParams.push(downgradeTo);
+    mockState.variantTierParams.push(variantTier);
     const entry = mockState.sequence?.[mockState.callCount - 1];
     const rejectWith = entry?.rejectWith !== undefined ? entry.rejectWith : mockState.rejectWith;
     const resolveValue = entry?.resolveValue;
@@ -641,6 +644,121 @@ describe("step-handler ADR-022 retry policy", () => {
       expect(out.error).toBe("something unexpected");
       expect(agentCalls.length).toBe(2);
     });
+  });
+});
+
+describe("step-handler ADR-021 tier routing", () => {
+  const agentStep = (): WorkflowStep => ({
+    id: "code", type: "agent", agent: "codegen", emits: [sig("sig_done")], on: ["__start__"], context: [],
+  });
+  const baseHandler = (extra: Record<string, unknown> = {}) =>
+    createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: emitter(),
+      task: "t",
+      ...extra,
+    });
+
+  beforeEach(() => {
+    agentCalls.length = 0;
+    mockState.pending = false;
+    mockState.killSettles = true;
+    mockState.resolve = undefined;
+    mockState.rejectWith = undefined;
+    mockState.sequence = undefined;
+    mockState.callCount = 0;
+    mockState.downgradeParams.length = 0;
+    mockState.variantTierParams.length = 0;
+  });
+
+  it("passes the resolved tier to callAgentStream (data-flow reachability)", async () => {
+    // a real git repo with 2 changed files classifies as "simple"
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "orc-tier-repo-"));
+    try {
+      execSync("git init -q", { cwd: repoDir, stdio: "ignore" });
+      fs.writeFileSync(path.join(repoDir, "a.txt"), "x");
+      fs.writeFileSync(path.join(repoDir, "b.txt"), "y");
+      const seen: string[] = [];
+      const handler = baseHandler({
+        projectRoot: repoDir,
+        // config marks the role as tiered, so the git-based complexity read runs
+        modelRoutingConfig: { variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } } },
+        resolveVariantTier: (role: string, complexity: string) => {
+          seen.push(`${role}:${complexity}`);
+          return complexity === "complex" ? "strong" : "cheap";
+        },
+      });
+      const out = await handler(agentStep(), ctx());
+      expect(out.status).toBe("completed");
+      expect(seen).toEqual(["codegen:simple"]);
+      expect(mockState.variantTierParams).toEqual(["cheap"]);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies a non-repo root as complex and routes to strong", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orc-tier-norepo-"));
+    try {
+      const seen: string[] = [];
+      const handler = baseHandler({
+        projectRoot: dir,
+        modelRoutingConfig: { variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } } },
+        resolveVariantTier: (_role: string, complexity: string) => {
+          seen.push(complexity);
+          return complexity === "complex" ? "strong" : "cheap";
+        },
+      });
+      const out = await handler(agentStep(), ctx());
+      expect(out.status).toBe("completed");
+      expect(seen).toEqual(["complex"]);
+      expect(mockState.variantTierParams).toEqual(["strong"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the real default resolver when not injected (smoke)", async () => {
+    // untiered role -> undefined repo state -> "complex" -> never "cheap"
+    const handler = baseHandler();
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(mockState.variantTierParams[0]).toBe("strong");
+  });
+
+  it("script steps bypass the tier resolver entirely (zero LLM)", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orc-tier-script-"));
+    try {
+      const handler = baseHandler({
+        projectRoot: dir,
+        resolveVariantTier: () => { throw new Error("must not be consulted"); },
+        commandExecutor: { execute: async () => ({ ok: true as const, result: result(true, 0) }) } as any,
+      });
+      const out = await handler(step("s1", { run: 'exec "true"' }), ctx());
+      expect(out.status).toBe("completed");
+      expect(agentCalls.length).toBe(0);
+      expect(mockState.variantTierParams).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the same tier across a quota downgrade re-invocation", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111 }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const handler = baseHandler({
+      modelRoutingConfig: { variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } } },
+      resolveDowngradeModel: () => "claude-haiku",
+      resolveVariantTier: () => "cheap",
+    });
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(mockState.variantTierParams).toEqual(["cheap", "cheap"]);
+    expect(mockState.downgradeParams).toEqual([undefined, "claude-haiku"]);
   });
 });
 

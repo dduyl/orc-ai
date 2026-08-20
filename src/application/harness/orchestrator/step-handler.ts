@@ -15,6 +15,11 @@ import { FailureReason } from "../../../core/types.js";
 import { AgentCallError, classifyAgentError, toQuotaInfo, type QuotaInfo } from "../../agents/errors.js";
 import { buildStepContext, buildResponseInstructions } from "./context-builder.js";
 import type { OrcReturnResult, ProgressEvent, RunTracker, StepSummary } from "./types.js";
+import { classifyComplexity, readRepoState } from "../../agents/complexity.js";
+import type { Complexity, RepoState } from "../../agents/complexity.js";
+import { loadModelRoutingConfig } from "../../agents/config.js";
+import type { ModelRoutingConfig } from "../../agents/config.js";
+import { resolveVariantTier, BUILTIN_TIERED_ROLES, type Tier } from "../../agents/variants.js";
 
 /** Bounded exponential backoff: 1s -> 2s -> 4s ... capped at 30s. */
 const BACKOFF_BASE_MS = 1000;
@@ -99,9 +104,41 @@ export function createStepHandler(options: {
    * Returning undefined (or throwing) leaves the quota error to fail the step.
    */
   resolveDowngradeModel?: (role: string, triedModel: string) => string | undefined;
+  /**
+   * ADR-021: project root for the complexity classifier (git status
+   * porcelain). Defaults to process.cwd().
+   */
+  projectRoot?: string;
+  /**
+   * ADR-021: the model-routing block of ~/.orc/config.json, pre-loaded.
+   * Injectable for tests; defaults to loadModelRoutingConfig(). Also gates
+   * whether a role is tiered: the git-based complexity read only runs for
+   * roles that are tiered here or in BUILTIN_TIERED_ROLES, so the common
+   * (untiered) path stays synchronous.
+   */
+  modelRoutingConfig?: ModelRoutingConfig;
+  /**
+   * ADR-021: seam consulted on every agent step to decide the model tier
+   * ("cheap" | "strong") from the step's agent role + task complexity.
+   * Injectable for tests; defaults to the real resolveVariantTier backed by
+   * the model-routing block of ~/.orc/config.json.
+   */
+  resolveVariantTier?: (role: string, complexity: Complexity) => Tier;
 }): StepHandler {
-  const { adapter, agentPrompts, completedSummaries, emitter, task, tracker, onProgress, commandExecutor, resolveDowngradeModel } = options;
+  const { adapter, agentPrompts, completedSummaries, emitter, task, tracker, onProgress, commandExecutor, resolveDowngradeModel, projectRoot, modelRoutingConfig, resolveVariantTier: resolveTier } = options;
   const activeAdapter = adapter;
+  const root = projectRoot ?? process.cwd();
+  const routingConfig = modelRoutingConfig ?? loadModelRoutingConfig();
+  const tierResolver = resolveTier ?? ((role: string, complexity: Complexity) => resolveVariantTier(role, complexity, routingConfig));
+  // A role is tiered if the user configured a variants entry for it or it is a
+  // builtin tiered role. Only tiered roles pay the git-read cost of the
+  // complexity classifier; untiered roles resolve from an undefined repo state
+  // (always "complex" -> never under-provisioned) with no I/O.
+  const roleTiered = (role: string): boolean => Boolean(routingConfig.variants?.[role]) || BUILTIN_TIERED_ROLES.has(role);
+  // The worktree does not change across retry attempts, so the repo state is
+  // read at most once per run and shared by every tiered step.
+  let repoStateCache: Promise<RepoState | undefined> | undefined;
+  const repoState = (): Promise<RepoState | undefined> => (repoStateCache ??= readRepoState(root));
   const forAgent = (_name: string): AdapterDef => activeAdapter;
   const runId = tracker?.runId;
   const executor = commandExecutor ?? new CommandExecutor(commandsTomlPath());
@@ -204,6 +241,16 @@ export function createStepHandler(options: {
       return await runScriptStep(step, ctx);
     }
 
+    // ADR-021: task complexity from the repo state, computed once per step —
+    // the worktree does not change across retry attempts. The git read is
+    // gated on the role being tiered (see roleTiered): untiered roles classify
+    // from an undefined repo state as "complex" so they are never
+    // under-provisioned, and the common path stays synchronous.
+    const role = step.agent ?? "";
+    const complexity = roleTiered(role)
+      ? classifyComplexity(task, await repoState())
+      : classifyComplexity(task, undefined);
+
     let downgradeTried = false;
     let downgradeTo: string | undefined;
 
@@ -233,6 +280,13 @@ export function createStepHandler(options: {
         const completionKey = crypto.randomUUID();
         const callFor = forAgent(name);
 
+        // ADR-021: decide the model tier at the call boundary (not inside
+        // `forAgent`, which returns the active AdapterDef and ignores its
+        // argument). The tier is carried to callAgentStream; the ACP session
+        // model is configured from it pre-emptively (Phase D).
+        const tier = tierResolver(name, complexity);
+        log.debug(`step ${step.id}: role '${name}' complexity '${complexity}' -> tier '${tier}'`);
+
         let result: AgentCallResult;
         let hooks: import("../../../core/hooks.js").HookEvent[] = [];
         let orcResult: OrcReturnResult | null = null;
@@ -243,7 +297,7 @@ export function createStepHandler(options: {
           : agentInfo.systemPrompt + "\n\n" + buildStepContext(step, completedSummaries, task, agentInfo, completionKey);
         const hookFile = createHookFile(step.id);
         try {
-          const handle = callAgentStream(callFor, combinedPrompt, hookFile, downgradeTo);
+          const handle = callAgentStream(callFor, combinedPrompt, hookFile, downgradeTo, tier);
           onProgress?.({ type: "step_pty", runId, stepId: step.id, pty: handle.pty });
           const abortSignal = ctx.signal;
           // Register before attaching the abort listener: the sync aborted

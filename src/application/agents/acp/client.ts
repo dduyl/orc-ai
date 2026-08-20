@@ -40,6 +40,13 @@ export interface AcpTurnOptions {
    * fails with a quota error. Never touches the child process.
    */
   downgradeTo?: string;
+  /**
+   * ADR-021: model tier ("cheap" | "strong") decided by the harness for this
+   * turn. Carried from the tier decision to the session seam; consumed in
+   * Phase D to pre-emptively configure the session model before the first
+   * prompt.
+   */
+  variantTier?: string;
 }
 
 export function normalizeUsage(input?: Usage | null): AgentUsage {

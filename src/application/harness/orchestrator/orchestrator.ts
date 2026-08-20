@@ -52,6 +52,7 @@ export async function orchestrate(
       task,
       tracker,
       onProgress,
+      projectRoot: root,
       // ADR-022 note (model routing): a quota hit on the step's primary model
       // triggers a one-shot downgrade to a cheaper/fallback variant via
       // `resolveDowngradeModel`, which today is wired to a fixed variant list
