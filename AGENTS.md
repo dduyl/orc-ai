@@ -138,4 +138,14 @@ npm run lint          # type-check only (tsc --noEmit)
 { "provider": "openai", "apiKey": "sk-...", "model": "gpt-4o-mini" }
 ```
 
+Model routing (ADR-021/022): optional `variants`, `providers`, and
+`tokenPaidApiKey` blocks. `variants.<role> = { cheap, strong }` overrides the
+concrete model per tier (honored even if not in the agent's advertised list).
+`providers.<providerId> = { apiType, baseUrl, headers, tokenPaidApiKey }`
+configures provider failover on quota (per-provider `tokenPaidApiKey` wins
+over the top-level one; empty string = absent). Roles with no `variants`
+entry route via builtin tier defaults: simple tasks → `cheap`, complex →
+`strong`. Script steps (`type: script`) bypass model routing entirely — zero
+LLM.
+
 Custom workflows go in `~/.orc/workflows/*.yaml`.

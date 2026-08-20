@@ -5,12 +5,21 @@ import type { Tier } from "./config.js";
 export type { Tier } from "./config.js";
 
 /**
- * ADR-021: roles eligible for cheap/strong model tiering. Empty until Phase G
- * wires the builtin roles (script steps bypass tiering entirely — zero LLM).
- * While empty, only an explicit `variants.<role>` entry in the user config
- * routes a role by complexity.
+ * ADR-021: roles eligible for cheap/strong model tiering. Mirrors the builtin
+ * agent prompts (BUILTIN_PROMPTS in `src/adapters/mcp/handlers/content.ts`),
+ * so a builtin role with no user config routes by complexity via the tiered
+ * defaults. Script steps (`type: script`) bypass tiering entirely — zero LLM —
+ * and are never routed here.
  */
-export const BUILTIN_TIERED_ROLES: ReadonlySet<string> = new Set<string>();
+export const BUILTIN_TIERED_ROLES: ReadonlySet<string> = new Set<string>([
+  "requirement_analyst",
+  "architecture_agent",
+  "code_generation_backend",
+  "code_generation_frontend",
+  "test_generation_backend",
+  "test_generation_frontend",
+  "review",
+]);
 
 /**
  * Resolve the model tier for a role.

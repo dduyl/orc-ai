@@ -9,13 +9,17 @@ when a short wait would have sufficed for a rate limit.
 
 ## Decision
 On detecting quota exhaustion (as opposed to a transient rate limit),
-escalate in order: downgrade to a cheaper model variant if quota remains
-there (ADR-021); if none remains, checkpoint and pause (ADR-010), resuming
-automatically once the quota window is known to reset; if a pause is not
-viable, prioritize the critical path and defer or skip non-essential steps
-(e.g. an optional deep review pass) rather than blocking entirely; always
-surface the condition to the user rather than silently degrading or
-hanging.
+escalate in order: **provider failover** (switch the ACP agent to the next
+configured provider, re-resolving the model against the new provider's
+advertised set) if a provider remains unused; otherwise downgrade to a cheaper
+model variant (ADR-021 tier lookup) if quota remains there; then, if the agent
+advertises an env-var auth method and a `tokenPaidApiKey` is configured, retry
+once on a pay-as-you-go key; if none of these recover, checkpoint and pause
+(ADR-010), resuming automatically once the quota window is known to reset; if
+a pause is not viable, prioritize the critical path and defer or skip
+non-essential steps (e.g. an optional deep review pass) rather than blocking
+entirely; always surface the condition to the user rather than silently
+degrading or hanging.
 
 ## Consequences
 - Requires distinguishing quota-exhaustion errors from rate-limit errors at
@@ -23,3 +27,6 @@ hanging.
   of this ADR.
 - Depends on ADR-010's checkpoint/resume mechanism being reliable; a fragile
   resume path undermines the pause-and-resume strategy here.
+- Provider failover and the token-paid retry are ACP-only (client→agent
+  `providers/*` / `authenticate` requests). PTY adapters have no such
+  mechanism and degrade to tier downgrade → pause.

@@ -21,10 +21,37 @@ describe("resolveVariantTier", () => {
     expect(resolveVariantTier("codegen", "complex", config)).toBe("strong");
   });
 
-  it("routes builtin tiered roles by complexity once populated", () => {
-    // BUILTIN_TIERED_ROLES is intentionally empty until Phase G wires the
-    // builtin roles; assert the set is currently empty to document that state.
-    expect(BUILTIN_TIERED_ROLES.size).toBe(0);
+  it("routes builtin tiered roles by complexity via the populated defaults", () => {
+    expect(BUILTIN_TIERED_ROLES).toContain("architecture_agent");
+    expect(resolveVariantTier("architecture_agent", "simple", {})).toBe("cheap");
+    expect(resolveVariantTier("architecture_agent", "complex", {})).toBe("strong");
+    expect(resolveVariantTier("review", "complex", {})).toBe("strong");
+    expect(resolveVariantTier("code_generation_backend", "simple", {})).toBe("cheap");
+  });
+
+  it("covers the full canonical builtin prompt set", () => {
+    expect([...BUILTIN_TIERED_ROLES].sort()).toEqual(
+      [
+        "architecture_agent",
+        "code_generation_backend",
+        "code_generation_frontend",
+        "requirement_analyst",
+        "review",
+        "test_generation_backend",
+        "test_generation_frontend",
+      ].sort(),
+    );
+  });
+
+  it("keeps script steps out of tiering (script roles are never in the set)", () => {
+    expect(BUILTIN_TIERED_ROLES.has("script")).toBe(false);
+    expect(resolveVariantTier("script", "simple", {})).toBe("strong");
+  });
+
+  it("lets a user variants entry override the builtin default for the same role", () => {
+    const config = { variants: { architecture_agent: { cheap: "gpt-4o-mini", strong: "gpt-5" } } };
+    expect(resolveVariantTier("architecture_agent", "simple", config)).toBe("cheap");
+    expect(resolveVariantTier("architecture_agent", "complex", config)).toBe("strong");
   });
 
   it("ignores a variants block that does not name this role", () => {
