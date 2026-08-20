@@ -75,6 +75,14 @@ const hardTimeout = setTimeout(() => {
   answerPrompt({ stopReason:'cancelled', usage:{ totalTokens:1, inputTokens:1, outputTokens:0 } });
   setTimeout(() => process.exit(0), 50);
 }, 2000);
+// L2: never let the hardTimeout keep an orphaned child alive after the parent
+// closes the pipe (the ladder's per-rung children otherwise linger ~2s and
+// flake test teardown). Cleared the moment stdin EOFs, then exit immediately.
+process.stdin.on('close', () => {
+  clearTimeout(hardTimeout);
+  if (process.env.MOCK_DIAG) { require('fs').appendFileSync(process.env.MOCK_DIAG, '{"mark":"MOCK-CLOSE"}\\n'); }
+  process.exit(0);
+});
 process.on('uncaughtException', (e) => {
   if (process.env.MOCK_DIAG) { require('fs').appendFileSync(process.env.MOCK_DIAG, 'MOCK-UNCAUGHT: ' + (e && e.stack || e) + '\\n'); }
   process.exit(1);
@@ -183,6 +191,19 @@ case 'authenticate':
         send({ jsonrpc:'2.0', id, error:{ code:-32001, message:'providers/set rejected' } });
       } else {
         providerSet = true;
+        // M3 (ADR-021): providers/set makes the target the current provider —
+        // clears every other provider's current so a later providers/list
+        // shows the switch, exactly like a real router would.
+        const cfg = msg.params || {};
+        providers.forEach(p => { p.current = null; });
+        const target = providers.find(p => p.providerId === cfg.providerId);
+        if (target) {
+          target.current = {
+            apiType: cfg.apiType,
+            baseUrl: cfg.baseUrl,
+            ...(cfg.headers ? { headers: cfg.headers } : {}),
+          };
+        }
         send({ jsonrpc:'2.0', id, result: {} });
       }
       break;

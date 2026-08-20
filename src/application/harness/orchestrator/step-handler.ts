@@ -395,9 +395,13 @@ export function createStepHandler(options: {
           affectedFiles: summary.affectedFiles,
           signal: orcResult?.signal,
           ...(result.downgradedTo ? { downgradedTo: result.downgradedTo } : {}),
+          ...(result.providerFailover ? { providerFailover: result.providerFailover } : {}),
         };
         if (result.downgradedTo) {
           log.info(`step '${step.id}' quota — completed on downgraded model '${result.downgradedTo}'`);
+        }
+        if (result.providerFailover) {
+          log.info(`step '${step.id}' quota — completed via provider failover on '${result.providerFailover}'`);
         }
         if (tokenPaidTried) {
           log.info(`step '${step.id}' completed on token-paid fallback (method '${tokenPaid?.methodId}')`);

@@ -61,6 +61,7 @@ export function mockAcpStream(
       tokensUsed: turn.usage.totalTokens,
       duration: turn.duration,
       ...(turn.downgraded && downgradeTo ? { downgradedTo: downgradeTo } : {}),
+      ...(turn.providerFailover ? { providerFailover: turn.providerFailover } : {}),
     }))
     .catch((err: unknown) => {
       throw err;

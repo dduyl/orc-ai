@@ -51,6 +51,11 @@ export interface StepOutcome {
    * (either the step then succeeded, or the downgraded retry failed too).
    */
   downgradedTo?: string;
+  /**
+   * ADR-021: provider switched to via the quota failover seam (ACP
+   * `providers/set`) when the step then completed on that provider.
+   */
+  providerFailover?: string;
 }
 
 export type StepHandler = (step: WorkflowStep, ctx: RunContext) => Promise<StepOutcome>;
