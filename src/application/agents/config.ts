@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { z } from "zod";
+import { log } from "../../core/log.js";
 
 /** Model tier for a given agent role (ADR-021). */
 export const TierSchema = z.enum(["cheap", "strong"]);
@@ -50,13 +51,35 @@ export function defaultConfigPath(): string {
 
 /**
  * Load the ADR-021 routing block from `~/.orc/config.json`.
- * Absent file / invalid JSON / schema violations -> `{}`.
+ * Absent file / invalid JSON -> `{}`. Each top-level block
+ * (`variants`, `providers`, `tokenPaidApiKey`) is parsed
+ * independently: a malformed block is dropped and logged, but never
+ * disables the other blocks (ADR-021 M5).
  */
 export function loadModelRoutingConfig(configPath: string = defaultConfigPath()): ModelRoutingConfig {
+  const result: ModelRoutingConfig = {};
   try {
     const raw = fs.readFileSync(configPath, "utf8");
-    return ModelRoutingConfigSchema.parse(JSON.parse(raw));
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return result;
+    const obj = parsed as Record<string, unknown>;
+    if (obj.variants !== undefined) {
+      const r = VariantsSchema.safeParse(obj.variants);
+      if (r.success) result.variants = r.data;
+      else log.warn("loadModelRoutingConfig: dropping malformed 'variants' block", r.error);
+    }
+    if (obj.providers !== undefined) {
+      const r = ProvidersSchema.safeParse(obj.providers);
+      if (r.success) result.providers = r.data;
+      else log.warn("loadModelRoutingConfig: dropping malformed 'providers' block", r.error);
+    }
+    if (obj.tokenPaidApiKey !== undefined) {
+      const r = z.string().safeParse(obj.tokenPaidApiKey);
+      if (r.success) result.tokenPaidApiKey = r.data;
+      else log.warn("loadModelRoutingConfig: dropping malformed 'tokenPaidApiKey' block", r.error);
+    }
   } catch {
-    return {};
+    // absent file / invalid JSON / unreadable path -> {}
   }
+  return result;
 }
