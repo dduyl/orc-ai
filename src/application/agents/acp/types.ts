@@ -156,3 +156,19 @@ export type OnProviderQuota = (
   router: ProviderRouter,
   context: ProviderFailoverContext,
 ) => Promise<ProviderFailoverResult | undefined>;
+
+/**
+ * ADR-021 Phase F: a token-paid fallback request. Built by the harness after a
+ * quota error when the agent advertised an env-var auth method AND a
+ * `tokenPaidApiKey` is configured (per-provider wins over top-level). The key
+ * is injected into the child process environment at `envVarName` and the agent
+ * is asked to authenticate via ACP `authenticate` before a single prompt run.
+ */
+export interface TokenPaidRequest {
+  /** The ACP auth method id (the agent's `AuthMethodEnvVar.id`). */
+  methodId: string;
+  /** The environment variable name the agent reads the key from. */
+  envVarName: string;
+  /** The pay-as-you-go API key. NEVER log this value. */
+  key: string;
+}

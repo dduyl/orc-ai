@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { runAcpTurn } from "../../../../application/agents/acp/client.js";
 import { PermissionGate } from "../../../../application/agents/acp/permission.js";
 import { AgentCallError } from "../../../../application/agents/errors.js";
+import { log } from "../../../../core/log.js";
 import type { AcpSpawnSpec } from "../../../../application/agents/acp/types.js";
 
 /**
@@ -44,6 +45,11 @@ const providers = (process.env.MOCK_PROVIDERS ? JSON.parse(process.env.MOCK_PROV
 ]);
 const providerSetMode = process.env.MOCK_PROVIDER_SET || 'ok';
 const providerLog = process.env.MOCK_PROVIDER_LOG;
+const authLog = process.env.MOCK_AUTH_LOG;
+const authMethods = process.env.MOCK_AUTH_METHODS === '1' ? [
+  { id: process.env.MOCK_AUTH_METHOD_ID || 'env-var', name: 'Env var', type: 'env_var',
+    vars: [{ name: 'MOCK_API_KEY' }] },
+] : undefined;
 let providerSet = false;
 function send(msg) { process.stdout.write(JSON.stringify(msg) + '\\n'); }
 function sendUpdate(sessionId, text) {
@@ -86,7 +92,18 @@ rl.on('line', (line) => {
         protocolVersion: 1,
         agentCapabilities: providerCap ? { providers: {} } : {},
         agentInfo: { name: 'mock-agent', version: '1.0.0' },
+        ...(authMethods ? { authMethods } : {}),
       }});
+      break;
+    case 'authenticate':
+      if (authLog) {
+        fs.appendFileSync(authLog, JSON.stringify({ methodId: msg.params && msg.params.methodId, keyInjected: !!process.env.MOCK_API_KEY }) + '\\n');
+      }
+      if (process.env.MOCK_AUTH_REJECT === '1') {
+        send({ jsonrpc:'2.0', id, error:{ code:-32001, message:'unknown auth method' } });
+      } else {
+        send({ jsonrpc:'2.0', id, result: {} });
+      }
       break;
     case 'session/new':
       send({ jsonrpc:'2.0', id, result: {
@@ -646,6 +663,8 @@ expect(err).toBeInstanceOf(AgentCallError);
     expect(err).toBeInstanceOf(AgentCallError);
     expect((err as AgentCallError).kind).toBe("quota");
     expect((err as AgentCallError).message).toBe("You exceeded your current quota for this request [second attempt]");
+    expect((err as AgentCallError).providerId).toBe("provider-b");
+    expect((err as AgentCallError).authMethods).toEqual([]);
     expect(calls).toEqual(["set:provider-b"]);
   });
 
@@ -756,5 +775,119 @@ expect(err).toBeInstanceOf(AgentCallError);
     expect(turn.stopReason).toBe("end_turn");
     expect(turn.downgraded).toBe(true);
     expect(turn.providerFailover).toBeUndefined();
+  });
+
+  it("ADR-021 token-paid: key injected into child env + authenticate called, then quota carries authMethods", async () => {
+    const authFile = tmpCfgLog();
+    try {
+      const err = await runAcpTurn({
+        spawn: spawnSpec("quota"),
+        cwd: process.cwd(),
+        env: env("quota", { MOCK_AUTH_METHODS: "1", MOCK_AUTH_LOG: authFile }),
+        prompt: "hello",
+        tokenPaid: { methodId: "env-var", envVarName: "MOCK_API_KEY", key: "sk-tokenpaid-secret" },
+        permissionGate: new PermissionGate(),
+      }).then(
+        () => null,
+        e => e,
+      );
+
+      expect(err).toBeInstanceOf(AgentCallError);
+      expect((err as AgentCallError).kind).toBe("quota");
+      expect((err as AgentCallError).message).toMatch(/quota/);
+      expect((err as AgentCallError).authMethods).toEqual([{ methodId: "env-var", envVarName: "MOCK_API_KEY" }]);
+      expect((err as AgentCallError).providerId).toBeUndefined();
+      // Server-side: authenticate was asked for the token-paid method, and the
+      // child environment had the key injected at MOCK_API_KEY.
+      expect(readCfgLog(authFile)).toEqual([expect.stringContaining('"methodId":"env-var"')]);
+      expect(readCfgLog(authFile)).toEqual([expect.stringContaining('"keyInjected":true')]);
+    } finally {
+      if (fs.existsSync(authFile)) fs.unlinkSync(authFile);
+    }
+  });
+
+  it("ADR-021 token-paid: authenticate rejection surfaces quota 'token-paid authenticate failed' (no prompt)", async () => {
+    const err = await runAcpTurn({
+      spawn: spawnSpec("stream"),
+      cwd: process.cwd(),
+      env: env("stream", { MOCK_AUTH_METHODS: "1", MOCK_AUTH_REJECT: "1" }),
+      prompt: "hello",
+      tokenPaid: { methodId: "env-var", envVarName: "MOCK_API_KEY", key: "sk-tokenpaid-secret" },
+      permissionGate: new PermissionGate(),
+    }).then(
+      () => null,
+      e => e,
+    );
+
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("quota");
+    expect((err as AgentCallError).message).toMatch(/token-paid authenticate failed/);
+    expect((err as AgentCallError).authMethods).toEqual([{ methodId: "env-var", envVarName: "MOCK_API_KEY" }]);
+  });
+
+  it("ADR-021 token-paid: no failover/downgrade recovery — seam never invoked, first quota rethrown", async () => {
+    const calls: string[] = [];
+    const err = await runAcpTurn({
+      spawn: spawnSpec("quota-failover"),
+      cwd: process.cwd(),
+      env: env("quota-failover", { MOCK_PROVIDER_CAP: "1", MOCK_AUTH_METHODS: "1" }),
+      prompt: "hello",
+      downgradeTo: "claude-haiku",
+      tokenPaid: { methodId: "env-var", envVarName: "MOCK_API_KEY", key: "sk-tokenpaid-secret" },
+      permissionGate: new PermissionGate(),
+      onProviderQuota: async () => {
+        calls.push("seam");
+        return { providerId: "provider-b" };
+      },
+    }).then(
+      () => null,
+      e => e,
+    );
+
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("quota");
+    expect((err as AgentCallError).message).toBe("You exceeded your current quota for this request [first attempt]");
+    expect(calls).toEqual([]);
+  });
+
+  it("ADR-021 non-token-paid quota advertises the env-var auth method for the harness", async () => {
+    const err = await runAcpTurn({
+      spawn: spawnSpec("quota"),
+      cwd: process.cwd(),
+      env: env("quota", { MOCK_AUTH_METHODS: "1" }),
+      prompt: "hello",
+      permissionGate: new PermissionGate(),
+    }).then(
+      () => null,
+      e => e,
+    );
+
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("quota");
+    expect((err as AgentCallError).authMethods).toEqual([{ methodId: "env-var", envVarName: "MOCK_API_KEY" }]);
+  });
+
+  it("ADR-021 token-paid: the injected key never appears in the acp log", async () => {
+    const KEY = "sk-tokenpaid-secret";
+    const entries: string[] = [];
+    const unsub = log.subscribe(e => entries.push(e.message));
+    try {
+      const err = await runAcpTurn({
+        spawn: spawnSpec("quota"),
+        cwd: process.cwd(),
+        env: env("quota", { MOCK_AUTH_METHODS: "1" }),
+        prompt: "hello",
+        tokenPaid: { methodId: "env-var", envVarName: "MOCK_API_KEY", key: KEY },
+        permissionGate: new PermissionGate(),
+      }).then(
+        () => null,
+        e => e,
+      );
+      expect(err).toBeInstanceOf(AgentCallError);
+    } finally {
+      unsub();
+    }
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.some(m => m.includes(KEY))).toBe(false);
   });
 });

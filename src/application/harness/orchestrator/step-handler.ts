@@ -21,7 +21,7 @@ import { loadModelRoutingConfig } from "../../agents/config.js";
 import type { ModelRoutingConfig } from "../../agents/config.js";
 import { resolveVariantTier, BUILTIN_TIERED_ROLES, type Tier } from "../../agents/variants.js";
 import { readConfiguredProviders } from "../../agents/configured-providers.js";
-import type { OnProviderQuota } from "../../agents/acp/types.js";
+import type { OnProviderQuota, TokenPaidRequest } from "../../agents/acp/types.js";
 
 /** Bounded exponential backoff: 1s -> 2s -> 4s ... capped at 30s. */
 const BACKOFF_BASE_MS = 1000;
@@ -270,6 +270,11 @@ export function createStepHandler(options: {
 
     let downgradeTried = false;
     let downgradeTo: string | undefined;
+    // ADR-021 Phase F: one token-paid retry is allowed per step, AFTER the
+    // same-session downgrade retry fails (or no downgrade is possible). The
+    // flag caps it to a single attempt — a second quota pauses, never loops.
+    let tokenPaidTried = false;
+    let tokenPaid: TokenPaidRequest | undefined;
 
     // While-loop (not for): the quota downgrade re-invokes the SAME attempt
     // without consuming a transient-retry slot, so only the transient backoff
@@ -318,7 +323,7 @@ export function createStepHandler(options: {
           : agentInfo.systemPrompt + "\n\n" + buildStepContext(step, completedSummaries, task, agentInfo, completionKey);
         const hookFile = createHookFile(step.id);
         try {
-          const handle = callAgentStream(callFor, combinedPrompt, hookFile, downgradeTo, tier, variantModel, configuredProviders, onProviderQuota);
+          const handle = callAgentStream(callFor, combinedPrompt, hookFile, downgradeTo, tier, variantModel, configuredProviders, onProviderQuota, tokenPaid);
           onProgress?.({ type: "step_pty", runId, stepId: step.id, pty: handle.pty });
           const abortSignal = ctx.signal;
           // Register before attaching the abort listener: the sync aborted
@@ -388,6 +393,9 @@ export function createStepHandler(options: {
         if (result.downgradedTo) {
           log.info(`step '${step.id}' quota — completed on downgraded model '${result.downgradedTo}'`);
         }
+        if (tokenPaidTried) {
+          log.info(`step '${step.id}' completed on token-paid fallback (method '${tokenPaid?.methodId}')`);
+        }
         tracker?.tracker.setStepCompleted(tracker.runId, step.id, "completed");
         onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "completed", duration: result.duration });
         emitter.stepFinish(step.id, "stop", "", { total: 0, input: 0, output: output.length, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
@@ -441,6 +449,27 @@ export function createStepHandler(options: {
                 log.info(`step '${step.id}' quota — downgrading model '${activeAdapter.id}' -> '${downgradeTo}'`);
                 continue;
               }
+            }
+            // ADR-021 Phase F: one token-paid retry, AFTER the failover (in the
+            // ACP client) and the same-session downgrade retry have returned
+            // nothing usable. Only possible when the agent advertised an
+            // env-var auth method AND a `tokenPaidApiKey` is configured —
+            // per-provider (the provider in effect after a failover) wins over
+            // the top-level key, and whitespace-only counts as absent. The key
+            // is NEVER logged (only the method id and env var name).
+            if (!tokenPaidTried && agentErr.authMethods && agentErr.authMethods.length > 0) {
+              const method = agentErr.authMethods[0];
+              const perProviderKey = agentErr.providerId
+                ? routingConfig.providers?.[agentErr.providerId]?.tokenPaidApiKey
+                : undefined;
+              const key = (perProviderKey ?? routingConfig.tokenPaidApiKey)?.trim();
+              if (key) {
+                tokenPaidTried = true;
+                tokenPaid = { methodId: method.methodId, envVarName: method.envVarName, key };
+                log.info(`step '${step.id}' quota — token-paid retry via env var '${method.envVarName}' (method '${method.methodId}')`);
+                continue;
+              }
+              log.debug(`step '${step.id}' quota — env-var auth advertised but no tokenPaidApiKey configured, pausing`);
             }
             const quotaInfo = toQuotaInfo(agentErr, downgradeTried && downgradeTo ? downgradeTo : undefined);
             // ADR-022: quota remains with no recovery path (no

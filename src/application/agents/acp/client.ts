@@ -19,11 +19,12 @@ import type {
   OnProviderQuota,
   ProviderFailoverResult,
   ProviderRouter,
+  TokenPaidRequest,
 } from "./types.js";
 import type { PermissionGate } from "./permission.js";
 import type { Tier } from "../config.js";
 import { MODELS_SNAPSHOT, selectVariantModel } from "../models.js";
-import { classifyAgentError } from "../errors.js";
+import { classifyAgentError, AgentCallError, type EnvAuthMethodInfo } from "../errors.js";
 import { log } from "../../../core/log.js";
 
 export interface AcpClientEvents {
@@ -80,6 +81,17 @@ export interface AcpTurnOptions {
    * throwing) falls through to the downgrade path.
    */
   onProviderQuota?: OnProviderQuota;
+  /**
+   * ADR-021 Phase F (token-paid fallback): the harness re-invokes the step once
+   * with this set after a quota error when the agent advertised an env-var auth
+   * method AND a `tokenPaidApiKey` is configured. The key is injected into the
+   * child environment at `envVarName` (overriding any inherited value), the
+   * agent is asked to authenticate via `authenticate`, and the prompt is run
+   * ONCE with NO failover/downgrade recovery — a second quota surfaces
+   * immediately so the harness (token-paid already tried) pauses. The key must
+   * never be logged.
+   */
+  tokenPaid?: TokenPaidRequest;
 }
 
 export function normalizeUsage(input?: Usage | null): AgentUsage {
@@ -156,11 +168,14 @@ function scheduleKill(child: ChildProcess): void {
  */
 export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
   const start = Date.now();
-  const { spawn: spec, cwd, env, prompt, permissionGate, events, signal, downgradeTo } = opts;
+  const { spawn: spec, cwd, env, prompt, permissionGate, events, signal, downgradeTo, tokenPaid } = opts;
 
   const child = spawn(spec.command, spec.args, {
     cwd,
-    env,
+    // ADR-021 Phase F: the token-paid key is injected into the child env before
+    // the process starts (explicitly overriding any inherited value — the
+    // configured key wins). The agent reads it from `envVarName`.
+    env: tokenPaid ? { ...env, [tokenPaid.envVarName]: tokenPaid.key } : env,
     stdio: ["pipe", "pipe", "ignore"],
   });
 
@@ -227,6 +242,14 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
     // UNSTABLE ACP capability: only agents advertising `providers` will
     // answer `providers/list` / `providers/set`, which the failover seam needs.
     const providerRouting = Boolean(init.agentCapabilities?.providers);
+    // ADR-021 Phase F: the env-var auth methods the agent advertises at
+    // initialize. These are carried back to the harness on quota errors so it
+    // can decide whether a token-paid retry (key via env var + `authenticate`)
+    // is possible. Agents without an env-var method get an empty list → the
+    // harness skips straight to pause.
+    const envVarAuthMethods: EnvAuthMethodInfo[] = (init.authMethods ?? [])
+      .map(m => ("type" in m && m.type === "env_var" ? { methodId: m.id, envVarName: m.vars[0]?.name ?? "" } : null))
+      .filter((m): m is EnvAuthMethodInfo => m !== null && m.envVarName.length > 0);
     return ctx.buildSession(cwd).withSession(async session => {
       let cancelSent = false;
       signal?.addEventListener(
@@ -246,6 +269,31 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
           configId,
           value: modelId,
         });
+
+      // ADR-021 Phase F: the provider id currently in effect, tracked so the
+      // quota errors surfaced to the harness let it pick a per-provider
+      // `tokenPaidApiKey`. Set only after a successful failover; otherwise
+      // undefined (top-level key applies).
+      let providerInEffect: string | undefined;
+
+      // ADR-021 Phase F: ask the agent to authenticate with the injected
+      // env-var key BEFORE the (single) prompt run. A refusal here surfaces as
+      // a quota-kind error immediately — the harness has already marked the
+      // token-paid attempt as tried, so it falls through to pause. Deliberately
+      // OUTSIDE the prompt try/catch: an authenticate failure must not re-enter
+      // the failover/downgrade recovery ladder.
+      if (tokenPaid) {
+        try {
+          await ctx.request(methods.agent.authenticate, { methodId: tokenPaid.methodId });
+          log.debug(`acp: token-paid auth ok (method '${tokenPaid.methodId}', env '${tokenPaid.envVarName}')`);
+        } catch (authErr) {
+          throw new AgentCallError("quota", `token-paid authenticate failed: ${(authErr as Error).message}`, {
+            cause: authErr,
+            authMethods: envVarAuthMethods,
+            providerId: providerInEffect,
+          });
+        }
+      }
 
       // Pre-emptive seam (ADR-021): configure the session model from the
       // harness-decided tier/selection BEFORE the first prompt, so the whole
@@ -314,6 +362,27 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
         const agentErr = classifyAgentError(err);
         if (agentErr.kind !== "quota") throw agentErr;
 
+        // The quota error surfaced to the harness must carry the env-var auth
+        // methods (ADR-021 Phase F) and the provider currently in effect, so it
+        // can decide whether a token-paid retry is possible and which
+        // `tokenPaidApiKey` to use.
+        const enriched = (e: AgentCallError, providerId?: string): AgentCallError =>
+          new AgentCallError(e.kind, e.message, {
+            providerCode: e.providerCode,
+            resetAtMs: e.resetAtMs,
+            cause: e,
+            authMethods: envVarAuthMethods,
+            providerId,
+          });
+
+        // ADR-021 Phase F (token-paid retry): the prompt was already run once
+        // with the key injected + `authenticate` done. Run ONCE, no recovery —
+        // a second quota surfaces immediately so the harness (token-paid already
+        // tried) pauses. Never infinite: the harness caps this to one attempt.
+        if (tokenPaid) {
+          throw enriched(agentErr, providerInEffect);
+        }
+
         // ADR-021 provider failover (UNSTABLE ACP `providers/*`). Runs BEFORE
         // the same-session `downgradeTo` retry: switching the provider keeps
         // the session on a stronger tier than a tier downgrade would. A
@@ -360,11 +429,17 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
               }
             }
             // The retry prompt is deliberately OUTSIDE the seam's try/catch: a
-            // quota on the new provider must re-enter the outer ladder
-            // (failover again, then downgrade) rather than be swallowed as a
-            // "seam threw" fall-through that rethrows the stale first error.
-            const stopReason = await runPromptOnce();
-            return { stopReason, providerFailover: failover.providerId, ...(configuredModel ? { configuredModel } : {}) };
+            // seam throw must not swallow the retry's own outcome. If the
+            // retry itself hits quota, surface it enriched with the provider
+            // now in effect (so the harness picks the right `tokenPaidApiKey`)
+            // rather than rethrowing the stale first error un-enriched.
+            providerInEffect = failover.providerId;
+            try {
+              const stopReason = await runPromptOnce();
+              return { stopReason, providerFailover: failover.providerId, ...(configuredModel ? { configuredModel } : {}) };
+            } catch (retryErr) {
+              throw enriched(classifyAgentError(retryErr), providerInEffect);
+            }
           }
         }
 
@@ -375,12 +450,19 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
             // Config switch refused: the downgrade cannot happen. Surface the
             // ORIGINAL quota error (its reset window is what the harness must
             // act on), not the config-option rejection.
-            throw agentErr;
+            throw enriched(agentErr, providerInEffect);
           }
-          const stopReason = await runPromptOnce();
-          return { stopReason, downgraded: true };
+          try {
+            const stopReason = await runPromptOnce();
+            return { stopReason, downgraded: true };
+          } catch (retryErr) {
+            // A quota on the downgraded model surfaces enriched (authMethods +
+            // providerId in effect) so the harness can still attempt a
+            // token-paid retry; never swallow it.
+            throw enriched(classifyAgentError(retryErr), providerInEffect);
+          }
         }
-        throw agentErr;
+        throw enriched(agentErr, providerInEffect);
       }
     });
   });

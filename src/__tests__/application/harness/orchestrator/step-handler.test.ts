@@ -10,6 +10,7 @@ import type { RunContext } from "../../../../application/harness/execution/step-
 import { createStepHandler, buildRepairPrompt } from "../../../../application/harness/orchestrator/step-handler.js";
 import { Tracker } from "../../../../application/harness/persistence/Tracker.js";
 import { AgentCallError } from "../../../../application/agents/errors.js";
+import { log } from "../../../../core/log.js";
 import type { WorkflowStep } from "../../../../core/schemas.js";
 
 const { agentCalls, mockState } = vi.hoisted(() => {
@@ -25,13 +26,14 @@ const { agentCalls, mockState } = vi.hoisted(() => {
     variantModelParams: Array<string | undefined>;
     configuredProvidersParams: Array<string[] | undefined>;
     onProviderQuotaParams: Array<unknown>;
+    tokenPaidParams: Array<unknown>;
     sequence?: Array<{ rejectWith?: unknown; resolveValue?: unknown }>;
-  } = { killed: 0, pending: false, killSettles: true, callCount: 0, downgradeParams: [], variantTierParams: [], variantModelParams: [], configuredProvidersParams: [], onProviderQuotaParams: [] };
+  } = { killed: 0, pending: false, killSettles: true, callCount: 0, downgradeParams: [], variantTierParams: [], variantModelParams: [], configuredProvidersParams: [], onProviderQuotaParams: [], tokenPaidParams: [] };
   return { agentCalls: [] as string[], mockState };
 });
 
 vi.mock("../../../../application/agents/adapter-pty.js", () => ({
-  callAgentStream: (_adapter: unknown, prompt: string, _hook?: string, downgradeTo?: string, variantTier?: string, variantModel?: string, configuredProviders?: string[], onProviderQuota?: unknown) => {
+  callAgentStream: (_adapter: unknown, prompt: string, _hook?: string, downgradeTo?: string, variantTier?: string, variantModel?: string, configuredProviders?: string[], onProviderQuota?: unknown, tokenPaid?: unknown) => {
     agentCalls.push(prompt);
     mockState.callCount++;
     mockState.downgradeParams.push(downgradeTo);
@@ -39,6 +41,7 @@ vi.mock("../../../../application/agents/adapter-pty.js", () => ({
     mockState.variantModelParams.push(variantModel);
     mockState.configuredProvidersParams.push(configuredProviders);
     mockState.onProviderQuotaParams.push(onProviderQuota);
+    mockState.tokenPaidParams.push(tokenPaid);
     const entry = mockState.sequence?.[mockState.callCount - 1];
     const rejectWith = entry?.rejectWith !== undefined ? entry.rejectWith : mockState.rejectWith;
     const resolveValue = entry?.resolveValue;
@@ -680,6 +683,7 @@ describe("step-handler ADR-021 tier routing", () => {
     mockState.variantModelParams.length = 0;
     mockState.configuredProvidersParams.length = 0;
     mockState.onProviderQuotaParams.length = 0;
+    mockState.tokenPaidParams.length = 0;
   });
 
   it("passes the resolved tier to callAgentStream (data-flow reachability)", async () => {
@@ -813,6 +817,158 @@ describe("step-handler ADR-021 tier routing", () => {
   });
 });
 
+describe("step-handler ADR-021 token-paid fallback", () => {
+  const agentStep = (): WorkflowStep => ({
+    id: "code", type: "agent", agent: "codegen", emits: [sig("sig_done")], on: ["__start__"], context: [],
+  });
+  const baseHandler = (extra: Record<string, unknown> = {}) =>
+    createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: emitter(),
+      task: "t",
+      ...extra,
+    });
+  const envVarAuth = { methodId: "env-var", envVarName: "OPENAI_API_KEY" };
+  const KEY = "sk-tokenpaid-TOP-SECRET-123";
+
+  beforeEach(() => {
+    agentCalls.length = 0;
+    mockState.pending = false;
+    mockState.killSettles = true;
+    mockState.resolve = undefined;
+    mockState.rejectWith = undefined;
+    mockState.sequence = undefined;
+    mockState.callCount = 0;
+    mockState.downgradeParams.length = 0;
+    mockState.onProviderQuotaParams.length = 0;
+    mockState.tokenPaidParams.length = 0;
+  });
+
+  it("env-var auth advertised but no tokenPaidApiKey configured: pauses with a single adapter call and no tokenPaid passed", async () => {
+    mockState.rejectWith = new AgentCallError("quota", "quota exceeded", { resetAtMs: 333, authMethods: [envVarAuth] });
+    const handler = baseHandler({ modelRoutingConfig: {} });
+    const out = await handler(agentStep(), ctx());
+
+    expect(out.status).toBe("paused");
+    expect(out.failureReason).toBe("quota_exhausted");
+    expect(out.quota).toEqual({ kind: "quota", resetAtMs: 333, message: "quota exceeded" });
+    expect(agentCalls.length).toBe(1);
+    expect(mockState.tokenPaidParams).toEqual([undefined]);
+    expect(mockState.downgradeParams).toEqual([undefined]);
+  });
+
+  it("per-provider tokenPaidApiKey wins over the top-level key: one token-paid re-invocation then success", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111, authMethods: [envVarAuth], providerId: "provider-b" }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const handler = baseHandler({
+      modelRoutingConfig: {
+        providers: { "provider-b": { tokenPaidApiKey: "sk-per-provider" } },
+        tokenPaidApiKey: "sk-top-level",
+      },
+    });
+    const out = await handler(agentStep(), ctx());
+
+    expect(out.status).toBe("completed");
+    expect(out.quota).toBeUndefined();
+    expect(agentCalls.length).toBe(2);
+    expect(mockState.tokenPaidParams).toEqual([
+      undefined,
+      { methodId: "env-var", envVarName: "OPENAI_API_KEY", key: "sk-per-provider" },
+    ]);
+    expect(mockState.downgradeParams).toEqual([undefined, undefined]);
+  });
+
+  it("top-level tokenPaidApiKey used when the quota error has no providerId", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111, authMethods: [envVarAuth] }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const handler = baseHandler({ modelRoutingConfig: { tokenPaidApiKey: "sk-top-level" } });
+    const out = await handler(agentStep(), ctx());
+
+    expect(out.status).toBe("completed");
+    expect(mockState.tokenPaidParams).toEqual([
+      undefined,
+      { methodId: "env-var", envVarName: "OPENAI_API_KEY", key: "sk-top-level" },
+    ]);
+  });
+
+  it("token-paid retry hits quota again: pauses (never infinite) with exactly two adapter calls", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111, authMethods: [envVarAuth] }) },
+      { rejectWith: new AgentCallError("quota", "second quota", { resetAtMs: 222, authMethods: [envVarAuth] }) },
+    ];
+    const handler = baseHandler({ modelRoutingConfig: { tokenPaidApiKey: KEY } });
+    const out = await handler(agentStep(), ctx());
+
+    expect(out.status).toBe("paused");
+    expect(out.failureReason).toBe("quota_exhausted");
+    expect(out.quota).toEqual({ kind: "quota", resetAtMs: 222, message: "second quota" });
+    expect(agentCalls.length).toBe(2);
+    expect(mockState.tokenPaidParams).toEqual([
+      undefined,
+      { methodId: "env-var", envVarName: "OPENAI_API_KEY", key: KEY },
+    ]);
+  });
+
+  it("whitespace-only tokenPaidApiKey counts as absent: pauses with a single adapter call", async () => {
+    mockState.rejectWith = new AgentCallError("quota", "quota exceeded", { resetAtMs: 333, authMethods: [envVarAuth] });
+    const handler = baseHandler({ modelRoutingConfig: { tokenPaidApiKey: "   " } });
+    const out = await handler(agentStep(), ctx());
+
+    expect(out.status).toBe("paused");
+    expect(agentCalls.length).toBe(1);
+    expect(mockState.tokenPaidParams).toEqual([undefined]);
+  });
+
+  it("downgrade runs BEFORE the token-paid retry: downgrade, then token-paid, then pause (three adapter calls)", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111, authMethods: [envVarAuth] }) },
+      { rejectWith: new AgentCallError("quota", "second quota", { resetAtMs: 222, authMethods: [envVarAuth] }) },
+      { rejectWith: new AgentCallError("quota", "third quota", { resetAtMs: 333, authMethods: [envVarAuth] }) },
+    ];
+    const handler = baseHandler({
+      modelRoutingConfig: { tokenPaidApiKey: KEY },
+      resolveDowngradeModel: () => "claude-haiku",
+    });
+    const out = await handler(agentStep(), ctx());
+
+    expect(out.status).toBe("paused");
+    expect(out.failureReason).toBe("quota_exhausted");
+    expect(out.downgradedTo).toBe("claude-haiku");
+    expect(out.quota).toEqual({ kind: "quota", resetAtMs: 333, message: "third quota", downgradedTo: "claude-haiku" });
+    expect(agentCalls.length).toBe(3);
+    expect(mockState.downgradeParams).toEqual([undefined, "claude-haiku", "claude-haiku"]);
+    expect(mockState.tokenPaidParams).toEqual([
+      undefined,
+      undefined,
+      { methodId: "env-var", envVarName: "OPENAI_API_KEY", key: KEY },
+    ]);
+  });
+
+  it("the tokenPaidApiKey is never logged", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111, authMethods: [envVarAuth] }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const handler = baseHandler({ modelRoutingConfig: { tokenPaidApiKey: KEY } });
+    const entries: string[] = [];
+    const unsub = log.subscribe(e => entries.push(e.message));
+    try {
+      const out = await handler(agentStep(), ctx());
+      expect(out.status).toBe("completed");
+    } finally {
+      unsub();
+    }
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.some(m => m.includes(KEY))).toBe(false);
+  });
+});
+
 describe("step-handler quota surfacing chain", () => {
   const agentStep = (): WorkflowStep => ({
     id: "code", type: "agent", agent: "codegen", emits: [sig("sig_done")], on: ["__start__"], context: [],
@@ -855,6 +1011,7 @@ describe("step-handler quota surfacing chain", () => {
     agentCalls.length = 0;
     mockState.callCount = 0;
     mockState.downgradeParams = [];
+    mockState.tokenPaidParams = [];
     mockState.sequence = undefined;
     mockState.rejectWith = undefined;
   });
