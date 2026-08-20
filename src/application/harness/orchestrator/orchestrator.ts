@@ -1,5 +1,9 @@
 import type { AdapterDef } from "../../agents/adapter.js";
+import { loadModelRoutingConfig } from "../../agents/config.js";
+import { readConfiguredProviders } from "../../agents/configured-providers.js";
+import { resolveVariantTier } from "../../agents/variants.js";
 import type { PlannerResult } from "../../planner/registry.js";
+import { defaultResolveDowngradeModel, defaultOnProviderQuota } from "./routing-defaults.js";
 import { runWorkflow, type RunContext } from "../execution/step-runner.js";
 import { Checkpointer, type StepResumeSnapshot } from "../persistence/Checkpointer.js";
 import { StreamEmitter } from "../../../adapters/stream/emitter.js";
@@ -44,6 +48,12 @@ export async function orchestrate(
     const completedSummaries = new Map<string, StepSummary>();
     const emitter = new StreamEmitter();
 
+    // ADR-021/ADR-022: the model-routing block and the providers the user has
+    // credentials for, read once per run and shared by the quota-ladder
+    // defaults below (the downgrade resolver and the failover seam).
+    const routingConfig = loadModelRoutingConfig();
+    const configuredProviders = readConfiguredProviders(routingConfig);
+
     const handler = createStepHandler({
       adapter: activeAdapter,
       agentPrompts,
@@ -57,6 +67,10 @@ export async function orchestrate(
       // down the combined ladder — provider failover (providers/set), then a
       // tier downgrade to a cheaper variant via `resolveDowngradeModel` (wired
       // to the ADR-021 tier lookup), then a token-paid retry, then pause.
+      modelRoutingConfig: routingConfig,
+      resolveVariantTier: (role, complexity) => resolveVariantTier(role, complexity, routingConfig),
+      resolveDowngradeModel: defaultResolveDowngradeModel(routingConfig, configuredProviders),
+      onProviderQuota: defaultOnProviderQuota(routingConfig, configuredProviders),
     });
 
     // ADR-022: the quota payload of the step that paused the run, used

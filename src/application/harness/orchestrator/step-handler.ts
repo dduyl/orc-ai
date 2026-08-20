@@ -270,6 +270,12 @@ export function createStepHandler(options: {
 
     let downgradeTried = false;
     let downgradeTo: string | undefined;
+    // M1: the model in effect for this attempt — the concrete variant model
+    // when a user override configured one for the resolved tier, otherwise ""
+    // (the harness cannot know the ACP session's cheapest-of-tier pick). Hoisted
+    // to the loop level because `variantModel` is declared inside the try block
+    // and the quota catch below is a sibling scope.
+    let modelInEffect: string | undefined;
     // ADR-021 Phase F: one token-paid retry is allowed per step, AFTER the
     // same-session downgrade retry fails (or no downgrade is possible). The
     // flag caps it to a single attempt — a second quota pauses, never loops.
@@ -311,6 +317,7 @@ export function createStepHandler(options: {
         // advertised model, and the PTY path logs the intent + tool default.
         const tier = tierResolver(name, complexity);
         const variantModel = routingConfig.variants?.[name]?.[tier]?.trim() || undefined;
+        modelInEffect = variantModel ?? "";
         log.debug(`step ${step.id}: role '${name}' complexity '${complexity}' -> tier '${tier}'${variantModel ? ` model '${variantModel}'` : ""}`);
 
         let result: AgentCallResult;
@@ -436,7 +443,7 @@ export function createStepHandler(options: {
             if (!downgradeTried && resolveDowngradeModel) {
               let variant: string | undefined;
               try {
-                variant = resolveDowngradeModel(step.agent ?? "", activeAdapter.id);
+                variant = resolveDowngradeModel(step.agent ?? "", modelInEffect ?? "");
               } catch (cbErr) {
                 log.warn(`step '${step.id}' quota — resolveDowngradeModel threw: ${(cbErr as Error).message}`);
               }

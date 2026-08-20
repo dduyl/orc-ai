@@ -8,6 +8,7 @@ import { parseRun } from "../../../../application/harness/execution/CommandExecu
 import type { CommandExecutionResult } from "../../../../application/harness/execution/CommandExecutor.js";
 import type { RunContext } from "../../../../application/harness/execution/step-runner.js";
 import { createStepHandler, buildRepairPrompt } from "../../../../application/harness/orchestrator/step-handler.js";
+import { defaultResolveDowngradeModel } from "../../../../application/harness/orchestrator/routing-defaults.js";
 import { Tracker } from "../../../../application/harness/persistence/Tracker.js";
 import { AgentCallError } from "../../../../application/agents/errors.js";
 import { log } from "../../../../core/log.js";
@@ -783,6 +784,62 @@ describe("step-handler ADR-021 tier routing", () => {
     expect(mockState.variantTierParams[0]).toBe("strong");
   });
 
+  it("quota: the production default resolver downgrades strong→cheap (FN2)", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111 }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const routingConfig = { variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } } };
+    const handler = baseHandler({
+      modelRoutingConfig: routingConfig,
+      resolveVariantTier: () => "strong",
+      // the real production default — not a hand-rolled test callback
+      resolveDowngradeModel: defaultResolveDowngradeModel(routingConfig, []),
+    });
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(out.downgradedTo).toBe("model-cheap");
+    expect(mockState.downgradeParams).toEqual([undefined, "model-cheap"]);
+    expect(mockState.variantModelParams).toEqual(["model-strong", "model-strong"]);
+  });
+
+  it("M1: resolveDowngradeModel receives the model in effect, not the adapter id", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111 }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const tried: string[] = [];
+    const handler = baseHandler({
+      modelRoutingConfig: { variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } } },
+      resolveVariantTier: () => "strong",
+      resolveDowngradeModel: (_role: string, triedModel: string) => {
+        tried.push(triedModel);
+        return "model-cheap";
+      },
+    });
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(tried).toEqual(["model-strong"]);
+  });
+
+  it("all-injected seams still downgrade after wiring (regression guard)", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111 }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const seam = async () => undefined;
+    const handler = baseHandler({
+      resolveVariantTier: () => "strong",
+      resolveDowngradeModel: () => "claude-haiku",
+      onProviderQuota: seam,
+    });
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(out.downgradedTo).toBe("claude-haiku");
+    expect(mockState.downgradeParams).toEqual([undefined, "claude-haiku"]);
+    expect(mockState.onProviderQuotaParams).toEqual([seam, seam]);
+  });
+
   it("script steps bypass the tier resolver entirely (zero LLM)", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orc-tier-script-"));
     try {
@@ -814,6 +871,52 @@ describe("step-handler ADR-021 tier routing", () => {
     expect(out.status).toBe("completed");
     expect(mockState.variantTierParams).toEqual(["cheap", "cheap"]);
     expect(mockState.downgradeParams).toEqual([undefined, "claude-haiku"]);
+  });
+});
+
+describe("routing-defaults defaultResolveDowngradeModel", () => {
+  const snapshot = {
+    "fake-provider": {
+      models: {
+        "model-pricy": { reasoning: true, tool_call: true, cost: { input: 10 } },
+        "model-mid": { reasoning: false, tool_call: false, cost: { input: 2 } },
+        "model-cheap-1": { cost: { input: 0.5 } },
+        "model-cheap-2": { cost: { input: 0.1 } },
+      },
+    },
+  } as any;
+
+  it("strong→cheap via the user override (honored regardless of triedModel)", () => {
+    const resolver = defaultResolveDowngradeModel(
+      { variants: { codegen: { cheap: "model-x", strong: "model-strong" } } },
+      ["fake-provider"],
+      snapshot,
+    );
+    expect(resolver("codegen", "model-strong")).toBe("model-x");
+  });
+
+  it("override equal to the model in effect falls through to cheapest-of-tier", () => {
+    const resolver = defaultResolveDowngradeModel(
+      { variants: { codegen: { cheap: "model-strong", strong: "model-strong" } } },
+      ["fake-provider"],
+      snapshot,
+    );
+    expect(resolver("codegen", "model-strong")).toBe("model-cheap-2");
+  });
+
+  it("no cheap override: picks the cheapest-of-tier cheap model (price asc)", () => {
+    const resolver = defaultResolveDowngradeModel({}, ["fake-provider"], snapshot);
+    expect(resolver("codegen", "model-pricy")).toBe("model-cheap-2");
+  });
+
+  it("model in effect already cheap -> no downgrade", () => {
+    const resolver = defaultResolveDowngradeModel({}, ["fake-provider"], snapshot);
+    expect(resolver("codegen", "model-mid")).toBeUndefined();
+  });
+
+  it("no cheap candidate offered by a configured provider -> undefined", () => {
+    const resolver = defaultResolveDowngradeModel({}, ["other-provider"], snapshot);
+    expect(resolver("codegen", "model-pricy")).toBeUndefined();
   });
 });
 
