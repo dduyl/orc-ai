@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { resolveVariantTier, BUILTIN_TIERED_ROLES } from "../../../application/agents/variants.js";
+import { BUILTIN_PROMPTS } from "../../../adapters/mcp/handlers/content.js";
 
 describe("resolveVariantTier", () => {
   it("defaults an untiered role to strong (never under-provision)", () => {
@@ -29,18 +30,14 @@ describe("resolveVariantTier", () => {
     expect(resolveVariantTier("code_generation_backend", "simple", {})).toBe("cheap");
   });
 
-  it("covers the full canonical builtin prompt set", () => {
-    expect([...BUILTIN_TIERED_ROLES].sort()).toEqual(
-      [
-        "architecture_agent",
-        "code_generation_backend",
-        "code_generation_frontend",
-        "requirement_analyst",
-        "review",
-        "test_generation_backend",
-        "test_generation_frontend",
-      ].sort(),
-    );
+  it("covers the full canonical builtin prompt set (derived from the prompt loader, not hardcoded)", () => {
+    const canonical = new Set(BUILTIN_PROMPTS.map(p => p.name));
+    expect([...BUILTIN_TIERED_ROLES].sort()).toEqual([...canonical].sort());
+    // Every builtin role gets a tier default on both complexity signals.
+    for (const role of canonical) {
+      expect(resolveVariantTier(role, "simple", {})).toBe("cheap");
+      expect(resolveVariantTier(role, "complex", {})).toBe("strong");
+    }
   });
 
   it("keeps script steps out of tiering (script roles are never in the set)", () => {

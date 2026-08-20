@@ -1,29 +1,26 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { runAcpTurn } from "../../../../application/agents/acp/client.js";
 import { defaultOnProviderQuota } from "../../../../application/harness/orchestrator/routing-defaults.js";
 import { PermissionGate } from "../../../../application/agents/acp/permission.js";
 import { AgentCallError } from "../../../../application/agents/errors.js";
 import { log } from "../../../../core/log.js";
-import { MOCK_SCRIPT } from "../../../helpers/acp-mock-server.js";
+import { spawnAcpSpec, acpEnv, tmpLogPath } from "../../../helpers/acp-mock-server.js";
 import type { AcpSpawnSpec } from "../../../../application/agents/acp/types.js";
 
 /**
  * The mock agent server (see `src/__tests__/helpers/acp-mock-server.ts`) is
- * shared with the routing e2e so the two suites never diverge.
+ * shared with the routing e2e so the two suites never diverge. These thin
+ * aliases keep the call sites terse; the implementations live in the helper.
  */
-function spawnSpec(mode: string): AcpSpawnSpec {
-  return { command: process.execPath, args: ["-e", MOCK_SCRIPT] };
+function spawnSpec(_mode: string): AcpSpawnSpec {
+  return spawnAcpSpec();
 }
 
-function env(mode: string, extra: Record<string, string> = {}): Record<string, string> {
-  return { MOCK_MODE: mode, PATH: process.env.PATH ?? "", ...extra };
-}
+const env = acpEnv;
 
 function tmpCfgLog(): string {
-  return path.join(os.tmpdir(), `acp-cfg-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.log`);
+  return tmpLogPath("acp-cfg");
 }
 
 function readCfgLog(file: string): string[] {
