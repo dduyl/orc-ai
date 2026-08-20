@@ -6,6 +6,13 @@ export { loadModelRoutingConfig, defaultConfigPath, ModelRoutingConfigSchema } f
 export type { ModelRoutingConfig } from "./config.js";
 export { resolveVariantTier, BUILTIN_TIERED_ROLES } from "./variants.js";
 export type { Tier } from "./variants.js";
+export {
+  classifyModels,
+  modelTier,
+  pickVariantModel,
+  STRONG_PRICE_PER_M_INPUT,
+} from "./models.js";
+export type { ModelMeta, ModelsSnapshot, SnapshotModel, SnapshotProvider } from "./models.js";
 export { getStrategy, registerStrategy, getAcpStrategy, registerAcpStrategy } from "./strategy.js";
 export type { AgentStrategy } from "./strategy.js";
 export { callAgent, callAgentStream } from "./adapter-pty.js";
