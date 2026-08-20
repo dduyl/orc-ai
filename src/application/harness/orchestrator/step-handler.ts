@@ -148,10 +148,6 @@ export function createStepHandler(options: {
   // complexity classifier; untiered roles resolve from an undefined repo state
   // (always "complex" -> never under-provisioned) with no I/O.
   const roleTiered = (role: string): boolean => Boolean(routingConfig.variants?.[role]) || BUILTIN_TIERED_ROLES.has(role);
-  // The worktree does not change across retry attempts, so the repo state is
-  // read at most once per run and shared by every tiered step.
-  let repoStateCache: Promise<RepoState | undefined> | undefined;
-  const repoState = (): Promise<RepoState | undefined> => (repoStateCache ??= readRepoState(root));
   // Providers the user has credentials for, produced once per run (user config
   // `providers` block + opencode auth.json) and threaded through to the ACP
   // session seam as the ADR-021 provider filter input.
@@ -259,10 +255,13 @@ export function createStepHandler(options: {
     }
 
     // ADR-021: task complexity from the repo state, computed once per step —
-    // the worktree does not change across retry attempts. The git read is
-    // gated on the role being tiered (see roleTiered): untiered roles classify
+    // the worktree does not change across retry attempts, but it CAN change
+    // between steps, so the git read is cached per step (not per run). The read
+    // is gated on the role being tiered (see roleTiered): untiered roles classify
     // from an undefined repo state as "complex" so they are never
     // under-provisioned, and the common path stays synchronous.
+    let repoStateCache: Promise<RepoState | undefined> | undefined;
+    const repoState = (): Promise<RepoState | undefined> => (repoStateCache ??= readRepoState(root));
     const role = step.agent ?? "";
     const complexity = roleTiered(role)
       ? classifyComplexity(task, await repoState())

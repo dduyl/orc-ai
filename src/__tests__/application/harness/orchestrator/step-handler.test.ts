@@ -33,6 +33,18 @@ const { agentCalls, mockState } = vi.hoisted(() => {
   return { agentCalls: [] as string[], mockState };
 });
 
+// M2: count/override the repo-state git read per test. Defaults to the real
+// implementation so the real-git tier tests keep working.
+const repoStateMock = vi.hoisted(() => ({ readRepoState: null as null | (() => Promise<{ changedFiles: number } | undefined>) }));
+vi.mock("../../../../application/agents/complexity.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../../../../application/agents/complexity.js")>();
+  return {
+    ...mod,
+    readRepoState: (...args: Parameters<typeof mod.readRepoState>): Promise<{ changedFiles: number } | undefined> =>
+      repoStateMock.readRepoState ? repoStateMock.readRepoState() : mod.readRepoState(...args),
+  };
+});
+
 vi.mock("../../../../application/agents/adapter-pty.js", () => ({
   callAgentStream: (_adapter: unknown, prompt: string, _hook?: string, downgradeTo?: string, variantTier?: string, variantModel?: string, configuredProviders?: string[], onProviderQuota?: unknown, tokenPaid?: unknown) => {
     agentCalls.push(prompt);
@@ -421,6 +433,7 @@ describe("step-handler repair feedback", () => {
 
 describe("step-handler abort", () => {
   beforeEach(() => {
+    repoStateMock.readRepoState = null;
     agentCalls.length = 0;
     mockState.killed = 0;
     mockState.pending = false;
@@ -672,6 +685,7 @@ describe("step-handler ADR-021 tier routing", () => {
     });
 
   beforeEach(() => {
+    repoStateMock.readRepoState = null;
     agentCalls.length = 0;
     mockState.pending = false;
     mockState.killSettles = true;
@@ -774,6 +788,46 @@ describe("step-handler ADR-021 tier routing", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("M2: re-reads the repo state per step, not per run (regression)", async () => {
+    // Pre-fix the per-run `??=` cache served the FIRST git snapshot to every
+    // step; post-fix each step re-reads. Drive two tiered steps whose repo
+    // state changes between them: the second step must classify against the
+    // NEW state (complex -> strong), and the git read must happen twice.
+    const reads: number[] = [];
+    repoStateMock.readRepoState = () => {
+      reads.push(reads.length + 1);
+      return Promise.resolve({ changedFiles: reads.length === 1 ? 2 : 12 });
+    };
+    const handler = baseHandler({
+      modelRoutingConfig: { variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } } },
+      resolveVariantTier: (_role: string, complexity: string) => (complexity === "complex" ? "strong" : "cheap"),
+    });
+    const out1 = await handler(agentStep(), ctx());
+    const out2 = await handler(agentStep(), ctx());
+    expect(out1.status).toBe("completed");
+    expect(out2.status).toBe("completed");
+    // pre-fix: exactly 1 read (per-run ??=); post-fix: 1 per step
+    expect(reads).toEqual([1, 2]);
+    // second step classified against the NEW repo state (12 changed files)
+    expect(mockState.variantTierParams).toEqual(["cheap", "strong"]);
+  });
+
+  it("M2: reads the repo state at most once within a single step", async () => {
+    let reads = 0;
+    repoStateMock.readRepoState = () => {
+      reads++;
+      return Promise.resolve({ changedFiles: 2 });
+    };
+    const handler = baseHandler({
+      modelRoutingConfig: { variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } } },
+      resolveVariantTier: (_role: string, complexity: string) => (complexity === "complex" ? "strong" : "cheap"),
+    });
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(reads).toBe(1);
+    expect(mockState.variantTierParams).toEqual(["cheap"]);
   });
 
   it("uses the real default resolver when not injected (smoke)", async () => {
