@@ -2,7 +2,7 @@ import type { IDisposable, IPty } from "node-pty";
 import type { AdapterDef, AgentCallResult } from "./adapter.js";
 import type { Tier } from "./config.js";
 import { HOOK_FILE_ENV, type StepQuotaInfo } from "../../core/hooks.js";
-import type { AcpSpawnSpec } from "./acp/types.js";
+import type { AcpSpawnSpec, OnProviderQuota } from "./acp/types.js";
 import { gateFromEnv } from "./acp/permission.js";
 import { runAcpTurn } from "./acp/client.js";
 import { getAcpStrategy } from "./strategy.js";
@@ -151,6 +151,7 @@ export function callAcpAgentStream(
   variantTier?: Tier,
   variantModel?: string,
   configuredProviders?: string[],
+  onProviderQuota?: OnProviderQuota,
 ): AgentACPStreamHandle {
   const strat = getAcpStrategy(adapter.id);
   if (!strat || !strat.available) {
@@ -193,6 +194,7 @@ export function callAcpAgentStream(
     ...(variantTier ? { variantTier } : {}),
     ...(variantModel ? { variantModel } : {}),
     ...(configuredProviders && configuredProviders.length > 0 ? { configuredProviders } : {}),
+    ...(onProviderQuota ? { onProviderQuota } : {}),
     events: {
       onText: text => facade.feed(text),
       onToolCall: call => {

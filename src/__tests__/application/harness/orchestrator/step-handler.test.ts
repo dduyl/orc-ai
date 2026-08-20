@@ -24,19 +24,21 @@ const { agentCalls, mockState } = vi.hoisted(() => {
     variantTierParams: Array<string | undefined>;
     variantModelParams: Array<string | undefined>;
     configuredProvidersParams: Array<string[] | undefined>;
+    onProviderQuotaParams: Array<unknown>;
     sequence?: Array<{ rejectWith?: unknown; resolveValue?: unknown }>;
-  } = { killed: 0, pending: false, killSettles: true, callCount: 0, downgradeParams: [], variantTierParams: [], variantModelParams: [], configuredProvidersParams: [] };
+  } = { killed: 0, pending: false, killSettles: true, callCount: 0, downgradeParams: [], variantTierParams: [], variantModelParams: [], configuredProvidersParams: [], onProviderQuotaParams: [] };
   return { agentCalls: [] as string[], mockState };
 });
 
 vi.mock("../../../../application/agents/adapter-pty.js", () => ({
-  callAgentStream: (_adapter: unknown, prompt: string, _hook?: string, downgradeTo?: string, variantTier?: string, variantModel?: string, configuredProviders?: string[]) => {
+  callAgentStream: (_adapter: unknown, prompt: string, _hook?: string, downgradeTo?: string, variantTier?: string, variantModel?: string, configuredProviders?: string[], onProviderQuota?: unknown) => {
     agentCalls.push(prompt);
     mockState.callCount++;
     mockState.downgradeParams.push(downgradeTo);
     mockState.variantTierParams.push(variantTier);
     mockState.variantModelParams.push(variantModel);
     mockState.configuredProvidersParams.push(configuredProviders);
+    mockState.onProviderQuotaParams.push(onProviderQuota);
     const entry = mockState.sequence?.[mockState.callCount - 1];
     const rejectWith = entry?.rejectWith !== undefined ? entry.rejectWith : mockState.rejectWith;
     const resolveValue = entry?.resolveValue;
@@ -677,6 +679,7 @@ describe("step-handler ADR-021 tier routing", () => {
     mockState.variantTierParams.length = 0;
     mockState.variantModelParams.length = 0;
     mockState.configuredProvidersParams.length = 0;
+    mockState.onProviderQuotaParams.length = 0;
   });
 
   it("passes the resolved tier to callAgentStream (data-flow reachability)", async () => {
@@ -730,6 +733,21 @@ describe("step-handler ADR-021 tier routing", () => {
     } finally {
       fs.rmSync(repoDir, { recursive: true, force: true });
     }
+  });
+
+  it("forwards the injected onProviderQuota seam to callAgentStream (8th arg)", async () => {
+    const seam = async () => undefined;
+    const handler = baseHandler({ onProviderQuota: seam });
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(mockState.onProviderQuotaParams).toEqual([seam]);
+  });
+
+  it("passes undefined onProviderQuota when not injected", async () => {
+    const handler = baseHandler();
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(mockState.onProviderQuotaParams).toEqual([undefined]);
   });
 
   it("classifies a non-repo root as complex and routes to strong", async () => {

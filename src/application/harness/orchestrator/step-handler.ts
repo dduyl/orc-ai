@@ -21,6 +21,7 @@ import { loadModelRoutingConfig } from "../../agents/config.js";
 import type { ModelRoutingConfig } from "../../agents/config.js";
 import { resolveVariantTier, BUILTIN_TIERED_ROLES, type Tier } from "../../agents/variants.js";
 import { readConfiguredProviders } from "../../agents/configured-providers.js";
+import type { OnProviderQuota } from "../../agents/acp/types.js";
 
 /** Bounded exponential backoff: 1s -> 2s -> 4s ... capped at 30s. */
 const BACKOFF_BASE_MS = 1000;
@@ -125,8 +126,19 @@ export function createStepHandler(options: {
    * the model-routing block of ~/.orc/config.json.
    */
   resolveVariantTier?: (role: string, complexity: Complexity) => Tier;
+  /**
+   * ADR-021 (provider failover): seam forwarded to the ACP session when a
+   * prompt hits a quota error and the agent advertises the `providers`
+   * capability. A returned failover switches providers (`providers/list` +
+   * `providers/set`) and re-runs the prompt on the new provider BEFORE the
+   * same-session downgrade path; returning undefined (or throwing) leaves the
+   * quota error to the downgrade/pause ladder. The PTY path accepts but never
+   * invokes it. Injectable for tests; not wired by default (mirror of
+   * `resolveDowngradeModel`).
+   */
+  onProviderQuota?: OnProviderQuota;
 }): StepHandler {
-  const { adapter, agentPrompts, completedSummaries, emitter, task, tracker, onProgress, commandExecutor, resolveDowngradeModel, projectRoot, modelRoutingConfig, resolveVariantTier: resolveTier } = options;
+  const { adapter, agentPrompts, completedSummaries, emitter, task, tracker, onProgress, commandExecutor, resolveDowngradeModel, projectRoot, modelRoutingConfig, resolveVariantTier: resolveTier, onProviderQuota } = options;
   const activeAdapter = adapter;
   const root = projectRoot ?? process.cwd();
   const routingConfig = modelRoutingConfig ?? loadModelRoutingConfig();
@@ -306,7 +318,7 @@ export function createStepHandler(options: {
           : agentInfo.systemPrompt + "\n\n" + buildStepContext(step, completedSummaries, task, agentInfo, completionKey);
         const hookFile = createHookFile(step.id);
         try {
-          const handle = callAgentStream(callFor, combinedPrompt, hookFile, downgradeTo, tier, variantModel, configuredProviders);
+          const handle = callAgentStream(callFor, combinedPrompt, hookFile, downgradeTo, tier, variantModel, configuredProviders, onProviderQuota);
           onProgress?.({ type: "step_pty", runId, stepId: step.id, pty: handle.pty });
           const abortSignal = ctx.signal;
           // Register before attaching the abort listener: the sync aborted

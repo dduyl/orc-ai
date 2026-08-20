@@ -9,7 +9,17 @@ import {
   type Stream,
 } from "@agentclientprotocol/sdk";
 import type { Usage, ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
-import type { AcpSpawnSpec, AcpStopReason, AcpTurnResult, AgentUsage } from "./types.js";
+import type {
+  AcpSpawnSpec,
+  AcpStopReason,
+  AcpTurnResult,
+  AgentUsage,
+  AcpProviderConfig,
+  AcpProviderInfo,
+  OnProviderQuota,
+  ProviderFailoverResult,
+  ProviderRouter,
+} from "./types.js";
 import type { PermissionGate } from "./permission.js";
 import type { Tier } from "../config.js";
 import { MODELS_SNAPSHOT, selectVariantModel } from "../models.js";
@@ -61,6 +71,15 @@ export interface AcpTurnOptions {
    * input). Empty means "unknown" — selection degrades to the agent default.
    */
   configuredProviders?: string[];
+  /**
+   * ADR-021 (provider failover): seam consulted when a prompt hits a quota
+   * error AND the agent advertises the `providers` capability. Runs BEFORE the
+   * same-session `downgradeTo` retry; a returned failover switches providers
+   * (`providers/list` + `providers/set`), applies the re-resolved model, and
+   * re-runs the prompt against the new provider. Returning `undefined` (or
+   * throwing) falls through to the downgrade path.
+   */
+  onProviderQuota?: OnProviderQuota;
 }
 
 export function normalizeUsage(input?: Usage | null): AgentUsage {
@@ -199,12 +218,15 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
     });
 
   const turn = app.connectWith(stream, async ctx => {
-    await ctx.request(methods.agent.initialize, {
+    const init = await ctx.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: { session: { configOptions: {} } },
       clientInfo: { name: "orc", version: "0.1.0" },
     });
     handshakeDone = true;
+    // UNSTABLE ACP capability: only agents advertising `providers` will
+    // answer `providers/list` / `providers/set`, which the failover seam needs.
+    const providerRouting = Boolean(init.agentCapabilities?.providers);
     return ctx.buildSession(cwd).withSession(async session => {
       let cancelSent = false;
       signal?.addEventListener(
@@ -290,7 +312,63 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
         };
       } catch (err) {
         const agentErr = classifyAgentError(err);
-        if (downgradeTo && agentErr.kind === "quota") {
+        if (agentErr.kind !== "quota") throw agentErr;
+
+        // ADR-021 provider failover (UNSTABLE ACP `providers/*`). Runs BEFORE
+        // the same-session `downgradeTo` retry: switching the provider keeps
+        // the session on a stronger tier than a tier downgrade would. A
+        // failover re-runs the prompt on the new provider (step loop re-enters
+        // without a retry slot); an aborted/absent failover falls through to
+        // the downgrade path so the quota ladder is never blocked.
+        if (opts.onProviderQuota && providerRouting) {
+          const router: ProviderRouter = {
+            listProviders: async () => {
+              const res = await ctx.request(methods.agent.providers.list, {});
+              return (res?.providers ?? []).map<AcpProviderInfo>(p => ({
+                providerId: p.providerId,
+                supported: p.supported ?? [],
+                required: Boolean(p.required),
+                ...(p.current ? { current: { apiType: p.current.apiType, baseUrl: p.current.baseUrl } } : {}),
+              }));
+            },
+            setProvider: async (config: AcpProviderConfig) => {
+              await ctx.request(methods.agent.providers.set, config);
+            },
+          };
+          let failover: ProviderFailoverResult | undefined;
+          try {
+            failover = await opts.onProviderQuota(router, {
+              advertised,
+              ...(opts.variantTier ? { tier: opts.variantTier } : {}),
+              ...(opts.variantModel ? { variantModel: opts.variantModel } : {}),
+            });
+          } catch (cbErr) {
+            log.warn(`acp: provider-failover seam threw (${(cbErr as Error).message}) — using downgrade path`);
+          }
+          if (failover) {
+            if (failover.model) {
+              try {
+                await setConfigOption(failover.model);
+                configuredModel = failover.model;
+              } catch (cfgErr) {
+                // Model absent on the new provider: keep the session on the
+                // provider and let the agent pick a default (never block the
+                // failover because of one config option).
+                log.warn(
+                  `acp: failover model '${failover.model}' rejected on provider '${failover.providerId}' — using agent default`,
+                );
+              }
+            }
+            // The retry prompt is deliberately OUTSIDE the seam's try/catch: a
+            // quota on the new provider must re-enter the outer ladder
+            // (failover again, then downgrade) rather than be swallowed as a
+            // "seam threw" fall-through that rethrows the stale first error.
+            const stopReason = await runPromptOnce();
+            return { stopReason, providerFailover: failover.providerId, ...(configuredModel ? { configuredModel } : {}) };
+          }
+        }
+
+        if (downgradeTo) {
           try {
             await setConfigOption(downgradeTo);
           } catch {
@@ -307,7 +385,12 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
     });
   });
 
-  let settled: { stopReason: AcpStopReason; downgraded?: boolean; configuredModel?: string } | null = null;
+  let settled: {
+    stopReason: AcpStopReason;
+    downgraded?: boolean;
+    configuredModel?: string;
+    providerFailover?: string;
+  } | null = null;
   try {
     settled = await Promise.race([turn, spawnFailed.promise.then(err => Promise.reject(err))]);
   } catch (err) {
@@ -350,5 +433,6 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
     duration: Date.now() - start,
     ...(settled!.downgraded ? { downgraded: true } : {}),
     ...(settled!.configuredModel ? { configuredModel: settled!.configuredModel } : {}),
+    ...(settled!.providerFailover ? { providerFailover: settled!.providerFailover } : {}),
   };
 }

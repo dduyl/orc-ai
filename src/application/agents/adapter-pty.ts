@@ -8,6 +8,7 @@ import { acpEnabledFor, callAcpAgentStream } from "./adapter-acp.js";
 import { getAgentCwd } from "./agent-cwd.js";
 import { createHookFile, readHookEvents, removeHookFile } from "../../adapters/hooks/endpoint.js";
 import { log } from "../../core/log.js";
+import type { OnProviderQuota } from "./acp/types.js";
 
 const POLL_INTERVAL_MS = 500;
 
@@ -33,15 +34,27 @@ export function callAgentStream(
   variantTier?: Tier,
   variantModel?: string,
   configuredProviders?: string[],
+  onProviderQuota?: OnProviderQuota,
 ): AgentPTYStreamHandle {
   if (acpEnabledFor(adapter.id)) {
-    return callAcpAgentStream(adapter, prompt, hookFilePath, downgradeTo, variantTier, variantModel, configuredProviders);
+    return callAcpAgentStream(
+      adapter,
+      prompt,
+      hookFilePath,
+      downgradeTo,
+      variantTier,
+      variantModel,
+      configuredProviders,
+      onProviderQuota,
+    );
   }
 
   // PTY path: there is no session model config to switch, so `downgradeTo`
   // and `configuredProviders` are accepted but inert. `variantTier` /
   // `variantModel` map to a CLI model flag when the strategy supports it;
   // otherwise the intended model is logged and the tool default is used.
+  // `onProviderQuota` is likewise inert: a PTY agent has no `providers/list`
+  // / `providers/set` surface, so the provider-failover seam is never invoked.
 
   const start = Date.now();
   const strat = getStrategy(adapter.id);
