@@ -1,6 +1,6 @@
 import { spawn, type IPty } from "node-pty";
 import type { AdapterDef, AgentCallResult } from "./adapter.js";
-import type { Tier } from "./config.js";
+import type { Tier, ProviderConfig } from "./config.js";
 import { classifyAgentError } from "./errors.js";
 import { HOOK_FILE_ENV } from "../../core/hooks.js";
 import { getStrategy } from "./strategy.js";
@@ -36,6 +36,7 @@ export function callAgentStream(
   configuredProviders?: string[],
   onProviderQuota?: OnProviderQuota,
   tokenPaid?: TokenPaidRequest,
+  providerConfig?: ProviderConfig,
 ): AgentPTYStreamHandle {
   if (acpEnabledFor(adapter.id)) {
     return callAcpAgentStream(
@@ -48,6 +49,7 @@ export function callAgentStream(
       configuredProviders,
       onProviderQuota,
       tokenPaid,
+      providerConfig,
     );
   }
 
@@ -55,10 +57,11 @@ export function callAgentStream(
   // and `configuredProviders` are accepted but inert. `variantTier` /
   // `variantModel` map to a CLI model flag when the strategy supports it;
   // otherwise the intended model is logged and the tool default is used.
-  // `onProviderQuota` and `tokenPaid` are likewise inert: a PTY agent has no
-  // `providers/list` / `providers/set` surface nor an env-var `authenticate`
-  // method, so neither the provider-failover seam nor the token-paid fallback
-  // is ever invoked (the harness only reaches them via ACP errors).
+  // `onProviderQuota`, `tokenPaid`, and `providerConfig` are likewise inert: a
+  // PTY agent has no `providers/list` / `providers/set` surface nor an env-var
+  // `authenticate` method, so neither the provider-failover seam nor the
+  // token-paid fallback is ever invoked (the harness only reaches them via ACP
+  // errors).
 
   const start = Date.now();
   const strat = getStrategy(adapter.id);

@@ -22,7 +22,7 @@ import type {
   TokenPaidRequest,
 } from "./types.js";
 import type { PermissionGate } from "./permission.js";
-import type { Tier } from "../config.js";
+import type { Tier, ProviderConfig } from "../config.js";
 import { MODELS_SNAPSHOT, selectVariantModel } from "../models.js";
 import { classifyAgentError, AgentCallError, type EnvAuthMethodInfo } from "../errors.js";
 import { log } from "../../../core/log.js";
@@ -81,6 +81,12 @@ export interface AcpTurnOptions {
    * throwing) falls through to the downgrade path.
    */
   onProviderQuota?: OnProviderQuota;
+  /**
+   * ADR-021 (M4): the routing config's `providers` block, surfaced to the
+   * `onProviderQuota` context so a seam can build a `providers/set {
+   * apiType, baseUrl, headers }` payload without re-reading config.
+   */
+  providerConfig?: ProviderConfig;
   /**
    * ADR-021 Phase F (token-paid fallback): the harness re-invokes the step once
    * with this set after a quota error when the agent advertised an env-var auth
@@ -410,6 +416,7 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
               advertised,
               ...(opts.variantTier ? { tier: opts.variantTier } : {}),
               ...(opts.variantModel ? { variantModel: opts.variantModel } : {}),
+              ...(opts.providerConfig ? { providers: opts.providerConfig } : {}),
             });
           } catch (cbErr) {
             log.warn(`acp: provider-failover seam threw (${(cbErr as Error).message}) — using downgrade path`);

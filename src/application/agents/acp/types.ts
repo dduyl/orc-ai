@@ -7,7 +7,7 @@
  */
 
 import type { AgentCallError } from "../errors.js";
-import type { Tier } from "../config.js";
+import type { Tier, ProviderConfig } from "../config.js";
 
 /** Why an ACP prompt turn stopped. Mirrors the ACP `StopReason` union. */
 export type AcpStopReason =
@@ -141,6 +141,13 @@ export interface ProviderFailoverContext {
   tier?: Tier;
   /** ADR-021 concrete variant model in effect (user override). */
   variantModel?: string;
+  /**
+   * ADR-021 (M4): the routing config's full `providers` block, keyed by
+   * provider id. A seam can build a `providers/set { apiType, baseUrl,
+   * headers }` payload purely from the context without re-reading config.
+   * Absent when the harness didn't supply a providers block.
+   */
+  providers?: ProviderConfig;
 }
 
 /**

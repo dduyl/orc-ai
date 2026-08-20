@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { runAcpTurn } from "../../../../application/agents/acp/client.js";
+import { defaultOnProviderQuota } from "../../../../application/harness/orchestrator/routing-defaults.js";
 import { PermissionGate } from "../../../../application/agents/acp/permission.js";
 import { AgentCallError } from "../../../../application/agents/errors.js";
 import { log } from "../../../../core/log.js";
@@ -426,6 +427,110 @@ expect(err).toBeInstanceOf(AgentCallError);
       expect(readCfgLog(setLog)).toEqual([expect.stringContaining('"providerId":"provider-b"')]);
     } finally {
       for (const f of [cfgLog, setLog]) if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  });
+
+  it("ADR-021 (M4) quota → onProviderQuota context carries the configured provider block (regression)", async () => {
+    const setLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("quota-failover"),
+        cwd: process.cwd(),
+        env: env("quota-failover", {
+          MOCK_PROVIDER_CAP: "1",
+          MOCK_PROVIDER_LOG: setLog,
+        }),
+        prompt: "hello",
+        permissionGate: new PermissionGate(),
+        onProviderQuota: defaultOnProviderQuota(["provider-b"]),
+        providerConfig: {
+          "provider-b": {
+            apiType: "anthropic",
+            baseUrl: "https://api.custom-anthropic.example",
+            headers: { "x-custom": "h" },
+          },
+        },
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.providerFailover).toBe("provider-b");
+      const logged = readCfgLog(setLog);
+      // providers/set was built from the context's config block, not the
+      // advertised `current` (provider-b advertises none) nor a fallback default.
+      expect(logged).toEqual([expect.stringContaining('"providerId":"provider-b"')]);
+      expect(logged).toEqual([expect.stringContaining('"apiType":"anthropic"')]);
+      expect(logged).toEqual([expect.stringContaining('"baseUrl":"https://api.custom-anthropic.example"')]);
+      expect(logged).toEqual([expect.stringContaining('"headers":{"x-custom":"h"}')]);
+    } finally {
+      if (fs.existsSync(setLog)) fs.unlinkSync(setLog);
+    }
+  });
+
+  it("ADR-021 (M4) provider without a config block → providers/set falls back to the advertised current", async () => {
+    const setLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("quota-failover"),
+        cwd: process.cwd(),
+        env: env("quota-failover", {
+          MOCK_PROVIDER_CAP: "1",
+          MOCK_PROVIDER_LOG: setLog,
+          MOCK_PROVIDERS: JSON.stringify([
+            { providerId: "provider-a", supported: ["openai"], required: false, current: null },
+            { providerId: "provider-b", supported: ["openai"], required: false, current: { apiType: "openai", baseUrl: "https://api.openai.com" } },
+          ]),
+        }),
+        prompt: "hello",
+        permissionGate: new PermissionGate(),
+        onProviderQuota: defaultOnProviderQuota(["provider-a"]),
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.providerFailover).toBe("provider-a");
+      const logged = readCfgLog(setLog);
+      expect(logged).toEqual([expect.stringContaining('"providerId":"provider-a"')]);
+      expect(logged).toEqual([expect.stringContaining('"apiType":"openai"')]);
+      // No config block was supplied, so the seam falls back to defaults rather
+      // than carrying a config-derived payload (and sends no headers).
+      expect(logged).toEqual([expect.stringContaining('"baseUrl":""')]);
+      expect(logged[0]).not.toContain('"headers"');
+    } finally {
+      if (fs.existsSync(setLog)) fs.unlinkSync(setLog);
+    }
+  });
+
+  it("ADR-021 (M4) failover switches to the provider id from providers/list, not the adapter id", async () => {
+    const setLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("quota-failover"),
+        cwd: process.cwd(),
+        env: env("quota-failover", {
+          MOCK_PROVIDER_CAP: "1",
+          MOCK_PROVIDER_LOG: setLog,
+          MOCK_PROVIDERS: JSON.stringify([
+            { providerId: "alpha", supported: ["anthropic"], required: false, current: { apiType: "anthropic", baseUrl: "https://api.anthropic.com" } },
+            { providerId: "beta", supported: ["openai"], required: false, current: null },
+          ]),
+        }),
+        prompt: "hello",
+        permissionGate: new PermissionGate(),
+        onProviderQuota: defaultOnProviderQuota(["beta"]),
+        providerConfig: {
+          beta: { apiType: "openai", baseUrl: "https://api.openai.com/v1", headers: { "x-key": "k" } },
+        },
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.providerFailover).toBe("beta");
+      const logged = readCfgLog(setLog);
+      // The id switched to is the listed provider id ("beta"), never the agent
+      // process/adapter identity.
+      expect(logged).toEqual([expect.stringContaining('"providerId":"beta"')]);
+      expect(logged).toEqual([expect.stringContaining('"apiType":"openai"')]);
+      expect(logged).toEqual([expect.stringContaining('"baseUrl":"https://api.openai.com/v1"')]);
+    } finally {
+      if (fs.existsSync(setLog)) fs.unlinkSync(setLog);
     }
   });
 

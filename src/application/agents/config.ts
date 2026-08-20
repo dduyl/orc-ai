@@ -19,7 +19,8 @@ export const VariantsSchema = z.record(
 
 /**
  * Per-provider block. `apiType`/`baseUrl`/`headers` configure a concrete
- * provider switch (consumed in Phase F); `tokenPaidApiKey` wins over the
+ * provider switch (threaded into the `onProviderQuota` context so a seam can
+ * build the `providers/set` payload); `tokenPaidApiKey` wins over the
  * top-level `tokenPaidApiKey` for that provider.
  */
 export const ProvidersSchema = z.record(
@@ -31,6 +32,7 @@ export const ProvidersSchema = z.record(
     tokenPaidApiKey: z.string().optional(),
   }),
 );
+export type ProviderConfig = z.infer<typeof ProvidersSchema>;
 
 /**
  * ADR-021 model-routing block read from `~/.orc/config.json`. Parsed

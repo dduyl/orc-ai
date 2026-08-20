@@ -70,7 +70,7 @@ export async function orchestrate(
       modelRoutingConfig: routingConfig,
       resolveVariantTier: (role, complexity) => resolveVariantTier(role, complexity, routingConfig),
       resolveDowngradeModel: defaultResolveDowngradeModel(routingConfig, configuredProviders),
-      onProviderQuota: defaultOnProviderQuota(routingConfig, configuredProviders),
+      onProviderQuota: defaultOnProviderQuota(configuredProviders),
     });
 
     // ADR-022: the quota payload of the step that paused the run, used

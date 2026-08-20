@@ -48,17 +48,17 @@ export function defaultResolveDowngradeModel(
 }
 
 /**
- * H1: the production default for the ACP `onProviderQuota` seam. Switches the
- * session to the first provider the agent offers (via `providers/list`) that
- * the user has configured (routing `providers` block / opencode auth.json) and
- * that is not the provider currently in effect. The switch payload honors the
- * provider's `{ apiType, baseUrl, headers }` config block, falling back to the
- * advertised `current`; the model is re-resolved for the turn's tier via
- * `selectVariantModel`. Returns undefined when no candidate provider remains,
- * leaving the quota error to the downgrade/pause ladder.
+ * H1/M4: the production default for the ACP `onProviderQuota` seam. Switches
+ * the session to the first provider the agent offers (via `providers/list`)
+ * that the user has configured (routing `providers` block / opencode
+ * auth.json) and that is not the provider currently in effect. The switch
+ * payload honors the provider's `{ apiType, baseUrl, headers }` config block
+ * carried in the failover context, falling back to the advertised `current`;
+ * the model is re-resolved for the turn's tier via `selectVariantModel`.
+ * Returns undefined when no candidate provider remains, leaving the quota
+ * error to the downgrade/pause ladder.
  */
 export function defaultOnProviderQuota(
-  routingConfig: ModelRoutingConfig,
   configuredProviders: string[],
 ): OnProviderQuota {
   return async (router, context) => {
@@ -68,7 +68,7 @@ export function defaultOnProviderQuota(
     const candidate = providers.find(p => configured.has(p.providerId) && p.providerId !== current);
     if (!candidate) return undefined;
 
-    const cfg = routingConfig.providers?.[candidate.providerId];
+    const cfg = context.providers?.[candidate.providerId];
     await router.setProvider({
       providerId: candidate.providerId,
       apiType: cfg?.apiType ?? candidate.current?.apiType ?? "openai",
