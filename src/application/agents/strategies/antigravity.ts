@@ -4,7 +4,7 @@ import type { HookEvent } from "../../../core/hooks.js";
 export const antigravityStrategy: AgentStrategy = {
   id: "antigravity",
 
-  buildArgs(prompt: string): string[] {
+  buildArgs(prompt: string, _model?: string): string[] {
     return ["--prompt", prompt];
   },
 

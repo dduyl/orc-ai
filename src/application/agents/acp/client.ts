@@ -9,9 +9,22 @@ import {
   type Stream,
 } from "@agentclientprotocol/sdk";
 import type { Usage, ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
-import type { AcpSpawnSpec, AcpStopReason, AcpTurnResult, AgentUsage } from "./types.js";
+import type {
+  AcpSpawnSpec,
+  AcpStopReason,
+  AcpTurnResult,
+  AgentUsage,
+  AcpProviderConfig,
+  AcpProviderInfo,
+  OnProviderQuota,
+  ProviderFailoverResult,
+  ProviderRouter,
+  TokenPaidRequest,
+} from "./types.js";
 import type { PermissionGate } from "./permission.js";
-import { classifyAgentError } from "../errors.js";
+import type { Tier, ProviderConfig } from "../config.js";
+import { MODELS_SNAPSHOT, selectVariantModel } from "../models.js";
+import { classifyAgentError, AgentCallError, type EnvAuthMethodInfo } from "../errors.js";
 import { log } from "../../../core/log.js";
 
 export interface AcpClientEvents {
@@ -40,6 +53,51 @@ export interface AcpTurnOptions {
    * fails with a quota error. Never touches the child process.
    */
   downgradeTo?: string;
+  /**
+   * ADR-021: model tier ("cheap" | "strong") decided by the harness for this
+   * turn. When a concrete model is not given (`variantModel`), the session
+   * model is pre-emptively configured to the cheapest-of-tier advertised
+   * model before the first prompt.
+   */
+  variantTier?: Tier;
+  /**
+   * ADR-021: concrete model chosen by the harness (the user's
+   * `variants.<agent>.<tier>` override). Applied pre-emptively via
+   * `session/set_config_option` before the first prompt; honored even when
+   * the model is not in the agent's advertised list.
+   */
+  variantModel?: string;
+  /**
+   * ADR-021: providers the user has credentials for (the provider filter
+   * input). Empty means "unknown" — selection degrades to the agent default.
+   */
+  configuredProviders?: string[];
+  /**
+   * ADR-021 (provider failover): seam consulted when a prompt hits a quota
+   * error AND the agent advertises the `providers` capability. Runs BEFORE the
+   * same-session `downgradeTo` retry; a returned failover switches providers
+   * (`providers/list` + `providers/set`), applies the re-resolved model, and
+   * re-runs the prompt against the new provider. Returning `undefined` (or
+   * throwing) falls through to the downgrade path.
+   */
+  onProviderQuota?: OnProviderQuota;
+  /**
+   * ADR-021 (M4): the routing config's `providers` block, surfaced to the
+   * `onProviderQuota` context so a seam can build a `providers/set {
+   * apiType, baseUrl, headers }` payload without re-reading config.
+   */
+  providerConfig?: ProviderConfig;
+  /**
+   * ADR-021 Phase F (token-paid fallback): the harness re-invokes the step once
+   * with this set after a quota error when the agent advertised an env-var auth
+   * method AND a `tokenPaidApiKey` is configured. The key is injected into the
+   * child environment at `envVarName` (overriding any inherited value), the
+   * agent is asked to authenticate via `authenticate`, and the prompt is run
+   * ONCE with NO failover/downgrade recovery — a second quota surfaces
+   * immediately so the harness (token-paid already tried) pauses. The key must
+   * never be logged.
+   */
+  tokenPaid?: TokenPaidRequest;
 }
 
 export function normalizeUsage(input?: Usage | null): AgentUsage {
@@ -63,6 +121,40 @@ function deferred<T = void>(): { promise: Promise<T>; resolve: (v: T) => void; r
   return { promise, resolve, reject };
 }
 
+interface ModelSelector {
+  /** Config-option id of the agent's model selector (usually "model"). */
+  configId: string;
+  /** Model ids the agent advertised via `session/new` configOptions. */
+  advertised: string[];
+}
+
+/**
+ * The agent's model selector from the `session/new` response. Per the ACP
+ * spec the "model" category is a `select`; the option values are the agent's
+ * advertised model list (advertised order carries no signal). Absent a select
+ * of category "model", selection degrades to the agent default: configId
+ * "model" + an empty advertised list.
+ */
+function modelSelector(configOptions?: Array<unknown> | null): ModelSelector {
+  for (const raw of configOptions ?? []) {
+    if (!raw || typeof raw !== "object") continue;
+    const option = raw as {
+      id?: unknown;
+      category?: unknown;
+      type?: unknown;
+      options?: Array<{ value?: unknown }> | null;
+    };
+    if (option.category !== "model" || option.type !== "select") continue;
+    return {
+      configId: typeof option.id === "string" && option.id ? option.id : "model",
+      advertised: (option.options ?? [])
+        .map(o => (typeof o.value === "string" ? o.value : ""))
+        .filter(Boolean),
+    };
+  }
+  return { configId: "model", advertised: [] };
+}
+
 /** Best-effort post-turn cleanup so a per-step ACP server never lingers. */
 function scheduleKill(child: ChildProcess): void {
   setTimeout(() => {
@@ -82,11 +174,14 @@ function scheduleKill(child: ChildProcess): void {
  */
 export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
   const start = Date.now();
-  const { spawn: spec, cwd, env, prompt, permissionGate, events, signal, downgradeTo } = opts;
+  const { spawn: spec, cwd, env, prompt, permissionGate, events, signal, downgradeTo, tokenPaid } = opts;
 
   const child = spawn(spec.command, spec.args, {
     cwd,
-    env,
+    // ADR-021 Phase F: the token-paid key is injected into the child env before
+    // the process starts (explicitly overriding any inherited value — the
+    // configured key wins). The agent reads it from `envVarName`.
+    env: tokenPaid ? { ...env, [tokenPaid.envVarName]: tokenPaid.key } : env,
     stdio: ["pipe", "pipe", "ignore"],
   });
 
@@ -144,12 +239,23 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
     });
 
   const turn = app.connectWith(stream, async ctx => {
-    await ctx.request(methods.agent.initialize, {
+    const init = await ctx.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: { session: {} },
+      clientCapabilities: { session: { configOptions: {} } },
       clientInfo: { name: "orc", version: "0.1.0" },
     });
     handshakeDone = true;
+    // UNSTABLE ACP capability: only agents advertising `providers` will
+    // answer `providers/list` / `providers/set`, which the failover seam needs.
+    const providerRouting = Boolean(init.agentCapabilities?.providers);
+    // ADR-021 Phase F: the env-var auth methods the agent advertises at
+    // initialize. These are carried back to the harness on quota errors so it
+    // can decide whether a token-paid retry (key via env var + `authenticate`)
+    // is possible. Agents without an env-var method get an empty list → the
+    // harness skips straight to pause.
+    const envVarAuthMethods: EnvAuthMethodInfo[] = (init.authMethods ?? [])
+      .map(m => ("type" in m && m.type === "env_var" ? { methodId: m.id, envVarName: m.vars[0]?.name ?? "" } : null))
+      .filter((m): m is EnvAuthMethodInfo => m !== null && m.envVarName.length > 0);
     return ctx.buildSession(cwd).withSession(async session => {
       let cancelSent = false;
       signal?.addEventListener(
@@ -161,6 +267,59 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
         },
         { once: true },
       );
+
+      const { configId, advertised } = modelSelector(session.newSessionResponse.configOptions);
+      const setConfigOption = (modelId: string): Promise<unknown> =>
+        ctx.request(methods.agent.session.setConfigOption, {
+          sessionId: session.sessionId,
+          configId,
+          value: modelId,
+        });
+
+      // ADR-021 Phase F: the provider id currently in effect, tracked so the
+      // quota errors surfaced to the harness let it pick a per-provider
+      // `tokenPaidApiKey`. Set only after a successful failover; otherwise
+      // undefined (top-level key applies).
+      let providerInEffect: string | undefined;
+
+      // ADR-021 Phase F: ask the agent to authenticate with the injected
+      // env-var key BEFORE the (single) prompt run. A refusal here surfaces as
+      // a quota-kind error immediately — the harness has already marked the
+      // token-paid attempt as tried, so it falls through to pause. Deliberately
+      // OUTSIDE the prompt try/catch: an authenticate failure must not re-enter
+      // the failover/downgrade recovery ladder.
+      if (tokenPaid) {
+        try {
+          await ctx.request(methods.agent.authenticate, { methodId: tokenPaid.methodId });
+          log.debug(`acp: token-paid auth ok (method '${tokenPaid.methodId}', env '${tokenPaid.envVarName}')`);
+        } catch (authErr) {
+          throw new AgentCallError("quota", `token-paid authenticate failed: ${(authErr as Error).message}`, {
+            cause: authErr,
+            authMethods: envVarAuthMethods,
+            providerId: providerInEffect,
+          });
+        }
+      }
+
+      // Pre-emptive seam (ADR-021): configure the session model from the
+      // harness-decided tier/selection BEFORE the first prompt, so the whole
+      // turn runs on the variant. A rejected config must never halt the step —
+      // fall back to the agent default and keep the turn going.
+      let configuredModel: string | undefined;
+      if (opts.variantModel || opts.variantTier) {
+        const candidate =
+          opts.variantModel ??
+          selectVariantModel(opts.variantTier!, advertised, opts.configuredProviders ?? [], MODELS_SNAPSHOT);
+        if (candidate) {
+          try {
+            await setConfigOption(candidate);
+            configuredModel = candidate;
+            log.debug(`acp: session model '${candidate}' pre-configured (config '${configId}')`);
+          } catch (err) {
+            log.warn(`acp: pre-emptive model config rejected (${(err as Error).message}) — using agent default`);
+          }
+        }
+      }
 
       // One prompt round-trip. Reused for the same-session downgrade retry
       // (ADR-022): the session stays open across both prompts.
@@ -201,31 +360,126 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
       };
 
       try {
-        return { stopReason: await runPromptOnce() };
+        return {
+          stopReason: await runPromptOnce(),
+          ...(configuredModel ? { configuredModel } : {}),
+        };
       } catch (err) {
         const agentErr = classifyAgentError(err);
-        if (downgradeTo && agentErr.kind === "quota") {
+        if (agentErr.kind !== "quota") throw agentErr;
+
+        // The quota error surfaced to the harness must carry the env-var auth
+        // methods (ADR-021 Phase F) and the provider currently in effect, so it
+        // can decide whether a token-paid retry is possible and which
+        // `tokenPaidApiKey` to use.
+        const enriched = (e: AgentCallError, providerId?: string): AgentCallError =>
+          new AgentCallError(e.kind, e.message, {
+            providerCode: e.providerCode,
+            resetAtMs: e.resetAtMs,
+            cause: e,
+            authMethods: envVarAuthMethods,
+            providerId,
+          });
+
+        // ADR-021 Phase F (token-paid retry): the prompt was already run once
+        // with the key injected + `authenticate` done. Run ONCE, no recovery —
+        // a second quota surfaces immediately so the harness (token-paid already
+        // tried) pauses. Never infinite: the harness caps this to one attempt.
+        if (tokenPaid) {
+          throw enriched(agentErr, providerInEffect);
+        }
+
+        // ADR-021 provider failover (UNSTABLE ACP `providers/*`). Runs BEFORE
+        // the same-session `downgradeTo` retry: switching the provider keeps
+        // the session on a stronger tier than a tier downgrade would. A
+        // failover re-runs the prompt on the new provider (step loop re-enters
+        // without a retry slot); an aborted/absent failover falls through to
+        // the downgrade path so the quota ladder is never blocked.
+        if (opts.onProviderQuota && providerRouting) {
+          const router: ProviderRouter = {
+            listProviders: async () => {
+              const res = await ctx.request(methods.agent.providers.list, {});
+              return (res?.providers ?? []).map<AcpProviderInfo>(p => ({
+                providerId: p.providerId,
+                supported: p.supported ?? [],
+                required: Boolean(p.required),
+                ...(p.current ? { current: { apiType: p.current.apiType, baseUrl: p.current.baseUrl } } : {}),
+              }));
+            },
+            setProvider: async (config: AcpProviderConfig) => {
+              await ctx.request(methods.agent.providers.set, config);
+            },
+          };
+          let failover: ProviderFailoverResult | undefined;
           try {
-            await ctx.request(methods.agent.session.setConfigOption, {
-              sessionId: session.sessionId,
-              configId: "model",
-              value: downgradeTo,
+            failover = await opts.onProviderQuota(router, {
+              advertised,
+              ...(opts.variantTier ? { tier: opts.variantTier } : {}),
+              ...(opts.variantModel ? { variantModel: opts.variantModel } : {}),
+              ...(opts.providerConfig ? { providers: opts.providerConfig } : {}),
             });
+          } catch (cbErr) {
+            log.warn(`acp: provider-failover seam threw (${(cbErr as Error).message}) — using downgrade path`);
+          }
+          if (failover) {
+            if (failover.model) {
+              try {
+                await setConfigOption(failover.model);
+                configuredModel = failover.model;
+              } catch (cfgErr) {
+                // Model absent on the new provider: keep the session on the
+                // provider and let the agent pick a default (never block the
+                // failover because of one config option).
+                log.warn(
+                  `acp: failover model '${failover.model}' rejected on provider '${failover.providerId}' — using agent default`,
+                );
+              }
+            }
+            // The retry prompt is deliberately OUTSIDE the seam's try/catch: a
+            // seam throw must not swallow the retry's own outcome. If the
+            // retry itself hits quota, surface it enriched with the provider
+            // now in effect (so the harness picks the right `tokenPaidApiKey`)
+            // rather than rethrowing the stale first error un-enriched.
+            providerInEffect = failover.providerId;
+            try {
+              const stopReason = await runPromptOnce();
+              return { stopReason, providerFailover: failover.providerId, ...(configuredModel ? { configuredModel } : {}) };
+            } catch (retryErr) {
+              throw enriched(classifyAgentError(retryErr), providerInEffect);
+            }
+          }
+        }
+
+        if (downgradeTo) {
+          try {
+            await setConfigOption(downgradeTo);
           } catch {
             // Config switch refused: the downgrade cannot happen. Surface the
             // ORIGINAL quota error (its reset window is what the harness must
             // act on), not the config-option rejection.
-            throw agentErr;
+            throw enriched(agentErr, providerInEffect);
           }
-          const stopReason = await runPromptOnce();
-          return { stopReason, downgraded: true };
+          try {
+            const stopReason = await runPromptOnce();
+            return { stopReason, downgraded: true };
+          } catch (retryErr) {
+            // A quota on the downgraded model surfaces enriched (authMethods +
+            // providerId in effect) so the harness can still attempt a
+            // token-paid retry; never swallow it.
+            throw enriched(classifyAgentError(retryErr), providerInEffect);
+          }
         }
-        throw agentErr;
+        throw enriched(agentErr, providerInEffect);
       }
     });
   });
 
-  let settled: { stopReason: AcpStopReason; downgraded?: boolean } | null = null;
+  let settled: {
+    stopReason: AcpStopReason;
+    downgraded?: boolean;
+    configuredModel?: string;
+    providerFailover?: string;
+  } | null = null;
   try {
     settled = await Promise.race([turn, spawnFailed.promise.then(err => Promise.reject(err))]);
   } catch (err) {
@@ -267,5 +521,7 @@ export async function runAcpTurn(opts: AcpTurnOptions): Promise<AcpTurnResult> {
     usage: finalUsage,
     duration: Date.now() - start,
     ...(settled!.downgraded ? { downgraded: true } : {}),
+    ...(settled!.configuredModel ? { configuredModel: settled!.configuredModel } : {}),
+    ...(settled!.providerFailover ? { providerFailover: settled!.providerFailover } : {}),
   };
 }

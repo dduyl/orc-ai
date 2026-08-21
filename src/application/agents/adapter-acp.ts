@@ -1,7 +1,8 @@
 import type { IDisposable, IPty } from "node-pty";
 import type { AdapterDef, AgentCallResult } from "./adapter.js";
+import type { Tier, ProviderConfig } from "./config.js";
 import { HOOK_FILE_ENV, type StepQuotaInfo } from "../../core/hooks.js";
-import type { AcpSpawnSpec } from "./acp/types.js";
+import type { AcpSpawnSpec, OnProviderQuota, TokenPaidRequest } from "./acp/types.js";
 import { gateFromEnv } from "./acp/permission.js";
 import { runAcpTurn } from "./acp/client.js";
 import { getAcpStrategy } from "./strategy.js";
@@ -147,6 +148,12 @@ export function callAcpAgentStream(
   prompt: string,
   hookFilePath?: string,
   downgradeTo?: string,
+  variantTier?: Tier,
+  variantModel?: string,
+  configuredProviders?: string[],
+  onProviderQuota?: OnProviderQuota,
+  tokenPaid?: TokenPaidRequest,
+  providerConfig?: ProviderConfig,
 ): AgentACPStreamHandle {
   const strat = getAcpStrategy(adapter.id);
   if (!strat || !strat.available) {
@@ -186,6 +193,12 @@ export function callAcpAgentStream(
     permissionGate: gate,
     signal: facade.signal,
     ...(downgradeTo ? { downgradeTo } : {}),
+    ...(variantTier ? { variantTier } : {}),
+    ...(variantModel ? { variantModel } : {}),
+    ...(configuredProviders && configuredProviders.length > 0 ? { configuredProviders } : {}),
+    ...(onProviderQuota ? { onProviderQuota } : {}),
+    ...(tokenPaid ? { tokenPaid } : {}),
+    ...(providerConfig ? { providerConfig } : {}),
     events: {
       onText: text => facade.feed(text),
       onToolCall: call => {
@@ -221,6 +234,12 @@ export function callAcpAgentStream(
         input: turn.usage.inputTokens,
         output: turn.usage.outputTokens,
       });
+      if (turn.configuredModel) {
+        log.info(`acp: '${adapter.id}' running on pre-configured model '${turn.configuredModel}'`);
+      }
+      if (turn.providerFailover) {
+        log.info(`acp: '${adapter.id}' switched provider on quota → '${turn.providerFailover}'`);
+      }
       if (!hookFilePath) removeHookFile(hookFile);
       return {
         content: turn.content,
@@ -229,6 +248,7 @@ export function callAcpAgentStream(
         duration: turn.duration,
         usage: turn.usage,
         ...(turn.downgraded && downgradeTo ? { downgradedTo: downgradeTo } : {}),
+        ...(turn.providerFailover ? { providerFailover: turn.providerFailover } : {}),
       };
     })
     .catch((err: unknown) => {

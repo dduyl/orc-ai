@@ -14,6 +14,8 @@ export interface AgentCallResult {
   error?: AgentCallError;
   /** ADR-022: set when the call succeeded after a quota-triggered model downgrade. */
   downgradedTo?: string;
+  /** ADR-021 (L3): provider switched to via the quota failover seam (ACP `providers/set`). */
+  providerFailover?: string;
 }
 
 export interface AdapterDef {

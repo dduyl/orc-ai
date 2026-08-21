@@ -1,123 +1,34 @@
 import { describe, it, expect } from "vitest";
+import * as fs from "node:fs";
 import { runAcpTurn } from "../../../../application/agents/acp/client.js";
+import { defaultOnProviderQuota } from "../../../../application/harness/orchestrator/routing-defaults.js";
 import { PermissionGate } from "../../../../application/agents/acp/permission.js";
 import { AgentCallError } from "../../../../application/agents/errors.js";
+import { log } from "../../../../core/log.js";
+import { spawnAcpSpec, acpEnv, tmpLogPath } from "../../../helpers/acp-mock-server.js";
 import type { AcpSpawnSpec } from "../../../../application/agents/acp/types.js";
 
 /**
- * Minimal ACP agent server over stdio, driven by `MOCK_MODE`:
- *  - stream:     responds end_turn with usage; streams two text chunks.
- *  - cancel:     streams one chunk on session/new, then defers the prompt
- *                response until it sees `session/cancel`.
- *  - crash-init: never answers `initialize` and exits shortly after, so the
- *                connection dies inside the initialize window.
- *  - exit:       closes the connection on the prompt request.
+ * The mock agent server (see `src/__tests__/helpers/acp-mock-server.ts`) is
+ * shared with the routing e2e so the two suites never diverge. These thin
+ * aliases keep the call sites terse; the implementations live in the helper.
  */
-const MOCK_SCRIPT = `
-const readline = require('readline');
-const mode = process.env.MOCK_MODE || 'stream';
-const second = process.env.MOCK_SECOND || 'stream';
-const cfg = process.env.MOCK_CFG || 'ok';
-const rl = readline.createInterface({ input: process.stdin });
-let pendingPrompt = null;
-let promptCount = 0;
-let configDone = false;
-function send(msg) { process.stdout.write(JSON.stringify(msg) + '\\n'); }
-function sendUpdate(sessionId, text) {
-  send({ jsonrpc:'2.0', method:'session/update', params: {
-    sessionId,
-    update: { sessionUpdate:'agent_message_chunk', content:{ type:'text', text } },
-  }});
+function spawnSpec(_mode: string): AcpSpawnSpec {
+  return spawnAcpSpec();
 }
-function answerPrompt(result) {
-  if (!pendingPrompt) return;
-  const { id } = pendingPrompt;
-  pendingPrompt = null;
-  send({ jsonrpc:'2.0', id, result });
+
+const env = acpEnv;
+
+function tmpCfgLog(): string {
+  return tmpLogPath("acp-cfg");
 }
-function sendPromptError(message) {
-  if (!pendingPrompt) return;
-  const { id } = pendingPrompt;
-  pendingPrompt = null;
-  send({ jsonrpc:'2.0', id, error:{ code:-32000, message } });
-}
-const hardTimeout = setTimeout(() => {
-  answerPrompt({ stopReason:'cancelled', usage:{ totalTokens:1, inputTokens:1, outputTokens:0 } });
-  setTimeout(() => process.exit(0), 50);
-}, 2000);
-rl.on('line', (line) => {
-  const msg = JSON.parse(line);
-  const { id, method } = msg;
-  switch (method) {
-    case 'initialize':
-      if (mode === 'crash-init') {
-        setTimeout(() => process.exit(0), 100);
-        break;
-      }
-      send({ jsonrpc:'2.0', id, result: {
-        protocolVersion: 1,
-        agentCapabilities: {},
-        agentInfo: { name: 'mock-agent', version: '1.0.0' },
-      }});
-      break;
-    case 'session/new':
-      send({ jsonrpc:'2.0', id, result: { sessionId: 'sess-1' } });
-      if (mode === 'stream' || mode === 'cancel') {
-        sendUpdate('sess-1', 'hello ');
-      }
-      if (mode === 'stream') {
-        sendUpdate('sess-1', 'world');
-      }
-      break;
-    case 'session/prompt':
-      pendingPrompt = { id };
-      promptCount++;
-      if (mode === 'stream') {
-        answerPrompt({ stopReason:'end_turn', usage:{ totalTokens:42, inputTokens:10, outputTokens:32 } });
-      } else if (mode === 'exit') {
-        process.exit(0);
-      } else if (mode === 'quota') {
-        sendPromptError('You exceeded your current quota, please check your plan and billing details.');
-} else if (mode === 'quota-downgrade') {
-        if (promptCount === 1) {
-          sendPromptError('You exceeded your current quota for this request [first attempt]');
-        } else if (!configDone) {
-          // The downgrade path must call set_config_option before the second prompt.
-          sendPromptError('second prompt arrived before set_config_option');
-        } else if (second === 'quota') {
-          sendPromptError('You exceeded your current quota for this request [second attempt]');
-        } else if (second === 'exit') {
-          process.exit(0);
-        } else {
-          answerPrompt({ stopReason:'end_turn', usage:{ totalTokens:7, inputTokens:3, outputTokens:4 } });
-        }
-      }
-      break;
-    case 'session/set_config_option':
-      if (mode === 'quota-downgrade' && cfg === 'reject') {
-        send({ jsonrpc:'2.0', id, error:{ code:-32001, message:'unknown config id: model' } });
-      } else {
-        configDone = true;
-        send({ jsonrpc:'2.0', id, result: {} });
-      }
-      break;
-    case 'session/cancel':
-      answerPrompt({ stopReason:'cancelled', usage:{ totalTokens:5, inputTokens:2, outputTokens:3 } });
-      break;
-    default:
-      if (id !== undefined) {
-        send({ jsonrpc:'2.0', id, error:{ code:-32601, message:'method not found: ' + method } });
-      }
+
+function readCfgLog(file: string): string[] {
+  try {
+    return fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
+  } catch {
+    return [];
   }
-});
-`;
-
-function spawnSpec(mode: string): AcpSpawnSpec {
-  return { command: process.execPath, args: ["-e", MOCK_SCRIPT] };
-}
-
-function env(mode: string, extra: Record<string, string> = {}): Record<string, string> {
-  return { MOCK_MODE: mode, PATH: process.env.PATH ?? "", ...extra };
 }
 
 describe("runAcpTurn", () => {
@@ -321,5 +232,579 @@ expect(err).toBeInstanceOf(AgentCallError);
 
     expect(err).toBeInstanceOf(AgentCallError);
     expect((err as AgentCallError).kind).toBe("connection");
+  });
+
+  it("ADR-021 variantTier pre-configures the cheapest-of-tier advertised model before the first prompt", async () => {
+    const cfgLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("stream"),
+        cwd: process.cwd(),
+        env: env("stream", {
+          MOCK_MODEL_CFG: "1",
+          // Advertised strong models, cheapest listed SECOND: the selector must
+          // pick by price, not advertised order.
+          MOCK_MODEL_ADVERTISED: "claude-opus-4-7,claude-sonnet-4-6",
+          MOCK_CFG_LOG: cfgLog,
+        }),
+        prompt: "hello",
+        variantTier: "strong",
+        configuredProviders: ["anthropic"],
+        permissionGate: new PermissionGate(),
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.configuredModel).toBe("claude-sonnet-4-6");
+      // Recorded server-side: the set_config_option carried the selected model.
+      expect(readCfgLog(cfgLog)).toEqual(
+        expect.arrayContaining([expect.stringContaining('"value":"claude-sonnet-4-6"')]),
+      );
+    } finally {
+      if (fs.existsSync(cfgLog)) fs.unlinkSync(cfgLog);
+    }
+  });
+
+  it("ADR-021 variantModel override is applied even when not advertised", async () => {
+    const cfgLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("stream"),
+        cwd: process.cwd(),
+        env: env("stream", {
+          MOCK_MODEL_CFG: "1",
+          MOCK_MODEL_ADVERTISED: "claude-opus-4-7,claude-sonnet-4-6",
+          MOCK_CFG_LOG: cfgLog,
+        }),
+        prompt: "hello",
+        variantTier: "strong",
+        variantModel: "custom-flagged-model",
+        configuredProviders: ["anthropic"],
+        permissionGate: new PermissionGate(),
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.configuredModel).toBe("custom-flagged-model");
+      expect(readCfgLog(cfgLog)).toEqual(
+        expect.arrayContaining([expect.stringContaining('"value":"custom-flagged-model"')]),
+      );
+    } finally {
+      if (fs.existsSync(cfgLog)) fs.unlinkSync(cfgLog);
+    }
+  });
+
+  it("ADR-021 cheap tier pre-configures the cheapest-of-tier advertised cheap model", async () => {
+    const cfgLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("stream"),
+        cwd: process.cwd(),
+        env: env("stream", {
+          MOCK_MODEL_CFG: "1",
+          MOCK_MODEL_ADVERTISED: "claude-sonnet-4-6,claude-haiku-4-5",
+          MOCK_CFG_LOG: cfgLog,
+        }),
+        prompt: "hello",
+        variantTier: "cheap",
+        configuredProviders: ["anthropic"],
+        permissionGate: new PermissionGate(),
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.configuredModel).toBe("claude-haiku-4-5");
+      expect(readCfgLog(cfgLog)).toEqual(
+        expect.arrayContaining([expect.stringContaining('"value":"claude-haiku-4-5"')]),
+      );
+    } finally {
+      if (fs.existsSync(cfgLog)) fs.unlinkSync(cfgLog);
+    }
+  });
+
+  it("ADR-021 no advertised model select: tier is inert, agent default runs, no config sent", async () => {
+    const cfgLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("stream"),
+        cwd: process.cwd(),
+        env: env("stream", { MOCK_CFG_LOG: cfgLog }),
+        prompt: "hello",
+        variantTier: "strong",
+        configuredProviders: ["anthropic"],
+        permissionGate: new PermissionGate(),
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.configuredModel).toBeUndefined();
+      expect(readCfgLog(cfgLog)).toEqual([]);
+    } finally {
+      if (fs.existsSync(cfgLog)) fs.unlinkSync(cfgLog);
+    }
+  });
+
+  it("ADR-021 no configured providers: classification is empty, agent default runs, no config sent", async () => {
+    const cfgLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("stream"),
+        cwd: process.cwd(),
+        env: env("stream", {
+          MOCK_MODEL_CFG: "1",
+          MOCK_MODEL_ADVERTISED: "claude-sonnet-4-6,claude-haiku-4-5",
+          MOCK_CFG_LOG: cfgLog,
+        }),
+        prompt: "hello",
+        variantTier: "strong",
+        configuredProviders: [],
+        permissionGate: new PermissionGate(),
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.configuredModel).toBeUndefined();
+      expect(readCfgLog(cfgLog)).toEqual([]);
+    } finally {
+      if (fs.existsSync(cfgLog)) fs.unlinkSync(cfgLog);
+    }
+  });
+
+  it("ADR-021 rejected pre-emptive config never halts the turn (agent default)", async () => {
+    const turn = await runAcpTurn({
+      spawn: spawnSpec("stream"),
+      cwd: process.cwd(),
+      env: env("stream", { MOCK_MODEL_CFG: "1", MOCK_CFG: "reject" }),
+      prompt: "hello",
+      variantTier: "strong",
+      variantModel: "custom-flagged-model",
+      configuredProviders: ["anthropic"],
+      permissionGate: new PermissionGate(),
+    });
+
+    expect(turn.stopReason).toBe("end_turn");
+    expect(turn.configuredModel).toBeUndefined();
+    expect(turn.error).toBeUndefined();
+  });
+
+  it("ADR-021 quota → onProviderQuota switches provider → second prompt succeeds on the new provider", async () => {
+    const cfgLog = tmpCfgLog();
+    const setLog = tmpCfgLog();
+    const calls: string[] = [];
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("quota-failover"),
+        cwd: process.cwd(),
+        env: env("quota-failover", {
+          MOCK_PROVIDER_CAP: "1",
+          MOCK_CFG_LOG: cfgLog,
+          MOCK_PROVIDER_LOG: setLog,
+        }),
+        prompt: "hello",
+        variantTier: "cheap",
+        permissionGate: new PermissionGate(),
+        onProviderQuota: async (router, context) => {
+          calls.push(`list:${context.tier}`);
+          const next = (await router.listProviders()).find(p => p.providerId === "provider-b");
+          if (!next) return undefined;
+          await router.setProvider({
+            providerId: next.providerId,
+            apiType: "openai",
+            baseUrl: "https://api.openai.com",
+            headers: { "x-key": "k" },
+          });
+          calls.push("set:provider-b");
+          return { providerId: next.providerId, model: "claude-haiku-4-5" };
+        },
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.providerFailover).toBe("provider-b");
+      expect(turn.configuredModel).toBe("claude-haiku-4-5");
+      expect(turn.downgraded).toBeUndefined();
+      expect(calls).toEqual(["list:cheap", "set:provider-b"]);
+      // The failover model was re-applied via set_config_option after the switch.
+      expect(readCfgLog(cfgLog)).toEqual([expect.stringContaining('"value":"claude-haiku-4-5"')]);
+      // providers/set carried the routed config (non-secret fields only).
+      expect(readCfgLog(setLog)).toEqual([expect.stringContaining('"providerId":"provider-b"')]);
+    } finally {
+      for (const f of [cfgLog, setLog]) if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  });
+
+  it("ADR-021 (M4) quota → onProviderQuota context carries the configured provider block (regression)", async () => {
+    const setLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("quota-failover"),
+        cwd: process.cwd(),
+        env: env("quota-failover", {
+          MOCK_PROVIDER_CAP: "1",
+          MOCK_PROVIDER_LOG: setLog,
+        }),
+        prompt: "hello",
+        permissionGate: new PermissionGate(),
+        onProviderQuota: defaultOnProviderQuota(["provider-b"]),
+        providerConfig: {
+          "provider-b": {
+            apiType: "anthropic",
+            baseUrl: "https://api.custom-anthropic.example",
+            headers: { "x-custom": "h" },
+          },
+        },
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.providerFailover).toBe("provider-b");
+      const logged = readCfgLog(setLog);
+      // providers/set was built from the context's config block, not the
+      // advertised `current` (provider-b advertises none) nor a fallback default.
+      expect(logged).toEqual([expect.stringContaining('"providerId":"provider-b"')]);
+      expect(logged).toEqual([expect.stringContaining('"apiType":"anthropic"')]);
+      expect(logged).toEqual([expect.stringContaining('"baseUrl":"https://api.custom-anthropic.example"')]);
+      expect(logged).toEqual([expect.stringContaining('"headers":{"x-custom":"h"}')]);
+    } finally {
+      if (fs.existsSync(setLog)) fs.unlinkSync(setLog);
+    }
+  });
+
+  it("ADR-021 (M4) provider without a config block → providers/set falls back to the advertised current", async () => {
+    const setLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("quota-failover"),
+        cwd: process.cwd(),
+        env: env("quota-failover", {
+          MOCK_PROVIDER_CAP: "1",
+          MOCK_PROVIDER_LOG: setLog,
+          MOCK_PROVIDERS: JSON.stringify([
+            { providerId: "provider-a", supported: ["openai"], required: false, current: null },
+            { providerId: "provider-b", supported: ["openai"], required: false, current: { apiType: "openai", baseUrl: "https://api.openai.com" } },
+          ]),
+        }),
+        prompt: "hello",
+        permissionGate: new PermissionGate(),
+        onProviderQuota: defaultOnProviderQuota(["provider-a"]),
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.providerFailover).toBe("provider-a");
+      const logged = readCfgLog(setLog);
+      expect(logged).toEqual([expect.stringContaining('"providerId":"provider-a"')]);
+      expect(logged).toEqual([expect.stringContaining('"apiType":"openai"')]);
+      // No config block was supplied, so the seam falls back to defaults rather
+      // than carrying a config-derived payload (and sends no headers).
+      expect(logged).toEqual([expect.stringContaining('"baseUrl":""')]);
+      expect(logged[0]).not.toContain('"headers"');
+    } finally {
+      if (fs.existsSync(setLog)) fs.unlinkSync(setLog);
+    }
+  });
+
+  it("ADR-021 (M4) failover switches to the provider id from providers/list, not the adapter id", async () => {
+    const setLog = tmpCfgLog();
+    try {
+      const turn = await runAcpTurn({
+        spawn: spawnSpec("quota-failover"),
+        cwd: process.cwd(),
+        env: env("quota-failover", {
+          MOCK_PROVIDER_CAP: "1",
+          MOCK_PROVIDER_LOG: setLog,
+          MOCK_PROVIDERS: JSON.stringify([
+            { providerId: "alpha", supported: ["anthropic"], required: false, current: { apiType: "anthropic", baseUrl: "https://api.anthropic.com" } },
+            { providerId: "beta", supported: ["openai"], required: false, current: null },
+          ]),
+        }),
+        prompt: "hello",
+        permissionGate: new PermissionGate(),
+        onProviderQuota: defaultOnProviderQuota(["beta"]),
+        providerConfig: {
+          beta: { apiType: "openai", baseUrl: "https://api.openai.com/v1", headers: { "x-key": "k" } },
+        },
+      });
+
+      expect(turn.stopReason).toBe("end_turn");
+      expect(turn.providerFailover).toBe("beta");
+      const logged = readCfgLog(setLog);
+      // The id switched to is the listed provider id ("beta"), never the agent
+      // process/adapter identity.
+      expect(logged).toEqual([expect.stringContaining('"providerId":"beta"')]);
+      expect(logged).toEqual([expect.stringContaining('"apiType":"openai"')]);
+      expect(logged).toEqual([expect.stringContaining('"baseUrl":"https://api.openai.com/v1"')]);
+    } finally {
+      if (fs.existsSync(setLog)) fs.unlinkSync(setLog);
+    }
+  });
+
+  it("ADR-021 failover runs BEFORE the same-session downgrade path", async () => {
+    const calls: string[] = [];
+    const turn = await runAcpTurn({
+      spawn: spawnSpec("quota-failover"),
+      cwd: process.cwd(),
+      env: env("quota-failover", { MOCK_PROVIDER_CAP: "1" }),
+      prompt: "hello",
+      downgradeTo: "claude-haiku",
+      permissionGate: new PermissionGate(),
+      onProviderQuota: async router => {
+        const next = (await router.listProviders()).find(p => p.providerId === "provider-b");
+        if (!next) return undefined;
+        await router.setProvider({ providerId: next.providerId, apiType: "openai", baseUrl: "https://x" });
+        calls.push("set:provider-b");
+        return { providerId: next.providerId };
+      },
+    });
+
+    expect(turn.stopReason).toBe("end_turn");
+    expect(turn.providerFailover).toBe("provider-b");
+    expect(turn.downgraded).toBeUndefined();
+    expect(calls).toEqual(["set:provider-b"]);
+  });
+
+  it("ADR-021 both attempts quota: failover runs per quota hit, then falls through on the second quota", async () => {
+    const calls: string[] = [];
+    const tried = new Set<string>();
+    const err = await runAcpTurn({
+      spawn: spawnSpec("quota-failover"),
+      cwd: process.cwd(),
+      env: env("quota-failover", { MOCK_PROVIDER_CAP: "1", MOCK_SECOND: "quota" }),
+      prompt: "hello",
+      permissionGate: new PermissionGate(),
+      onProviderQuota: async router => {
+        const next = (await router.listProviders()).find(p => p.providerId === "provider-b" && !tried.has(p.providerId));
+        if (!next) return undefined;
+        tried.add(next.providerId);
+        await router.setProvider({ providerId: next.providerId, apiType: "openai", baseUrl: "https://x" });
+        calls.push(`set:${next.providerId}`);
+        return { providerId: next.providerId };
+      },
+    }).then(
+      () => null,
+      e => e,
+    );
+
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("quota");
+    expect((err as AgentCallError).message).toBe("You exceeded your current quota for this request [second attempt]");
+    expect((err as AgentCallError).providerId).toBe("provider-b");
+    expect((err as AgentCallError).authMethods).toEqual([]);
+    expect(calls).toEqual(["set:provider-b"]);
+  });
+
+  it("ADR-021 failover with no alternative provider: falls through and rethrows the ORIGINAL quota error", async () => {
+    const err = await runAcpTurn({
+      spawn: spawnSpec("quota-failover"),
+      cwd: process.cwd(),
+      env: env("quota-failover", {
+        MOCK_PROVIDER_CAP: "1",
+        MOCK_PROVIDERS: JSON.stringify([
+          { providerId: "provider-a", supported: ["anthropic"], required: false, current: null },
+        ]),
+      }),
+      prompt: "hello",
+      permissionGate: new PermissionGate(),
+      onProviderQuota: async router => {
+        const next = (await router.listProviders()).find(p => p.providerId === "provider-b");
+        return next ? { providerId: next.providerId } : undefined;
+      },
+    }).then(
+      () => null,
+      e => e,
+    );
+
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("quota");
+    expect((err as AgentCallError).message).toBe("You exceeded your current quota for this request [first attempt]");
+  });
+
+  it("ADR-021 failover whose providers/set rejects: falls through and rethrows the ORIGINAL quota error", async () => {
+    const err = await runAcpTurn({
+      spawn: spawnSpec("quota-failover"),
+      cwd: process.cwd(),
+      env: env("quota-failover", { MOCK_PROVIDER_CAP: "1", MOCK_PROVIDER_SET: "reject" }),
+      prompt: "hello",
+      permissionGate: new PermissionGate(),
+      onProviderQuota: async router => {
+        const next = (await router.listProviders()).find(p => p.providerId === "provider-b");
+        if (!next) return undefined;
+        await router.setProvider({ providerId: next.providerId, apiType: "openai", baseUrl: "https://x" });
+        return { providerId: next.providerId, model: "claude-haiku-4-5" };
+      },
+    }).then(
+      () => null,
+      e => e,
+    );
+
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("quota");
+    expect((err as AgentCallError).message).toBe("You exceeded your current quota for this request [first attempt]");
+  });
+
+  it("ADR-021 failover whose model config rejects: session stays on the new provider, agent default runs", async () => {
+    const turn = await runAcpTurn({
+      spawn: spawnSpec("quota-failover"),
+      cwd: process.cwd(),
+      env: env("quota-failover", { MOCK_PROVIDER_CAP: "1", MOCK_CFG: "reject" }),
+      prompt: "hello",
+      permissionGate: new PermissionGate(),
+      onProviderQuota: async router => {
+        const next = (await router.listProviders()).find(p => p.providerId === "provider-b");
+        if (!next) return undefined;
+        await router.setProvider({ providerId: next.providerId, apiType: "openai", baseUrl: "https://x" });
+        return { providerId: next.providerId, model: "claude-haiku-4-5" };
+      },
+    });
+
+    expect(turn.stopReason).toBe("end_turn");
+    expect(turn.providerFailover).toBe("provider-b");
+    expect(turn.configuredModel).toBeUndefined();
+  });
+
+  it("ADR-021 agent without providers capability: failover seam is not invoked, original quota rethrown", async () => {
+    const calls: string[] = [];
+    const err = await runAcpTurn({
+      spawn: spawnSpec("quota-failover"),
+      cwd: process.cwd(),
+      env: env("quota-failover"),
+      prompt: "hello",
+      permissionGate: new PermissionGate(),
+      onProviderQuota: async () => {
+        calls.push("seam");
+        return { providerId: "provider-b" };
+      },
+    }).then(
+      () => null,
+      e => e,
+    );
+
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("quota");
+    expect(calls).toEqual([]);
+  });
+
+  it("ADR-021 failover seam throwing: falls through to the downgrade path", async () => {
+    const turn = await runAcpTurn({
+      spawn: spawnSpec("quota-failover"),
+      cwd: process.cwd(),
+      env: env("quota-failover", { MOCK_PROVIDER_CAP: "1" }),
+      prompt: "hello",
+      downgradeTo: "claude-haiku",
+      permissionGate: new PermissionGate(),
+      onProviderQuota: async () => {
+        throw new Error("router exploded");
+      },
+    });
+
+    expect(turn.stopReason).toBe("end_turn");
+    expect(turn.downgraded).toBe(true);
+    expect(turn.providerFailover).toBeUndefined();
+  });
+
+  it("ADR-021 token-paid: key injected into child env + authenticate called, then quota carries authMethods", async () => {
+    const authFile = tmpCfgLog();
+    try {
+      const err = await runAcpTurn({
+        spawn: spawnSpec("quota"),
+        cwd: process.cwd(),
+        env: env("quota", { MOCK_AUTH_METHODS: "1", MOCK_AUTH_LOG: authFile }),
+        prompt: "hello",
+        tokenPaid: { methodId: "env-var", envVarName: "MOCK_API_KEY", key: "sk-tokenpaid-secret" },
+        permissionGate: new PermissionGate(),
+      }).then(
+        () => null,
+        e => e,
+      );
+
+      expect(err).toBeInstanceOf(AgentCallError);
+      expect((err as AgentCallError).kind).toBe("quota");
+      expect((err as AgentCallError).message).toMatch(/quota/);
+      expect((err as AgentCallError).authMethods).toEqual([{ methodId: "env-var", envVarName: "MOCK_API_KEY" }]);
+      expect((err as AgentCallError).providerId).toBeUndefined();
+      // Server-side: authenticate was asked for the token-paid method, and the
+      // child environment had the key injected at MOCK_API_KEY.
+      expect(readCfgLog(authFile)).toEqual([expect.stringContaining('"methodId":"env-var"')]);
+      expect(readCfgLog(authFile)).toEqual([expect.stringContaining('"keyInjected":true')]);
+    } finally {
+      if (fs.existsSync(authFile)) fs.unlinkSync(authFile);
+    }
+  });
+
+  it("ADR-021 token-paid: authenticate rejection surfaces quota 'token-paid authenticate failed' (no prompt)", async () => {
+    const err = await runAcpTurn({
+      spawn: spawnSpec("stream"),
+      cwd: process.cwd(),
+      env: env("stream", { MOCK_AUTH_METHODS: "1", MOCK_AUTH_REJECT: "1" }),
+      prompt: "hello",
+      tokenPaid: { methodId: "env-var", envVarName: "MOCK_API_KEY", key: "sk-tokenpaid-secret" },
+      permissionGate: new PermissionGate(),
+    }).then(
+      () => null,
+      e => e,
+    );
+
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("quota");
+    expect((err as AgentCallError).message).toMatch(/token-paid authenticate failed/);
+    expect((err as AgentCallError).authMethods).toEqual([{ methodId: "env-var", envVarName: "MOCK_API_KEY" }]);
+  });
+
+  it("ADR-021 token-paid: no failover/downgrade recovery — seam never invoked, first quota rethrown", async () => {
+    const calls: string[] = [];
+    const err = await runAcpTurn({
+      spawn: spawnSpec("quota-failover"),
+      cwd: process.cwd(),
+      env: env("quota-failover", { MOCK_PROVIDER_CAP: "1", MOCK_AUTH_METHODS: "1" }),
+      prompt: "hello",
+      downgradeTo: "claude-haiku",
+      tokenPaid: { methodId: "env-var", envVarName: "MOCK_API_KEY", key: "sk-tokenpaid-secret" },
+      permissionGate: new PermissionGate(),
+      onProviderQuota: async () => {
+        calls.push("seam");
+        return { providerId: "provider-b" };
+      },
+    }).then(
+      () => null,
+      e => e,
+    );
+
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("quota");
+    expect((err as AgentCallError).message).toBe("You exceeded your current quota for this request [first attempt]");
+    expect(calls).toEqual([]);
+  });
+
+  it("ADR-021 non-token-paid quota advertises the env-var auth method for the harness", async () => {
+    const err = await runAcpTurn({
+      spawn: spawnSpec("quota"),
+      cwd: process.cwd(),
+      env: env("quota", { MOCK_AUTH_METHODS: "1" }),
+      prompt: "hello",
+      permissionGate: new PermissionGate(),
+    }).then(
+      () => null,
+      e => e,
+    );
+
+    expect(err).toBeInstanceOf(AgentCallError);
+    expect((err as AgentCallError).kind).toBe("quota");
+    expect((err as AgentCallError).authMethods).toEqual([{ methodId: "env-var", envVarName: "MOCK_API_KEY" }]);
+  });
+
+  it("ADR-021 token-paid: the injected key never appears in the acp log", async () => {
+    const KEY = "sk-tokenpaid-secret";
+    const entries: string[] = [];
+    const unsub = log.subscribe(e => entries.push(e.message));
+    try {
+      const err = await runAcpTurn({
+        spawn: spawnSpec("quota"),
+        cwd: process.cwd(),
+        env: env("quota", { MOCK_AUTH_METHODS: "1" }),
+        prompt: "hello",
+        tokenPaid: { methodId: "env-var", envVarName: "MOCK_API_KEY", key: KEY },
+        permissionGate: new PermissionGate(),
+      }).then(
+        () => null,
+        e => e,
+      );
+      expect(err).toBeInstanceOf(AgentCallError);
+    } finally {
+      unsub();
+    }
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.some(m => m.includes(KEY))).toBe(false);
   });
 });

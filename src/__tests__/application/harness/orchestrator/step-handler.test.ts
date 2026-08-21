@@ -2,13 +2,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execSync } from "node:child_process";
 import { StreamEmitter } from "../../../../adapters/stream/emitter.js";
 import { parseRun } from "../../../../application/harness/execution/CommandExecutor.js";
 import type { CommandExecutionResult } from "../../../../application/harness/execution/CommandExecutor.js";
 import type { RunContext } from "../../../../application/harness/execution/step-runner.js";
 import { createStepHandler, buildRepairPrompt } from "../../../../application/harness/orchestrator/step-handler.js";
+import { defaultResolveDowngradeModel } from "../../../../application/harness/orchestrator/routing-defaults.js";
 import { Tracker } from "../../../../application/harness/persistence/Tracker.js";
 import { AgentCallError } from "../../../../application/agents/errors.js";
+import { log } from "../../../../core/log.js";
 import type { WorkflowStep } from "../../../../core/schemas.js";
 
 const { agentCalls, mockState } = vi.hoisted(() => {
@@ -20,16 +23,38 @@ const { agentCalls, mockState } = vi.hoisted(() => {
     rejectWith?: unknown;
     callCount: number;
     downgradeParams: Array<string | undefined>;
+    variantTierParams: Array<string | undefined>;
+    variantModelParams: Array<string | undefined>;
+    configuredProvidersParams: Array<string[] | undefined>;
+    onProviderQuotaParams: Array<unknown>;
+    tokenPaidParams: Array<unknown>;
     sequence?: Array<{ rejectWith?: unknown; resolveValue?: unknown }>;
-  } = { killed: 0, pending: false, killSettles: true, callCount: 0, downgradeParams: [] };
+  } = { killed: 0, pending: false, killSettles: true, callCount: 0, downgradeParams: [], variantTierParams: [], variantModelParams: [], configuredProvidersParams: [], onProviderQuotaParams: [], tokenPaidParams: [] };
   return { agentCalls: [] as string[], mockState };
 });
 
+// M2: count/override the repo-state git read per test. Defaults to the real
+// implementation so the real-git tier tests keep working.
+const repoStateMock = vi.hoisted(() => ({ readRepoState: null as null | (() => Promise<{ changedFiles: number } | undefined>) }));
+vi.mock("../../../../application/agents/complexity.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../../../../application/agents/complexity.js")>();
+  return {
+    ...mod,
+    readRepoState: (...args: Parameters<typeof mod.readRepoState>): Promise<{ changedFiles: number } | undefined> =>
+      repoStateMock.readRepoState ? repoStateMock.readRepoState() : mod.readRepoState(...args),
+  };
+});
+
 vi.mock("../../../../application/agents/adapter-pty.js", () => ({
-  callAgentStream: (_adapter: unknown, prompt: string, _hook?: string, downgradeTo?: string) => {
+  callAgentStream: (_adapter: unknown, prompt: string, _hook?: string, downgradeTo?: string, variantTier?: string, variantModel?: string, configuredProviders?: string[], onProviderQuota?: unknown, tokenPaid?: unknown) => {
     agentCalls.push(prompt);
     mockState.callCount++;
     mockState.downgradeParams.push(downgradeTo);
+    mockState.variantTierParams.push(variantTier);
+    mockState.variantModelParams.push(variantModel);
+    mockState.configuredProvidersParams.push(configuredProviders);
+    mockState.onProviderQuotaParams.push(onProviderQuota);
+    mockState.tokenPaidParams.push(tokenPaid);
     const entry = mockState.sequence?.[mockState.callCount - 1];
     const rejectWith = entry?.rejectWith !== undefined ? entry.rejectWith : mockState.rejectWith;
     const resolveValue = entry?.resolveValue;
@@ -408,6 +433,7 @@ describe("step-handler repair feedback", () => {
 
 describe("step-handler abort", () => {
   beforeEach(() => {
+    repoStateMock.readRepoState = null;
     agentCalls.length = 0;
     mockState.killed = 0;
     mockState.pending = false;
@@ -644,6 +670,462 @@ describe("step-handler ADR-022 retry policy", () => {
   });
 });
 
+describe("step-handler ADR-021 tier routing", () => {
+  const agentStep = (): WorkflowStep => ({
+    id: "code", type: "agent", agent: "codegen", emits: [sig("sig_done")], on: ["__start__"], context: [],
+  });
+  const baseHandler = (extra: Record<string, unknown> = {}) =>
+    createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: emitter(),
+      task: "t",
+      ...extra,
+    });
+
+  beforeEach(() => {
+    repoStateMock.readRepoState = null;
+    agentCalls.length = 0;
+    mockState.pending = false;
+    mockState.killSettles = true;
+    mockState.resolve = undefined;
+    mockState.rejectWith = undefined;
+    mockState.sequence = undefined;
+    mockState.callCount = 0;
+    mockState.downgradeParams.length = 0;
+    mockState.variantTierParams.length = 0;
+    mockState.variantModelParams.length = 0;
+    mockState.configuredProvidersParams.length = 0;
+    mockState.onProviderQuotaParams.length = 0;
+    mockState.tokenPaidParams.length = 0;
+  });
+
+  it("passes the resolved tier to callAgentStream (data-flow reachability)", async () => {
+    // a real git repo with 2 changed files classifies as "simple"
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "orc-tier-repo-"));
+    try {
+      execSync("git init -q", { cwd: repoDir, stdio: "ignore" });
+      fs.writeFileSync(path.join(repoDir, "a.txt"), "x");
+      fs.writeFileSync(path.join(repoDir, "b.txt"), "y");
+      const seen: string[] = [];
+      const handler = baseHandler({
+        projectRoot: repoDir,
+        // config marks the role as tiered, so the git-based complexity read runs
+        modelRoutingConfig: { variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } } },
+        resolveVariantTier: (role: string, complexity: string) => {
+          seen.push(`${role}:${complexity}`);
+          return complexity === "complex" ? "strong" : "cheap";
+        },
+      });
+      const out = await handler(agentStep(), ctx());
+      expect(out.status).toBe("completed");
+      expect(seen).toEqual(["codegen:simple"]);
+      expect(mockState.variantTierParams).toEqual(["cheap"]);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards the concrete variant model and configured providers to callAgentStream", async () => {
+    // a real git repo with 2 changed files classifies as "simple" -> cheap
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "orc-tier-repo-"));
+    try {
+      execSync("git init -q", { cwd: repoDir, stdio: "ignore" });
+      fs.writeFileSync(path.join(repoDir, "a.txt"), "x");
+      fs.writeFileSync(path.join(repoDir, "b.txt"), "y");
+      const handler = baseHandler({
+        projectRoot: repoDir,
+        modelRoutingConfig: {
+          variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } },
+          providers: { anthropic: {}, openai: {} },
+        },
+        resolveVariantTier: (_role: string, complexity: string) => (complexity === "complex" ? "strong" : "cheap"),
+      });
+      const out = await handler(agentStep(), ctx());
+      expect(out.status).toBe("completed");
+      expect(mockState.variantTierParams).toEqual(["cheap"]);
+      expect(mockState.variantModelParams).toEqual(["model-cheap"]);
+      // the real homedir auth.json may add providers; assert the config block
+      // keys are included, not exact equality
+      expect(mockState.configuredProvidersParams[0]).toEqual(expect.arrayContaining(["anthropic", "openai"]));
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards the injected onProviderQuota seam to callAgentStream (8th arg)", async () => {
+    const seam = async () => undefined;
+    const handler = baseHandler({ onProviderQuota: seam });
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(mockState.onProviderQuotaParams).toEqual([seam]);
+  });
+
+  it("passes undefined onProviderQuota when not injected", async () => {
+    const handler = baseHandler();
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(mockState.onProviderQuotaParams).toEqual([undefined]);
+  });
+
+  it("classifies a non-repo root as complex and routes to strong", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orc-tier-norepo-"));
+    try {
+      const seen: string[] = [];
+      const handler = baseHandler({
+        projectRoot: dir,
+        modelRoutingConfig: { variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } } },
+        resolveVariantTier: (_role: string, complexity: string) => {
+          seen.push(complexity);
+          return complexity === "complex" ? "strong" : "cheap";
+        },
+      });
+      const out = await handler(agentStep(), ctx());
+      expect(out.status).toBe("completed");
+      expect(seen).toEqual(["complex"]);
+      expect(mockState.variantTierParams).toEqual(["strong"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("M2: re-reads the repo state per step, not per run (regression)", async () => {
+    // Pre-fix the per-run `??=` cache served the FIRST git snapshot to every
+    // step; post-fix each step re-reads. Drive two tiered steps whose repo
+    // state changes between them: the second step must classify against the
+    // NEW state (complex -> strong), and the git read must happen twice.
+    const reads: number[] = [];
+    repoStateMock.readRepoState = () => {
+      reads.push(reads.length + 1);
+      return Promise.resolve({ changedFiles: reads.length === 1 ? 2 : 12 });
+    };
+    const handler = baseHandler({
+      modelRoutingConfig: { variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } } },
+      resolveVariantTier: (_role: string, complexity: string) => (complexity === "complex" ? "strong" : "cheap"),
+    });
+    const out1 = await handler(agentStep(), ctx());
+    const out2 = await handler(agentStep(), ctx());
+    expect(out1.status).toBe("completed");
+    expect(out2.status).toBe("completed");
+    // pre-fix: exactly 1 read (per-run ??=); post-fix: 1 per step
+    expect(reads).toEqual([1, 2]);
+    // second step classified against the NEW repo state (12 changed files)
+    expect(mockState.variantTierParams).toEqual(["cheap", "strong"]);
+  });
+
+  it("M2: reads the repo state at most once within a single step", async () => {
+    let reads = 0;
+    repoStateMock.readRepoState = () => {
+      reads++;
+      return Promise.resolve({ changedFiles: 2 });
+    };
+    const handler = baseHandler({
+      modelRoutingConfig: { variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } } },
+      resolveVariantTier: (_role: string, complexity: string) => (complexity === "complex" ? "strong" : "cheap"),
+    });
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(reads).toBe(1);
+    expect(mockState.variantTierParams).toEqual(["cheap"]);
+  });
+
+  it("uses the real default resolver when not injected (smoke)", async () => {
+    // untiered role -> undefined repo state -> "complex" -> never "cheap"
+    const handler = baseHandler();
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(mockState.variantTierParams[0]).toBe("strong");
+  });
+
+  it("quota: the production default resolver downgrades strong→cheap (FN2)", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111 }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const routingConfig = { variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } } };
+    const handler = baseHandler({
+      modelRoutingConfig: routingConfig,
+      resolveVariantTier: () => "strong",
+      // the real production default — not a hand-rolled test callback
+      resolveDowngradeModel: defaultResolveDowngradeModel(routingConfig, []),
+    });
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(out.downgradedTo).toBe("model-cheap");
+    expect(mockState.downgradeParams).toEqual([undefined, "model-cheap"]);
+    expect(mockState.variantModelParams).toEqual(["model-strong", "model-strong"]);
+  });
+
+  it("M1: resolveDowngradeModel receives the model in effect, not the adapter id", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111 }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const tried: string[] = [];
+    const handler = baseHandler({
+      modelRoutingConfig: { variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } } },
+      resolveVariantTier: () => "strong",
+      resolveDowngradeModel: (_role: string, triedModel: string) => {
+        tried.push(triedModel);
+        return "model-cheap";
+      },
+    });
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(tried).toEqual(["model-strong"]);
+  });
+
+  it("all-injected seams still downgrade after wiring (regression guard)", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111 }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const seam = async () => undefined;
+    const handler = baseHandler({
+      resolveVariantTier: () => "strong",
+      resolveDowngradeModel: () => "claude-haiku",
+      onProviderQuota: seam,
+    });
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(out.downgradedTo).toBe("claude-haiku");
+    expect(mockState.downgradeParams).toEqual([undefined, "claude-haiku"]);
+    expect(mockState.onProviderQuotaParams).toEqual([seam, seam]);
+  });
+
+  it("script steps bypass the tier resolver entirely (zero LLM)", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orc-tier-script-"));
+    try {
+      const handler = baseHandler({
+        projectRoot: dir,
+        resolveVariantTier: () => { throw new Error("must not be consulted"); },
+        commandExecutor: { execute: async () => ({ ok: true as const, result: result(true, 0) }) } as any,
+      });
+      const out = await handler(step("s1", { run: 'exec "true"' }), ctx());
+      expect(out.status).toBe("completed");
+      expect(agentCalls.length).toBe(0);
+      expect(mockState.variantTierParams).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the same tier across a quota downgrade re-invocation", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111 }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const handler = baseHandler({
+      modelRoutingConfig: { variants: { codegen: { cheap: "model-cheap", strong: "model-strong" } } },
+      resolveDowngradeModel: () => "claude-haiku",
+      resolveVariantTier: () => "cheap",
+    });
+    const out = await handler(agentStep(), ctx());
+    expect(out.status).toBe("completed");
+    expect(mockState.variantTierParams).toEqual(["cheap", "cheap"]);
+    expect(mockState.downgradeParams).toEqual([undefined, "claude-haiku"]);
+  });
+});
+
+describe("routing-defaults defaultResolveDowngradeModel", () => {
+  const snapshot = {
+    "fake-provider": {
+      models: {
+        "model-pricy": { reasoning: true, tool_call: true, cost: { input: 10 } },
+        "model-mid": { reasoning: false, tool_call: false, cost: { input: 2 } },
+        "model-cheap-1": { cost: { input: 0.5 } },
+        "model-cheap-2": { cost: { input: 0.1 } },
+      },
+    },
+  } as any;
+
+  it("strong→cheap via the user override (honored regardless of triedModel)", () => {
+    const resolver = defaultResolveDowngradeModel(
+      { variants: { codegen: { cheap: "model-x", strong: "model-strong" } } },
+      ["fake-provider"],
+      snapshot,
+    );
+    expect(resolver("codegen", "model-strong")).toBe("model-x");
+  });
+
+  it("override equal to the model in effect falls through to cheapest-of-tier", () => {
+    const resolver = defaultResolveDowngradeModel(
+      { variants: { codegen: { cheap: "model-strong", strong: "model-strong" } } },
+      ["fake-provider"],
+      snapshot,
+    );
+    expect(resolver("codegen", "model-strong")).toBe("model-cheap-2");
+  });
+
+  it("no cheap override: picks the cheapest-of-tier cheap model (price asc)", () => {
+    const resolver = defaultResolveDowngradeModel({}, ["fake-provider"], snapshot);
+    expect(resolver("codegen", "model-pricy")).toBe("model-cheap-2");
+  });
+
+  it("model in effect already cheap -> no downgrade", () => {
+    const resolver = defaultResolveDowngradeModel({}, ["fake-provider"], snapshot);
+    expect(resolver("codegen", "model-mid")).toBeUndefined();
+  });
+
+  it("no cheap candidate offered by a configured provider -> undefined", () => {
+    const resolver = defaultResolveDowngradeModel({}, ["other-provider"], snapshot);
+    expect(resolver("codegen", "model-pricy")).toBeUndefined();
+  });
+});
+
+describe("step-handler ADR-021 token-paid fallback", () => {
+  const agentStep = (): WorkflowStep => ({
+    id: "code", type: "agent", agent: "codegen", emits: [sig("sig_done")], on: ["__start__"], context: [],
+  });
+  const baseHandler = (extra: Record<string, unknown> = {}) =>
+    createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: emitter(),
+      task: "t",
+      ...extra,
+    });
+  const envVarAuth = { methodId: "env-var", envVarName: "OPENAI_API_KEY" };
+  const KEY = "sk-tokenpaid-TOP-SECRET-123";
+
+  beforeEach(() => {
+    agentCalls.length = 0;
+    mockState.pending = false;
+    mockState.killSettles = true;
+    mockState.resolve = undefined;
+    mockState.rejectWith = undefined;
+    mockState.sequence = undefined;
+    mockState.callCount = 0;
+    mockState.downgradeParams.length = 0;
+    mockState.onProviderQuotaParams.length = 0;
+    mockState.tokenPaidParams.length = 0;
+  });
+
+  it("env-var auth advertised but no tokenPaidApiKey configured: pauses with a single adapter call and no tokenPaid passed", async () => {
+    mockState.rejectWith = new AgentCallError("quota", "quota exceeded", { resetAtMs: 333, authMethods: [envVarAuth] });
+    const handler = baseHandler({ modelRoutingConfig: {} });
+    const out = await handler(agentStep(), ctx());
+
+    expect(out.status).toBe("paused");
+    expect(out.failureReason).toBe("quota_exhausted");
+    expect(out.quota).toEqual({ kind: "quota", resetAtMs: 333, message: "quota exceeded" });
+    expect(agentCalls.length).toBe(1);
+    expect(mockState.tokenPaidParams).toEqual([undefined]);
+    expect(mockState.downgradeParams).toEqual([undefined]);
+  });
+
+  it("per-provider tokenPaidApiKey wins over the top-level key: one token-paid re-invocation then success", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111, authMethods: [envVarAuth], providerId: "provider-b" }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const handler = baseHandler({
+      modelRoutingConfig: {
+        providers: { "provider-b": { tokenPaidApiKey: "sk-per-provider" } },
+        tokenPaidApiKey: "sk-top-level",
+      },
+    });
+    const out = await handler(agentStep(), ctx());
+
+    expect(out.status).toBe("completed");
+    expect(out.quota).toBeUndefined();
+    expect(agentCalls.length).toBe(2);
+    expect(mockState.tokenPaidParams).toEqual([
+      undefined,
+      { methodId: "env-var", envVarName: "OPENAI_API_KEY", key: "sk-per-provider" },
+    ]);
+    expect(mockState.downgradeParams).toEqual([undefined, undefined]);
+  });
+
+  it("top-level tokenPaidApiKey used when the quota error has no providerId", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111, authMethods: [envVarAuth] }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const handler = baseHandler({ modelRoutingConfig: { tokenPaidApiKey: "sk-top-level" } });
+    const out = await handler(agentStep(), ctx());
+
+    expect(out.status).toBe("completed");
+    expect(mockState.tokenPaidParams).toEqual([
+      undefined,
+      { methodId: "env-var", envVarName: "OPENAI_API_KEY", key: "sk-top-level" },
+    ]);
+  });
+
+  it("token-paid retry hits quota again: pauses (never infinite) with exactly two adapter calls", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111, authMethods: [envVarAuth] }) },
+      { rejectWith: new AgentCallError("quota", "second quota", { resetAtMs: 222, authMethods: [envVarAuth] }) },
+    ];
+    const handler = baseHandler({ modelRoutingConfig: { tokenPaidApiKey: KEY } });
+    const out = await handler(agentStep(), ctx());
+
+    expect(out.status).toBe("paused");
+    expect(out.failureReason).toBe("quota_exhausted");
+    expect(out.quota).toEqual({ kind: "quota", resetAtMs: 222, message: "second quota" });
+    expect(agentCalls.length).toBe(2);
+    expect(mockState.tokenPaidParams).toEqual([
+      undefined,
+      { methodId: "env-var", envVarName: "OPENAI_API_KEY", key: KEY },
+    ]);
+  });
+
+  it("whitespace-only tokenPaidApiKey counts as absent: pauses with a single adapter call", async () => {
+    mockState.rejectWith = new AgentCallError("quota", "quota exceeded", { resetAtMs: 333, authMethods: [envVarAuth] });
+    const handler = baseHandler({ modelRoutingConfig: { tokenPaidApiKey: "   " } });
+    const out = await handler(agentStep(), ctx());
+
+    expect(out.status).toBe("paused");
+    expect(agentCalls.length).toBe(1);
+    expect(mockState.tokenPaidParams).toEqual([undefined]);
+  });
+
+  it("downgrade runs BEFORE the token-paid retry: downgrade, then token-paid, then pause (three adapter calls)", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111, authMethods: [envVarAuth] }) },
+      { rejectWith: new AgentCallError("quota", "second quota", { resetAtMs: 222, authMethods: [envVarAuth] }) },
+      { rejectWith: new AgentCallError("quota", "third quota", { resetAtMs: 333, authMethods: [envVarAuth] }) },
+    ];
+    const handler = baseHandler({
+      modelRoutingConfig: { tokenPaidApiKey: KEY },
+      resolveDowngradeModel: () => "claude-haiku",
+    });
+    const out = await handler(agentStep(), ctx());
+
+    expect(out.status).toBe("paused");
+    expect(out.failureReason).toBe("quota_exhausted");
+    expect(out.downgradedTo).toBe("claude-haiku");
+    expect(out.quota).toEqual({ kind: "quota", resetAtMs: 333, message: "third quota", downgradedTo: "claude-haiku" });
+    expect(agentCalls.length).toBe(3);
+    expect(mockState.downgradeParams).toEqual([undefined, "claude-haiku", "claude-haiku"]);
+    expect(mockState.tokenPaidParams).toEqual([
+      undefined,
+      undefined,
+      { methodId: "env-var", envVarName: "OPENAI_API_KEY", key: KEY },
+    ]);
+  });
+
+  it("the tokenPaidApiKey is never logged", async () => {
+    mockState.sequence = [
+      { rejectWith: new AgentCallError("quota", "first quota", { resetAtMs: 111, authMethods: [envVarAuth] }) },
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const handler = baseHandler({ modelRoutingConfig: { tokenPaidApiKey: KEY } });
+    const entries: string[] = [];
+    const unsub = log.subscribe(e => entries.push(e.message));
+    try {
+      const out = await handler(agentStep(), ctx());
+      expect(out.status).toBe("completed");
+    } finally {
+      unsub();
+    }
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.some(m => m.includes(KEY))).toBe(false);
+  });
+});
+
 describe("step-handler quota surfacing chain", () => {
   const agentStep = (): WorkflowStep => ({
     id: "code", type: "agent", agent: "codegen", emits: [sig("sig_done")], on: ["__start__"], context: [],
@@ -686,6 +1168,7 @@ describe("step-handler quota surfacing chain", () => {
     agentCalls.length = 0;
     mockState.callCount = 0;
     mockState.downgradeParams = [];
+    mockState.tokenPaidParams = [];
     mockState.sequence = undefined;
     mockState.rejectWith = undefined;
   });

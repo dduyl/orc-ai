@@ -19,6 +19,18 @@ export const AGENT_CALL_ERROR_KINDS = [
 export type AgentCallErrorKind = (typeof AGENT_CALL_ERROR_KINDS)[number];
 
 /**
+ * ADR-021 Phase F: an env-var auth method the agent advertised at `initialize`
+ * (`AuthMethodEnvVar`), carried back to the harness on a quota error so it can
+ * decide whether a token-paid retry is possible.
+ */
+export interface EnvAuthMethodInfo {
+  /** The ACP auth method id (`AuthMethodEnvVar.id`). */
+  methodId: string;
+  /** The environment variable name the agent reads the key from (`AuthEnvVar.name`). */
+  envVarName: string;
+}
+
+/**
  * Zod-validated quota payload. Boundaries validate against this schema so a
  * quota value that arrives downstream is proven valid (kind, positive
  * `resetAtMs`, message), not just present.
@@ -49,11 +61,31 @@ export class AgentCallError extends Error {
   readonly providerCode?: string;
   /** Provider-announced quota window reset, ms epoch. */
   readonly resetAtMs?: number;
+  /**
+   * ADR-021 Phase F: env-var auth methods the agent advertised at initialize,
+   * attached by the ACP client to the quota errors it surfaces. Absent (or
+   * empty) means no token-paid retry is possible.
+   */
+  readonly authMethods?: EnvAuthMethodInfo[];
+  /**
+   * ADR-021 Phase F: the provider id now in effect when the quota was raised
+   * (set after a successful provider failover). Used by the harness to pick a
+   * per-provider `tokenPaidApiKey`; absent when no failover occurred (the
+   * top-level key applies).
+   */
+  readonly providerId?: string;
 
   constructor(
     kind: AgentCallErrorKind,
     message: string,
-    opts: { retryAfterMs?: number; providerCode?: string; resetAtMs?: number; cause?: unknown } = {},
+    opts: {
+      retryAfterMs?: number;
+      providerCode?: string;
+      resetAtMs?: number;
+      authMethods?: EnvAuthMethodInfo[];
+      providerId?: string;
+      cause?: unknown;
+    } = {},
   ) {
     super(message, opts.cause !== undefined ? { cause: opts.cause } : undefined);
     this.name = "AgentCallError";
@@ -61,6 +93,8 @@ export class AgentCallError extends Error {
     if (opts.retryAfterMs !== undefined) this.retryAfterMs = opts.retryAfterMs;
     if (opts.providerCode !== undefined) this.providerCode = opts.providerCode;
     if (opts.resetAtMs !== undefined) this.resetAtMs = opts.resetAtMs;
+    if (opts.authMethods !== undefined) this.authMethods = opts.authMethods;
+    if (opts.providerId !== undefined) this.providerId = opts.providerId;
   }
 
   /** Stable serialization for the data-flow validity assertions. */
@@ -71,6 +105,8 @@ export class AgentCallError extends Error {
     retryAfterMs?: number;
     providerCode?: string;
     resetAtMs?: number;
+    authMethods?: EnvAuthMethodInfo[];
+    providerId?: string;
   } {
     return {
       name: this.name,
@@ -79,6 +115,8 @@ export class AgentCallError extends Error {
       ...(this.retryAfterMs !== undefined ? { retryAfterMs: this.retryAfterMs } : {}),
       ...(this.providerCode !== undefined ? { providerCode: this.providerCode } : {}),
       ...(this.resetAtMs !== undefined ? { resetAtMs: this.resetAtMs } : {}),
+      ...(this.authMethods !== undefined ? { authMethods: this.authMethods } : {}),
+      ...(this.providerId !== undefined ? { providerId: this.providerId } : {}),
     };
   }
 }

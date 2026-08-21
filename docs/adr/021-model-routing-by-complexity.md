@@ -17,3 +17,17 @@ classification.
   agent's own judgment call.
 - Adding a new variant tier later (e.g. a third, mid-cost option) only
   requires extending the same lookup, not new classification logic.
+
+## Implementation
+The tier lookup lives at the `callAgentStream` boundary in `step-handler.ts`:
+`resolveVariantTier` (`src/application/agents/variants.ts`) maps the step's
+role + complexity signal (`readRepoState`/`classifyComplexity` in
+`complexity.ts`) to a `cheap`/`strong` tier. Only two tiers exist. The
+concrete model is selected by `pickVariantModel` (`src/application/agents/
+models.ts`) from the agent's own advertised model list against the vendored
+models.dev snapshot, restricted to providers present in the routing config.
+The chosen model is applied pre-emptively at `session/new` (ACP
+`set_config_option`) or via the PTY tool's model flag; a quota hit escalates
+through the ADR-022 ladder (provider failover → tier downgrade → token-paid →
+pause). Script steps (`type: script`) bypass model routing entirely — zero
+LLM.

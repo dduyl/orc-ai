@@ -8,7 +8,7 @@ import {
 import { registerAcpStrategy, getAcpStrategy, registerStrategy } from "../../../../application/agents/strategy.js";
 import { callAgentStream } from "../../../../application/agents/adapter-pty.js";
 import type { AdapterDef } from "../../../../application/agents/adapter.js";
-import type { AcpStrategy } from "../../../../application/agents/acp/types.js";
+import type { AcpStrategy, OnProviderQuota } from "../../../../application/agents/acp/types.js";
 import { AgentCallError } from "../../../../application/agents/errors.js";
 import {
   createHookFile,
@@ -50,6 +50,42 @@ rl.on('line', (line) => {
     send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'tool_call', toolCallId:'tc-1', title:'Mock Write', name:'write_file', kind:'edit', status:'in_progress', locations:[{ path:'/tmp/mock.txt', line:1 }], rawInput:{ path:'/tmp/mock.txt' } } } });
   } else if (method === 'session/prompt') {
     send({ jsonrpc:'2.0', id, result:{ stopReason:'end_turn', usage:{ totalTokens:7, inputTokens:2, outputTokens:5 } } });
+  }
+});
+`;
+
+const MOCK_SCRIPT_FAILOVER = `
+const readline = require('readline');
+const rl = readline.createInterface({ input: process.stdin });
+let promptCount = 0;
+let providerSet = false;
+const providers = [
+  { providerId:'provider-a', supported:['anthropic'], required:false, current:{ apiType:'anthropic', baseUrl:'https://api.anthropic.com' } },
+  { providerId:'provider-b', supported:['openai'], required:false, current:null },
+];
+function send(msg) { process.stdout.write(JSON.stringify(msg) + '\\n'); }
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  const { id, method } = msg;
+  if (method === 'initialize') {
+    send({ jsonrpc:'2.0', id, result:{ protocolVersion:1, agentCapabilities:{ providers:{} }, agentInfo:{ name:'mock', version:'1' } } });
+  } else if (method === 'session/new') {
+    send({ jsonrpc:'2.0', id, result:{ sessionId:'sess-1' } });
+    send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'agent_message_chunk', content:{ type:'text', text:'mock reply' } } } });
+  } else if (method === 'session/prompt') {
+    promptCount++;
+    if (promptCount === 1) {
+      send({ jsonrpc:'2.0', id, error:{ code:-32000, message:'You exceeded your current quota, please check your plan and billing details.' } });
+    } else if (!providerSet) {
+      send({ jsonrpc:'2.0', id, error:{ code:-32000, message:'retry prompt arrived before providers/set' } });
+    } else {
+      send({ jsonrpc:'2.0', id, result:{ stopReason:'end_turn', usage:{ totalTokens:7, inputTokens:2, outputTokens:5 } } });
+    }
+  } else if (method === 'providers/list') {
+    send({ jsonrpc:'2.0', id, result:{ providers } });
+  } else if (method === 'providers/set') {
+    providerSet = true;
+    send({ jsonrpc:'2.0', id, result:{} });
   }
 });
 `;
@@ -114,6 +150,15 @@ function fakeAcpStrategyQuota(id: string): AcpStrategy {
     available: true,
     label: "mock-acp",
     buildSpawn: () => ({ command: process.execPath, args: ["-e", MOCK_SCRIPT_QUOTA] }),
+  };
+}
+
+function fakeAcpStrategyFailover(id: string): AcpStrategy {
+  return {
+    id,
+    available: true,
+    label: "mock-acp",
+    buildSpawn: () => ({ command: process.execPath, args: ["-e", MOCK_SCRIPT_FAILOVER] }),
   };
 }
 
@@ -199,6 +244,7 @@ describe("callAcpAgentStream", () => {
     expect(result.usage).toMatchObject({ totalTokens: 7, inputTokens: 2, outputTokens: 5 });
     expect(result.model).toBe("acp-test-agent");
     expect(chunks.join("")).toBe("mock reply");
+    expect(result.providerFailover).toBeUndefined();
   });
 
   it("throws an actionable error when the strategy is unavailable", () => {
@@ -229,6 +275,23 @@ describe("callAcpAgentStream", () => {
 
     expect(result.content).toBe("mock reply");
     expect(result.downgradedTo).toBe("claude-haiku");
+  });
+
+  it("quota → failover seam switches provider: providerFailover survives the adapter boundary (L3 regression)", async () => {
+    registerAcpStrategy(fakeAcpStrategyFailover("acp-test-agent"));
+    const onProviderQuota: OnProviderQuota = async router => {
+      const next = (await router.listProviders()).find(p => p.providerId === "provider-b");
+      if (!next) return undefined;
+      await router.setProvider({ providerId: next.providerId, apiType: "openai", baseUrl: "https://api.openai.com" });
+      return { providerId: next.providerId };
+    };
+    const handle = callAcpAgentStream(ADAPTER, "hello", undefined, undefined, undefined, undefined, undefined, onProviderQuota);
+    const result = await handle.promise;
+
+    expect(result.content).toBe("mock reply");
+    // Pre-fix this field was dropped at the adapter-acp mapping — the switch
+    // was only observable inside the client-internal turn object.
+    expect(result.providerFailover).toBe("provider-b");
   });
 
   it("feeds rendered tool-call lines through the facade", async () => {

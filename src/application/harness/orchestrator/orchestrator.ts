@@ -1,5 +1,9 @@
 import type { AdapterDef } from "../../agents/adapter.js";
+import { loadModelRoutingConfig } from "../../agents/config.js";
+import { readConfiguredProviders } from "../../agents/configured-providers.js";
+import { resolveVariantTier } from "../../agents/variants.js";
 import type { PlannerResult } from "../../planner/registry.js";
+import { defaultResolveDowngradeModel, defaultOnProviderQuota } from "./routing-defaults.js";
 import { runWorkflow, type RunContext } from "../execution/step-runner.js";
 import { Checkpointer, type StepResumeSnapshot } from "../persistence/Checkpointer.js";
 import { StreamEmitter } from "../../../adapters/stream/emitter.js";
@@ -44,6 +48,12 @@ export async function orchestrate(
     const completedSummaries = new Map<string, StepSummary>();
     const emitter = new StreamEmitter();
 
+    // ADR-021/ADR-022: the model-routing block and the providers the user has
+    // credentials for, read once per run and shared by the quota-ladder
+    // defaults below (the downgrade resolver and the failover seam).
+    const routingConfig = loadModelRoutingConfig();
+    const configuredProviders = readConfiguredProviders(routingConfig);
+
     const handler = createStepHandler({
       adapter: activeAdapter,
       agentPrompts,
@@ -52,11 +62,15 @@ export async function orchestrate(
       task,
       tracker,
       onProgress,
-      // ADR-022 note (model routing): a quota hit on the step's primary model
-      // triggers a one-shot downgrade to a cheaper/fallback variant via
-      // `resolveDowngradeModel`, which today is wired to a fixed variant list
-      // keyed by the configured provider. No routing by step role/model tier
-      // exists yet — that is a future phase and intentionally out of scope here.
+      projectRoot: root,
+      // ADR-022/ADR-021: a quota hit on the step's primary model escalates
+      // down the combined ladder — provider failover (providers/set), then a
+      // tier downgrade to a cheaper variant via `resolveDowngradeModel` (wired
+      // to the ADR-021 tier lookup), then a token-paid retry, then pause.
+      modelRoutingConfig: routingConfig,
+      resolveVariantTier: (role, complexity) => resolveVariantTier(role, complexity, routingConfig),
+      resolveDowngradeModel: defaultResolveDowngradeModel(routingConfig, configuredProviders),
+      onProviderQuota: defaultOnProviderQuota(configuredProviders),
     });
 
     // ADR-022: the quota payload of the step that paused the run, used

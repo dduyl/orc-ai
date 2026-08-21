@@ -4,9 +4,11 @@ import type { HookEvent } from "../../../core/hooks.js";
 export const claudeStrategy: AgentStrategy = {
   id: "claude",
 
-  buildArgs(prompt: string): string[] {
-    return ["--prompt", prompt];
+  buildArgs(prompt: string, model?: string): string[] {
+    return ["--prompt", prompt, ...(model ? ["--model", model] : [])];
   },
+
+  supportsModel: true,
 
   keepAlive: true,
 

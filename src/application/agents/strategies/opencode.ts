@@ -4,9 +4,11 @@ import type { HookEvent } from "../../../core/hooks.js";
 export const opencodeStrategy: AgentStrategy = {
   id: "opencode",
 
-  buildArgs(prompt: string): string[] {
-    return ["--pure", "--prompt", prompt];
+  buildArgs(prompt: string, model?: string): string[] {
+    return ["--pure", "--prompt", prompt, ...(model ? ["--model", model] : [])];
   },
+
+  supportsModel: true,
 
   keepAlive: true,
 

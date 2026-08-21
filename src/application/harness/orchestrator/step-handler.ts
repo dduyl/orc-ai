@@ -15,6 +15,13 @@ import { FailureReason } from "../../../core/types.js";
 import { AgentCallError, classifyAgentError, toQuotaInfo, type QuotaInfo } from "../../agents/errors.js";
 import { buildStepContext, buildResponseInstructions } from "./context-builder.js";
 import type { OrcReturnResult, ProgressEvent, RunTracker, StepSummary } from "./types.js";
+import { classifyComplexity, readRepoState } from "../../agents/complexity.js";
+import type { Complexity, RepoState } from "../../agents/complexity.js";
+import { loadModelRoutingConfig } from "../../agents/config.js";
+import type { ModelRoutingConfig } from "../../agents/config.js";
+import { resolveVariantTier, BUILTIN_TIERED_ROLES, type Tier } from "../../agents/variants.js";
+import { readConfiguredProviders } from "../../agents/configured-providers.js";
+import type { OnProviderQuota, TokenPaidRequest } from "../../agents/acp/types.js";
 
 /** Bounded exponential backoff: 1s -> 2s -> 4s ... capped at 30s. */
 const BACKOFF_BASE_MS = 1000;
@@ -99,9 +106,52 @@ export function createStepHandler(options: {
    * Returning undefined (or throwing) leaves the quota error to fail the step.
    */
   resolveDowngradeModel?: (role: string, triedModel: string) => string | undefined;
+  /**
+   * ADR-021: project root for the complexity classifier (git status
+   * porcelain). Defaults to process.cwd().
+   */
+  projectRoot?: string;
+  /**
+   * ADR-021: the model-routing block of ~/.orc/config.json, pre-loaded.
+   * Injectable for tests; defaults to loadModelRoutingConfig(). Also gates
+   * whether a role is tiered: the git-based complexity read only runs for
+   * roles that are tiered here or in BUILTIN_TIERED_ROLES, so the common
+   * (untiered) path stays synchronous.
+   */
+  modelRoutingConfig?: ModelRoutingConfig;
+  /**
+   * ADR-021: seam consulted on every agent step to decide the model tier
+   * ("cheap" | "strong") from the step's agent role + task complexity.
+   * Injectable for tests; defaults to the real resolveVariantTier backed by
+   * the model-routing block of ~/.orc/config.json.
+   */
+  resolveVariantTier?: (role: string, complexity: Complexity) => Tier;
+  /**
+   * ADR-021 (provider failover): seam forwarded to the ACP session when a
+   * prompt hits a quota error and the agent advertises the `providers`
+   * capability. A returned failover switches providers (`providers/list` +
+   * `providers/set`) and re-runs the prompt on the new provider BEFORE the
+   * same-session downgrade path; returning undefined (or throwing) leaves the
+   * quota error to the downgrade/pause ladder. The PTY path accepts but never
+   * invokes it. Injectable for tests; not wired by default (mirror of
+   * `resolveDowngradeModel`).
+   */
+  onProviderQuota?: OnProviderQuota;
 }): StepHandler {
-  const { adapter, agentPrompts, completedSummaries, emitter, task, tracker, onProgress, commandExecutor, resolveDowngradeModel } = options;
+  const { adapter, agentPrompts, completedSummaries, emitter, task, tracker, onProgress, commandExecutor, resolveDowngradeModel, projectRoot, modelRoutingConfig, resolveVariantTier: resolveTier, onProviderQuota } = options;
   const activeAdapter = adapter;
+  const root = projectRoot ?? process.cwd();
+  const routingConfig = modelRoutingConfig ?? loadModelRoutingConfig();
+  const tierResolver = resolveTier ?? ((role: string, complexity: Complexity) => resolveVariantTier(role, complexity, routingConfig));
+  // A role is tiered if the user configured a variants entry for it or it is a
+  // builtin tiered role. Only tiered roles pay the git-read cost of the
+  // complexity classifier; untiered roles resolve from an undefined repo state
+  // (always "complex" -> never under-provisioned) with no I/O.
+  const roleTiered = (role: string): boolean => Boolean(routingConfig.variants?.[role]) || BUILTIN_TIERED_ROLES.has(role);
+  // Providers the user has credentials for, produced once per run (user config
+  // `providers` block + opencode auth.json) and threaded through to the ACP
+  // session seam as the ADR-021 provider filter input.
+  const configuredProviders = readConfiguredProviders(routingConfig);
   const forAgent = (_name: string): AdapterDef => activeAdapter;
   const runId = tracker?.runId;
   const executor = commandExecutor ?? new CommandExecutor(commandsTomlPath());
@@ -204,8 +254,32 @@ export function createStepHandler(options: {
       return await runScriptStep(step, ctx);
     }
 
+    // ADR-021: task complexity from the repo state, computed once per step —
+    // the worktree does not change across retry attempts, but it CAN change
+    // between steps, so the git read is cached per step (not per run). The read
+    // is gated on the role being tiered (see roleTiered): untiered roles classify
+    // from an undefined repo state as "complex" so they are never
+    // under-provisioned, and the common path stays synchronous.
+    let repoStateCache: Promise<RepoState | undefined> | undefined;
+    const repoState = (): Promise<RepoState | undefined> => (repoStateCache ??= readRepoState(root));
+    const role = step.agent ?? "";
+    const complexity = roleTiered(role)
+      ? classifyComplexity(task, await repoState())
+      : classifyComplexity(task, undefined);
+
     let downgradeTried = false;
     let downgradeTo: string | undefined;
+    // M1: the model in effect for this attempt — the concrete variant model
+    // when a user override configured one for the resolved tier, otherwise ""
+    // (the harness cannot know the ACP session's cheapest-of-tier pick). Hoisted
+    // to the loop level because `variantModel` is declared inside the try block
+    // and the quota catch below is a sibling scope.
+    let modelInEffect: string | undefined;
+    // ADR-021 Phase F: one token-paid retry is allowed per step, AFTER the
+    // same-session downgrade retry fails (or no downgrade is possible). The
+    // flag caps it to a single attempt — a second quota pauses, never loops.
+    let tokenPaidTried = false;
+    let tokenPaid: TokenPaidRequest | undefined;
 
     // While-loop (not for): the quota downgrade re-invokes the SAME attempt
     // without consuming a transient-retry slot, so only the transient backoff
@@ -233,6 +307,18 @@ export function createStepHandler(options: {
         const completionKey = crypto.randomUUID();
         const callFor = forAgent(name);
 
+        // ADR-021: decide the model tier at the call boundary (not inside
+        // `forAgent`, which returns the active AdapterDef and ignores its
+        // argument). The tier is carried to callAgentStream; the ACP session
+        // model is configured from it pre-emptively. A user override
+        // (`variants.<agent>.<tier>`) becomes a concrete `variantModel`; a
+        // bare tier biases the ACP selection to the cheapest-of-tier
+        // advertised model, and the PTY path logs the intent + tool default.
+        const tier = tierResolver(name, complexity);
+        const variantModel = routingConfig.variants?.[name]?.[tier]?.trim() || undefined;
+        modelInEffect = variantModel ?? "";
+        log.debug(`step ${step.id}: role '${name}' complexity '${complexity}' -> tier '${tier}'${variantModel ? ` model '${variantModel}'` : ""}`);
+
         let result: AgentCallResult;
         let hooks: import("../../../core/hooks.js").HookEvent[] = [];
         let orcResult: OrcReturnResult | null = null;
@@ -243,7 +329,7 @@ export function createStepHandler(options: {
           : agentInfo.systemPrompt + "\n\n" + buildStepContext(step, completedSummaries, task, agentInfo, completionKey);
         const hookFile = createHookFile(step.id);
         try {
-          const handle = callAgentStream(callFor, combinedPrompt, hookFile, downgradeTo);
+          const handle = callAgentStream(callFor, combinedPrompt, hookFile, downgradeTo, tier, variantModel, configuredProviders, onProviderQuota, tokenPaid, modelRoutingConfig?.providers);
           onProgress?.({ type: "step_pty", runId, stepId: step.id, pty: handle.pty });
           const abortSignal = ctx.signal;
           // Register before attaching the abort listener: the sync aborted
@@ -309,9 +395,16 @@ export function createStepHandler(options: {
           affectedFiles: summary.affectedFiles,
           signal: orcResult?.signal,
           ...(result.downgradedTo ? { downgradedTo: result.downgradedTo } : {}),
+          ...(result.providerFailover ? { providerFailover: result.providerFailover } : {}),
         };
         if (result.downgradedTo) {
           log.info(`step '${step.id}' quota — completed on downgraded model '${result.downgradedTo}'`);
+        }
+        if (result.providerFailover) {
+          log.info(`step '${step.id}' quota — completed via provider failover on '${result.providerFailover}'`);
+        }
+        if (tokenPaidTried) {
+          log.info(`step '${step.id}' completed on token-paid fallback (method '${tokenPaid?.methodId}')`);
         }
         tracker?.tracker.setStepCompleted(tracker.runId, step.id, "completed");
         onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "completed", duration: result.duration });
@@ -353,7 +446,7 @@ export function createStepHandler(options: {
             if (!downgradeTried && resolveDowngradeModel) {
               let variant: string | undefined;
               try {
-                variant = resolveDowngradeModel(step.agent ?? "", activeAdapter.id);
+                variant = resolveDowngradeModel(step.agent ?? "", modelInEffect ?? "");
               } catch (cbErr) {
                 log.warn(`step '${step.id}' quota — resolveDowngradeModel threw: ${(cbErr as Error).message}`);
               }
@@ -366,6 +459,27 @@ export function createStepHandler(options: {
                 log.info(`step '${step.id}' quota — downgrading model '${activeAdapter.id}' -> '${downgradeTo}'`);
                 continue;
               }
+            }
+            // ADR-021 Phase F: one token-paid retry, AFTER the failover (in the
+            // ACP client) and the same-session downgrade retry have returned
+            // nothing usable. Only possible when the agent advertised an
+            // env-var auth method AND a `tokenPaidApiKey` is configured —
+            // per-provider (the provider in effect after a failover) wins over
+            // the top-level key, and whitespace-only counts as absent. The key
+            // is NEVER logged (only the method id and env var name).
+            if (!tokenPaidTried && agentErr.authMethods && agentErr.authMethods.length > 0) {
+              const method = agentErr.authMethods[0];
+              const perProviderKey = agentErr.providerId
+                ? routingConfig.providers?.[agentErr.providerId]?.tokenPaidApiKey
+                : undefined;
+              const key = (perProviderKey ?? routingConfig.tokenPaidApiKey)?.trim();
+              if (key) {
+                tokenPaidTried = true;
+                tokenPaid = { methodId: method.methodId, envVarName: method.envVarName, key };
+                log.info(`step '${step.id}' quota — token-paid retry via env var '${method.envVarName}' (method '${method.methodId}')`);
+                continue;
+              }
+              log.debug(`step '${step.id}' quota — env-var auth advertised but no tokenPaidApiKey configured, pausing`);
             }
             const quotaInfo = toQuotaInfo(agentErr, downgradeTried && downgradeTo ? downgradeTo : undefined);
             // ADR-022: quota remains with no recovery path (no
