@@ -14,6 +14,7 @@ import { log } from "../../../core/log.js";
 import { FailureReason } from "../../../core/types.js";
 import { AgentCallError, classifyAgentError, toQuotaInfo, type QuotaInfo } from "../../agents/errors.js";
 import { buildStepContext, buildResponseInstructions } from "./context-builder.js";
+import { checkOwnership } from "../execution/worktree.js";
 import type { OrcReturnResult, ProgressEvent, RunTracker, StepSummary } from "./types.js";
 import { classifyComplexity, readRepoState } from "../../agents/complexity.js";
 import type { Complexity, RepoState } from "../../agents/complexity.js";
@@ -383,6 +384,24 @@ export function createStepHandler(options: {
             }
           : { summary: "(no return_result)", artifact: "", affectedFiles: [] };
         completedSummaries.set(step.id, summary);
+
+        // ADR-015: Post-hoc ownership enforcement
+        const ownership = checkOwnership(step.agent ?? "", summary.affectedFiles);
+        if (!ownership.valid) {
+          const errMsg = `Ownership violation (ADR-015): role '${step.agent}' modified files outside allowed ownership boundary: ${ownership.violations.join(", ")}`;
+          log.warn(`[step-handler] ${errMsg}`);
+          tracker?.tracker.setStepCompleted(tracker.runId, step.id, "failed", errMsg);
+          onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "failed", error: errMsg });
+          emitter.stepFinish(step.id, "error", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
+          return {
+            stepId: step.id,
+            status: "failed",
+            error: errMsg,
+            retries: attempt,
+            summary: summary.summary,
+            affectedFiles: summary.affectedFiles,
+          };
+        }
 
         const o: StepOutcome = {
           stepId: step.id,

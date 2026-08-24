@@ -27,7 +27,7 @@ trusting an "Implemented" mark after further changes.
 | 012 | Canonical Schemas Enforced at Every Step Boundary | Accepted | Partial | Schemas defined; confirmed NOT validated at the step-completion path |
 | 013 | Conformance Check Across Parallel Artifacts | Accepted | Implemented | ConformanceChecker deterministic signature comparison wired into feat-impl-builtin workflow with repair feedback routing |
 | 014 | Planner / Harness / Agents Layering | Accepted | Implemented | Confirmed: matching directory structure exists |
-| 015 | Parallel Isolation via Worktrees and Ownership | Accepted | Not Implemented | No worktree usage found; new decision from this round |
+| 015 | Parallel Isolation via Worktrees and Ownership | Accepted | Implemented | WorktreeManager + checkOwnership post-hoc enforcement with per-role boundaries and rollback support |
 | 016 | Escalation to a Human | Accepted | Not Implemented | `needs_human` defined in schema, never assigned; no ask-path found |
 | 017 | Dynamic Campaign Bounding | Accepted | Implemented | Confirmed: MAX_STEPS=50, MAX_LOOP=5 |
 | 018 | MCP Prompts as Portable Invocation Surface | Accepted | Partial | MCP server confirmed; use of the "prompts" primitive specifically not confirmed |

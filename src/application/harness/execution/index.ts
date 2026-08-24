@@ -6,3 +6,5 @@ export { CommandExecutor, loadCommandsFile, runCommandGroup, runInlineCommand, r
 export type { CommandExecutionResult, CommandsMap, ResultGroup } from "./CommandExecutor.js";
 export { ConformanceChecker } from "./conformance.js";
 export type { ConformanceCheckOptions, ConformanceResult, MismatchDetail } from "./conformance.js";
+export { WorktreeManager, checkOwnership, DEFAULT_OWNERSHIP_RULES } from "./worktree.js";
+export type { WorktreeInfo, MergeResult, OwnershipCheckResult } from "./worktree.js";
