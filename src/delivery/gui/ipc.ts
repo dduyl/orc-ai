@@ -135,6 +135,8 @@ export interface RendererToMainInvoke {
   "get-workflow-graph": { args: [runId: string]; result: WorkflowGraphData };
   "get-signal-trace": { args: [runId: string, limit?: number]; result: SignalEvent[] };
   "list-workflows": { args: []; result: RegisteredWorkflow[] };
+  /** Boot output of the spawned daemon (renderer pulls once it is listening). */
+  "get-boot-log": { args: []; result: string[] };
 }
 
 // ── Channel names (runtime strings, mirrored 1:1 to the contracts) ─────────
@@ -159,6 +161,7 @@ export const IPC = {
     "get-workflow-graph": "get-workflow-graph",
     "get-signal-trace": "get-signal-trace",
     "list-workflows": "list-workflows",
+    "get-boot-log": "get-boot-log",
   },
   MainToRenderer: {
     output: "output",
@@ -237,6 +240,8 @@ export interface GuiApi {
   getSignalTrace(runId: string, limit?: number): Promise<SignalEvent[]>;
   /** List all available workflows (builtins + user). */
   listWorkflows(): Promise<RegisteredWorkflow[]>;
+  /** Boot output of the spawned daemon, buffered in main (renderer pulls on load). */
+  getBootLog(): Promise<string[]>;
 }
 
 declare global {

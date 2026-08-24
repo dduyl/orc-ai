@@ -802,6 +802,12 @@ term.onData((data: string) => {
 });
 
 // ── Boot ───────────────────────────────────────────────────────────────────
+// Pull daemon boot output buffered in main: lines emitted before this
+// renderer started listening were unreachable via the log channel.
+api.getBootLog().then((lines) => {
+  for (const line of lines) addEvent(line, refs.eventList);
+}).catch(() => { /* best effort */ });
+
 window.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "n") {
     e.preventDefault();

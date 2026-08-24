@@ -147,6 +147,7 @@ const api: GuiApi = {
   getWorkflowGraph: (runId) => ipcRenderer.invoke(IPC.RendererToMainInvoke["get-workflow-graph"], runId),
   getSignalTrace: (runId, limit) => ipcRenderer.invoke(IPC.RendererToMainInvoke["get-signal-trace"], runId, limit),
   listWorkflows: () => ipcRenderer.invoke(IPC.RendererToMainInvoke["list-workflows"]),
+  getBootLog: () => ipcRenderer.invoke(IPC.RendererToMainInvoke["get-boot-log"]),
   findFiles: async (query: string): Promise<FsFindResult> => {
     const cwd = workspaceCwd();
     const text = query.replace(/\\/g, "/");

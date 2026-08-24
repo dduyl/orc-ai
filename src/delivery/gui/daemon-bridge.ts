@@ -242,21 +242,67 @@ export class DaemonBridge {
     const existing = await this.tryConnect(projectDir, 1500);
     if (existing) return existing;
 
-    // No daemon â€” spawn the block, then wait for its control pipe.
+    // No daemon — spawn the block, then wait for its control pipe. Child
+    // output is ring-buffered from the very first byte: the renderer is not
+    // listening yet during boot, so anything only forwarded to the log
+    // channel here would be lost exactly when it matters (a boot crash).
     const child = this.spawnDaemon(projectDir);
     this.daemonChild = child;
     this.daemonPid = child.pid ?? null;
-    child.stdout?.on("data", (d) => this.send(IPC.MainToRenderer.log, { text: String(d).trimEnd() }));
-    child.stderr?.on("data", (d) => this.send(IPC.MainToRenderer.log, { text: String(d).trimEnd() }));
-    child.once("exit", () => {
-      this.daemonPid = null;
-      this.send(IPC.MainToRenderer.log, { text: "daemon exited" });
+    child.stdout?.on("data", (d) => {
+      const text = String(d).trimEnd();
+      if (text) this.pushBootLine(text);
+      this.send(IPC.MainToRenderer.log, { text });
+    });
+    child.stderr?.on("data", (d) => {
+      const text = String(d).trimEnd();
+      if (text) this.pushBootLine(text);
+      this.send(IPC.MainToRenderer.log, { text });
     });
 
-    const client = await this.tryConnect(projectDir, 10_000);
+    // Fail fast when the child dies or cannot even spawn: retrying a pipe
+    // that will never exist just burns the timeout and hides the cause.
+    const spawnFailure = new Promise<never>((_, reject) => {
+      child.once("error", (err) =>
+        reject(new Error(`failed to spawn daemon process: ${err.message}\n${this.bootTail()}`)),
+      );
+      child.once("exit", (code) => {
+        if (this.client) return; // exited after a successful attach — not a boot failure
+        reject(new Error(`daemon exited during startup (code ${code})\n${this.bootTail()}`));
+      });
+    });
+
+    let client: PipeClient | null;
+    try {
+      client = await Promise.race([this.tryConnect(projectDir, 10_000), spawnFailure]);
+    } catch (err) {
+      try { child.kill(); } catch { /* already dead */ }
+      throw err;
+    }
     if (client) return client;
     try { child.kill(); } catch { /* ignore */ }
-    throw new Error("daemon did not come up within 10s");
+    throw new Error(`daemon did not come up within 10s\n${this.bootTail()}`);
+  }
+
+  /** Ring buffer of everything the spawned daemon printed since spawn. */
+  private bootLog: string[] = [];
+  private readonly bootLogMax = 50;
+
+  private pushBootLine(line: string): void {
+    this.bootLog.push(line);
+    if (this.bootLog.length > this.bootLogMax) {
+      this.bootLog.splice(0, this.bootLog.length - this.bootLogMax);
+    }
+  }
+
+  /** Last few boot lines for failure surfaces (dialog / renderer log). */
+  private bootTail(lines = 15): string {
+    return this.bootLog.slice(-lines).join("\n");
+  }
+
+  /** Boot output pulled by the renderer once it is actually listening. */
+  getBootLog(): string[] {
+    return [...this.bootLog];
   }
 
   private tryConnect(projectDir: string, timeoutMs: number): Promise<PipeClient | null> {

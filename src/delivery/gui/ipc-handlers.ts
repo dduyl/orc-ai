@@ -57,4 +57,6 @@ ipcMain.handle(IPC.RendererToMainInvoke.prompt, (_event, text: string, mentions?
   );
 
   ipcMain.handle(IPC.RendererToMainInvoke["list-workflows"], () => bridge.listWorkflows());
+
+  ipcMain.handle(IPC.RendererToMainInvoke["get-boot-log"], () => bridge.getBootLog());
 }

@@ -155,6 +155,7 @@ function createApiStub(): {
     getWorkflowGraph: vi.fn(async () => ({ nodes: [], edges: [] })),
     getSignalTrace: vi.fn(async () => []),
     listWorkflows: vi.fn(async () => []),
+    getBootLog: vi.fn(async () => []),
   };
   return { api, handlers, calls };
 }
