@@ -22,8 +22,12 @@ export interface DomRefs {
   splitter: HTMLElement;
   rightPanel: HTMLElement;
   // views + navigation
+  graphView: HTMLElement;
+  stepsView: HTMLElement;
   chatView: HTMLElement;
   terminalView: HTMLElement;
+  tabGraph: HTMLButtonElement;
+  tabSteps: HTMLButtonElement;
   tabChat: HTMLButtonElement;
   tabTerminal: HTMLButtonElement;
   // chat panel
@@ -50,6 +54,8 @@ export interface DomRefs {
   toolsSection: HTMLElement;
   toolList: HTMLElement;
   brandAdapter: HTMLElement;
+  // graph view
+  graphViewContainer: HTMLElement;
 }
 
 function req(id: string): HTMLElement {
@@ -79,8 +85,12 @@ export function getDomRefs(): DomRefs {
     ptyTree: req("pty-tree"),
     splitter: req("splitter"),
     rightPanel: req("right-panel"),
+    graphView: req("graph-view"),
+    stepsView: req("steps-view"),
     chatView: req("chat-view"),
     terminalView: req("terminal-view"),
+    tabGraph: req("tab-graph") as HTMLButtonElement,
+    tabSteps: req("tab-steps") as HTMLButtonElement,
     tabChat: req("tab-chat") as HTMLButtonElement,
     tabTerminal: req("tab-terminal") as HTMLButtonElement,
     chatList: req("chat-list"),
@@ -105,5 +115,6 @@ export function getDomRefs(): DomRefs {
     toolsSection: req("activity-tools"),
     toolList: req("tool-list"),
     brandAdapter: req("brand-adapter"),
+    graphViewContainer: req("graph-view-container"),
   };
 }

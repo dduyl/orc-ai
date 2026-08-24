@@ -293,6 +293,33 @@ body::before {
 .xterm-viewport::-webkit-scrollbar { display: none; }
 .xterm-viewport { scrollbar-width: none; }
 
+/* ══ Graph view ══ */
+#graph-view { flex: 1; display: none; flex-direction: column; min-height: 0; overflow: hidden; }
+#graph-view.active { display: flex; }
+.graph-header {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 32px; min-height: 32px; padding: 0 var(--space-3);
+  background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle);
+}
+.graph-header .section-title { margin: 0; }
+.graph-canvas { flex: 1; overflow: hidden; position: relative; background: var(--bg-base); }
+.graph-canvas svg { width: 100%; height: 100%; }
+.node .node-rect { fill: var(--bg-raised); stroke: var(--border-subtle); stroke-width: 1; transition: fill var(--dur-fast), stroke var(--dur-fast); }
+.node.completed .node-rect { fill: var(--ok); stroke: var(--ok); }
+.node.running .node-rect { fill: var(--accent-dim); stroke: var(--accent); }
+.node.failed .node-rect { fill: var(--err); stroke: var(--err); }
+.node.pending .node-rect { fill: var(--bg-inset); stroke: var(--border-subtle); }
+.node.gate .node-rect { stroke-width: 2; }
+.node.active .node-rect { stroke: var(--accent); stroke-width: 2.5; filter: url(#glow); }
+.node-label { fill: var(--text-primary); pointer-events: none; }
+.node-emits { fill: var(--text-faint); pointer-events: none; }
+.edge { pointer-events: none; }
+.gate-indicator { fill: var(--border-strong); }
+.gate-indicator.completed { fill: var(--ok); }
+.gate-indicator.running { fill: var(--accent); }
+.gate-indicator.failed { fill: var(--err); }
+.gate-indicator.pending { fill: var(--text-faint); }
+
 /* ── Splitter ────────────────────────────────────────────── */
 #splitter {
   width: 4px; cursor: col-resize; flex-shrink: 0;
@@ -460,7 +487,8 @@ body::before {
   <header id="titlebar">
     <div class="brand">ORC<span class="brand-adapter" id="brand-adapter"></span></div>
     <nav class="tab-row" aria-label="Views">
-      <button class="view-tab active" data-view="chat" id="tab-chat">Chat</button>
+      <button class="view-tab active" data-view="graph" id="tab-graph">Graph</button>
+      <button class="view-tab" data-view="steps" id="tab-steps">Steps</button>
       <button class="view-tab" data-view="terminal" id="tab-terminal">Terminal</button>
     </nav>
     <div class="title-status">
@@ -473,6 +501,16 @@ body::before {
   <div id="main">
 
     <div id="content">
+
+      <!-- Graph view -->
+      <section id="graph-view" class="active">
+        <div id="graph-view-container"></div>
+      </section>
+
+      <!-- Steps view -->
+      <section id="steps-view">
+        <div class="muted-empty">› No active run</div>
+      </section>
 
       <!-- Chat view -->
       <section id="chat-view">

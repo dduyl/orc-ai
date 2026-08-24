@@ -25,6 +25,8 @@ const DOM = `
 <div id="app">
   <header id="titlebar">
     <div class="brand">ORC<span id="brand-adapter"></span></div>
+    <button id="tab-graph">Graph</button>
+    <button id="tab-steps">Steps</button>
     <button id="tab-chat">Chat</button>
     <button id="tab-terminal">Terminal</button>
     <span id="status-indicator"></span>
@@ -33,6 +35,12 @@ const DOM = `
     <span id="sb-text">Initializing.</span>
   </header>
   <div id="main"><div id="content">
+    <section id="graph-view" class="active">
+      <div id="graph-view-container"></div>
+    </section>
+    <section id="steps-view">
+      <div class="muted-empty">› No active run</div>
+    </section>
     <section id="chat-view">
       <div id="chat-scroll"><div id="chat-list"></div></div>
       <div id="chat-inputbar"><div id="chat-busy" hidden><span id="chat-busy-text">Agent is working.</span><button id="chat-cancel">Cancel</button></div></div>
@@ -97,6 +105,11 @@ function createApiStub(): {
     onPermissionRequested: on("permission"),
     onChatFrame: on("chatFrame"),
     onChatReset: on("chatReset"),
+    onWorkflowStarted: on("workflowStarted"),
+    onWorkflowComplete: on("workflowComplete"),
+    onSignalEmitted: on("signalEmitted"),
+    onEdgeMatched: on("edgeMatched"),
+    onStepContext: on("stepContext"),
     write: (...a: unknown[]) => (calls.write ??= []).push(a),
     prompt: vi.fn(async () => {}),
     cancelMain: (...a: unknown[]) => (calls.cancelMain ??= []).push(a),
@@ -111,6 +124,10 @@ function createApiStub(): {
     listSkills: vi.fn(async () => []),
     findFiles: vi.fn(async () => ({ entries: [] })),
     setConfigOption: vi.fn(async () => {}),
+    startWorkflow: vi.fn(async () => ({ runId: "r1" })),
+    getWorkflowGraph: vi.fn(async () => ({ nodes: [], edges: [] })),
+    getSignalTrace: vi.fn(async () => []),
+    listWorkflows: vi.fn(async () => []),
   };
   return { api, handlers, calls };
 }
