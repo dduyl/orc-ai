@@ -4,6 +4,9 @@ import { ChatView } from "./chat-view.js";
 import { ActivityBox } from "./activity-box.js";
 import { MentionBox, type SuggestionItem } from "./mention-box.js";
 import { GraphView } from "./views/graph-view.js";
+import { StepsView } from "./views/steps-view.js";
+import { SignalTrace } from "./signal-trace.js";
+import { ActiveStep } from "./active-step.js";
 import { addEvent, setViewLabel, renderPTYTree, renderStepTree, type StepInfo } from "./ui-renderers.js";
 import { initSplitter } from "./splitter.js";
 import { GUIDE_TEXT } from "../../adapters/mcp/handlers/content.js";
@@ -18,6 +21,9 @@ const refs = getDomRefs();
 const { term, fit: fitTermBase } = createTerminal(refs.termContainer);
 const chat = new ChatView(refs.chatList);
 const graphView = new GraphView();
+const stepsView = new StepsView();
+const signalTrace = new SignalTrace();
+const activeStep = new ActiveStep();
 const activity = new ActivityBox({
   box: refs.activityBox,
   permissionSection: refs.permissionSection,
@@ -367,6 +373,15 @@ refs.tabSteps.addEventListener("click", () => setActiveView("steps"));
 // Mount GraphView
 graphView.mount(refs.graphViewContainer);
 
+// Mount StepsView
+stepsView.mount(refs.stepsView);
+
+// Mount SignalTrace
+signalTrace.mount(refs.signalTraceList);
+
+// Mount ActiveStep
+activeStep.mount(refs.inspectorActiveStep);
+
 // ── View navigation ────────────────────────────────────────────────────────
 function setActiveView(view: "graph" | "steps" | "chat" | "terminal"): void {
   activeView = view;
@@ -387,6 +402,8 @@ function setActiveView(view: "graph" | "steps" | "chat" | "terminal"): void {
 
   if (isGraph) {
     graphView.fitToView();
+  } else if (isSteps) {
+    // Steps view is already rendered via pollRunStatus
   } else if (isChat) {
     refs.chatInput.focus();
   } else if (isTerminal) {
@@ -555,21 +572,34 @@ api.onWorkflowComplete((data: { runId: string; status: "completed" | "failed"; f
   addEvent(`Workflow ${data.status} (${data.finalSignal ?? "—"})`, refs.eventList);
   if (data.runId === latestRunId) {
     graphView.setStepStatus([]);
+    activeStep.render({ stepId: "", agent: "", context: [], emits: [] });
   }
 });
 
 api.onSignalEmitted((data: { stepId: string; signal: string; payload?: unknown; timestamp: number }) => {
   const event: SignalEvent = { ...data, type: "emission" };
   graphView.onSignalEmitted(event);
+  signalTrace.addEvent(event);
 });
 
 api.onEdgeMatched((data: { fromStep: string; signal: string; toStep: string; timestamp: number }) => {
   const event: SignalEvent = { ...data, type: "edge_match", stepId: data.fromStep };
   graphView.onEdgeMatched(event);
+  signalTrace.addEvent(event);
+});
+
+api.onGateResult((data: { stepId: string; gate: string; exitCode: number; output: string }) => {
+  const event: SignalEvent = { ...data, type: "gate_result", stepId: data.stepId, signal: data.gate, timestamp: Date.now() };
+  signalTrace.addEvent(event);
+});
+
+api.onLoopDetected((data: { stepId: string; iteration: number; reason: string; fromSignal: string }) => {
+  const event: SignalEvent = { ...data, type: "loop", stepId: data.stepId, signal: data.fromSignal, timestamp: Date.now() };
+  signalTrace.addEvent(event);
 });
 
 api.onStepContext((data: { stepId: string; agent: string; context: string[]; emits: string[] }) => {
-  // Could update Active Step panel here
+  activeStep.render(data);
 });
 
 api.onStepActivated(async (data: { stepId: string }) => {
@@ -584,6 +614,9 @@ api.onStepActivated(async (data: { stepId: string }) => {
   setActiveView(mainMode === "acp" && isMain ? "chat" : "terminal");
   refreshPTYTree();
   term.focus();
+
+  graphView.onStepActivated(data.stepId);
+  stepsView.setStepStatus([]); // Will be updated by pollRunStatus
 });
 
 // ── Chat panel (ACP main) ──────────────────────────────────────────────────

@@ -320,6 +320,42 @@ body::before {
 .gate-indicator.failed { fill: var(--err); }
 .gate-indicator.pending { fill: var(--text-faint); }
 
+/* ══ Steps view ══ */
+#steps-view { flex: 1; display: none; flex-direction: column; min-height: 0; overflow: hidden; }
+#steps-view.active { display: flex; }
+.step-list-header {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 32px; min-height: 32px; padding: 0 var(--space-3);
+  background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle);
+}
+.step-list-header .section-title { margin: 0; }
+.step-list-filters { display: flex; gap: var(--space-1); }
+.step-list-filters .filter-btn {
+  border: 0; background: transparent; color: var(--text-secondary);
+  font-family: var(--font-ui); font-size: 11px; padding: 4px 8px;
+  cursor: pointer; border-radius: var(--radius-sm);
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.step-list-filters .filter-btn:hover { color: var(--text-primary); }
+.step-list-filters .filter-btn.active { color: var(--accent); background: var(--accent-dim); }
+.step-list-table-wrapper { flex: 1; overflow: auto; }
+.step-list-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 11px; }
+.step-list-table th, .step-list-table td { padding: var(--space-1) var(--space-2); text-align: left; }
+.step-list-table th { background: var(--bg-surface); color: var(--text-faint); font-weight: 600; text-transform: uppercase; letter-spacing: 1.2px; font-size: 9px; cursor: pointer; user-select: none; white-space: nowrap; }
+.step-list-table th:hover { color: var(--accent); }
+.step-list-table tr { cursor: pointer; transition: background var(--dur-fast); }
+.step-list-table tr:hover { background: var(--bg-raised); }
+.step-list-table tr.completed { color: var(--ok); }
+.step-list-table tr.failed { color: var(--err); }
+.step-list-table tr.running { color: var(--accent); }
+.step-list-table tr.pending { color: var(--text-secondary); }
+.step-list-table .status-glyph { font-family: var(--font-mono); font-size: 11px; margin-right: var(--space-1); }
+.step-list-table .gate-column { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+.step-list-table .gate-column.pass { color: var(--ok); }
+.step-list-table .gate-column.fail { color: var(--err); }
+.step-list-table .gate-column.running { color: var(--accent); }
+.step-list-empty { text-align: center; color: var(--text-faint); padding: var(--space-4); font-family: var(--font-mono); font-size: 11px; }
+
 /* ── Splitter ────────────────────────────────────────────── */
 #splitter {
   width: 4px; cursor: col-resize; flex-shrink: 0;
@@ -478,6 +514,38 @@ body::before {
 }
 .step-summary { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-2); }
 .step-dot-glyph { font-family: var(--font-mono); font-size: 11px; }
+
+/* Signal trace styles */
+.signal-trace-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+.signal-trace-filters { display: flex; gap: var(--space-1); }
+.signal-trace-filters .filter-btn {
+  border: 0; background: transparent; color: var(--text-secondary);
+  font-family: var(--font-ui); font-size: 10px; padding: 3px 6px;
+  cursor: pointer; border-radius: var(--radius-sm);
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.signal-trace-filters .filter-btn:hover { color: var(--text-primary); }
+.signal-trace-filters .filter-btn.active { color: var(--accent); background: var(--accent-dim); }
+.signal-trace-list { max-height: 300px; overflow-y: auto; font-family: var(--font-mono); font-size: 10px; }
+.signal-trace-empty { color: var(--text-faint); padding: var(--space-3); text-align: center; font-family: var(--font-mono); font-size: 11px; }
+.signal-trace-entry { display: flex; align-items: center; gap: var(--space-2); padding: 2px 0; line-height: 1.5; }
+.signal-trace-entry .signal-time { color: var(--text-faint); font-size: 9px; white-space: nowrap; }
+.signal-trace-entry .signal-icon { color: var(--accent); }
+.signal-trace-entry .signal-text { color: var(--text-secondary); font-size: 10px; }
+.signal-trace-entry.signal-emission .signal-icon { color: var(--info); }
+.signal-trace-entry.signal-edge .signal-icon { color: var(--accent); }
+.signal-trace-entry.signal-gate.pass .signal-icon { color: var(--ok); }
+.signal-trace-entry.signal-gate.fail .signal-icon { color: var(--err); }
+.signal-trace-entry.signal-loop .signal-icon { color: var(--warn); }
+
+/* Active Step styles */
+.active-step-content { font-family: var(--font-mono); font-size: 11px; }
+.active-step-empty { color: var(--text-faint); padding: var(--space-3); text-align: center; font-family: var(--font-mono); font-size: 11px; }
+.active-step-content .info-row.waiting { border-top: 1px solid var(--border-subtle); margin-top: var(--space-2); padding-top: var(--space-2); color: var(--warn); }
+.active-step-content .info-row.waiting .value { color: var(--warn); }
 </style>
 </head>
 <body>
@@ -560,15 +628,33 @@ body::before {
         <div class="info-row"><span class="label">PID</span><span class="value" id="info-pid">—</span></div>
         <div class="info-row"><span class="label">Size</span><span class="value" id="info-size">—</span></div>
       </div>
-      <div>
-        <div class="section-title">Runs</div>
+      <div id="inspector-run">
+        <div class="section-title">Run</div>
         <div id="step-tree">
           <div class="muted-empty">› No active run</div>
         </div>
       </div>
-      <div>
-        <div class="section-title">Sessions</div>
-        <div id="pty-tree"></div>
+      <div id="inspector-active-step">
+        <div class="section-title">Active Step</div>
+        <div class="active-step-content">
+          <div class="active-step-empty">No active step</div>
+        </div>
+      </div>
+      <div id="inspector-signal-trace">
+        <div class="section-title">Signal Trace</div>
+        <div class="signal-trace-header">
+          <span class="section-title">Signal Trace</span>
+          <div class="signal-trace-filters">
+            <button class="filter-btn active" data-filter="all">All</button>
+            <button class="filter-btn" data-filter="emission">Emissions</button>
+            <button class="filter-btn" data-filter="edge_match">Edges</button>
+            <button class="filter-btn" data-filter="gate_result">Gates</button>
+            <button class="filter-btn" data-filter="loop">Loops</button>
+          </div>
+        </div>
+        <div class="signal-trace-list" id="signal-trace-list">
+          <div class="signal-trace-empty">Waiting for signals…</div>
+        </div>
       </div>
       <div>
         <div class="section-title">Events</div>

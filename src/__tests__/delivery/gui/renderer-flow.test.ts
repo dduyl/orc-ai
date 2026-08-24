@@ -55,7 +55,31 @@ const DOM = `
     <aside id="right-panel">
       <span id="info-adapter">-</span><span id="info-status">Connecting</span>
       <span id="info-mode">-</span><span id="info-pid">-</span><span id="info-size">-</span>
-      <div id="step-tree"></div><div id="pty-tree"></div><div id="event-list"></div>
+      <div id="inspector-run">
+        <div id="step-tree"></div>
+      </div>
+      <div id="inspector-active-step">
+        <div class="active-step-content">
+          <div class="active-step-empty">No active step</div>
+        </div>
+      </div>
+      <div id="inspector-signal-trace">
+        <div class="signal-trace-header">
+          <span class="section-title">Signal Trace</span>
+          <div class="signal-trace-filters">
+            <button class="filter-btn active" data-filter="all">All</button>
+            <button class="filter-btn" data-filter="emission">Emissions</button>
+            <button class="filter-btn" data-filter="edge_match">Edges</button>
+            <button class="filter-btn" data-filter="gate_result">Gates</button>
+            <button class="filter-btn" data-filter="loop">Loops</button>
+          </div>
+        </div>
+        <div class="signal-trace-list" id="signal-trace-list">
+          <div class="signal-trace-empty">Waiting for signals…</div>
+        </div>
+      </div>
+      <div id="pty-tree"></div>
+      <div id="event-list"></div>
     </aside>
   </div></div>
   <footer id="statusbar">
@@ -110,6 +134,8 @@ function createApiStub(): {
     onSignalEmitted: on("signalEmitted"),
     onEdgeMatched: on("edgeMatched"),
     onStepContext: on("stepContext"),
+    onGateResult: on("gateResult"),
+    onLoopDetected: on("loopDetected"),
     write: (...a: unknown[]) => (calls.write ??= []).push(a),
     prompt: vi.fn(async () => {}),
     cancelMain: (...a: unknown[]) => (calls.cancelMain ??= []).push(a),

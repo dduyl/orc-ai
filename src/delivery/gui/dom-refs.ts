@@ -18,6 +18,11 @@ export interface DomRefs {
   eventList: HTMLElement;
   stepTree: HTMLElement;
   ptyTree: HTMLElement;
+  // inspector new sections
+  inspectorRun: HTMLElement;
+  inspectorActiveStep: HTMLElement;
+  inspectorSignalTrace: HTMLElement;
+  signalTraceList: HTMLElement;
   // layout
   splitter: HTMLElement;
   rightPanel: HTMLElement;
@@ -83,6 +88,10 @@ export function getDomRefs(): DomRefs {
     eventList: req("event-list"),
     stepTree: req("step-tree"),
     ptyTree: req("pty-tree"),
+    inspectorRun: req("inspector-run"),
+    inspectorActiveStep: req("inspector-active-step"),
+    inspectorSignalTrace: req("inspector-signal-trace"),
+    signalTraceList: req("signal-trace-list"),
     splitter: req("splitter"),
     rightPanel: req("right-panel"),
     graphView: req("graph-view"),
