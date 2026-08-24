@@ -41,7 +41,7 @@ steps:
 
   - id: code
     agent: code_generation_backend
-    any: ["review_arch.sig_pass", "validate.sig_fail", "review_code.sig_fail"]
+    any: ["review_arch.sig_pass", "validate.sig_fail", "review_code.sig_fail", "conformance_check.sig_fail"]
     task: "Generate code"
     context: [spec, architecture]
     emits:
@@ -60,7 +60,7 @@ steps:
 
   - id: test
     agent: test_generation_backend
-    any: ["validate.sig_pass", "test_unit.sig_fail", "review_test.sig_fail"]
+    any: ["validate.sig_pass", "test_unit.sig_fail", "review_test.sig_fail", "conformance_check.sig_fail"]
     task: "Generate tests"
     context: [spec, code]
     emits:
@@ -98,5 +98,16 @@ steps:
         description: "Test coverage is adequate"
       - name: sig_fail
         description: "Test coverage is below threshold — test must re-run with this feedback"
+
+  - id: conformance_check
+    agent: review
+    on: ["review_code.sig_pass", "review_test.sig_pass"]
+    task: "Verify structural conformance between code and test artifacts against the architecture contract (ADR-013)"
+    context: [architecture, code, test]
+    emits:
+      - name: sig_pass
+        description: "Code, test, and contract signatures match deterministically"
+      - name: sig_fail
+        description: "Signature mismatch or contract drift detected — deviating side must re-run with conformance feedback"
 
 completion: "Feature implementation complete"

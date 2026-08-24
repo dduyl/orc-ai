@@ -4,3 +4,5 @@ export { checkStepBudget, detectLoop, checkResearchBudget, isResearchRole, MAX_R
 export type { BudgetCheck } from "./bounding.js";
 export { CommandExecutor, loadCommandsFile, runCommandGroup, runInlineCommand, resolveDottedKey } from "./CommandExecutor.js";
 export type { CommandExecutionResult, CommandsMap, ResultGroup } from "./CommandExecutor.js";
+export { ConformanceChecker } from "./conformance.js";
+export type { ConformanceCheckOptions, ConformanceResult, MismatchDetail } from "./conformance.js";

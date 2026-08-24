@@ -25,7 +25,7 @@ trusting an "Implemented" mark after further changes.
 | 010 | Checkpointing, Crash Recovery, and Session Reuse | Accepted | Partial | Checkpointing confirmed real; session-id reuse extension not built |
 | 011 | Signal-Based Step Graph | Accepted | Implemented | Steps declare `emits`/`on`/`any` signal refs (`stepId.signal`); `__start__` seeds entry steps; script gates emit a pass/fail signal; redo loops via `any` edges with repair feedback; graph validated at load |
 | 012 | Canonical Schemas Enforced at Every Step Boundary | Accepted | Partial | Schemas defined; confirmed NOT validated at the step-completion path |
-| 013 | Conformance Check Across Parallel Artifacts | Accepted | Not Implemented | No such step exists in code |
+| 013 | Conformance Check Across Parallel Artifacts | Accepted | Implemented | ConformanceChecker deterministic signature comparison wired into feat-impl-builtin workflow with repair feedback routing |
 | 014 | Planner / Harness / Agents Layering | Accepted | Implemented | Confirmed: matching directory structure exists |
 | 015 | Parallel Isolation via Worktrees and Ownership | Accepted | Not Implemented | No worktree usage found; new decision from this round |
 | 016 | Escalation to a Human | Accepted | Not Implemented | `needs_human` defined in schema, never assigned; no ask-path found |
