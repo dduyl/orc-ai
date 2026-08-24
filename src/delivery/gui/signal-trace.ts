@@ -9,17 +9,17 @@ export class SignalTrace {
   mount(container: HTMLElement): void {
     this.container = container;
     container.innerHTML = `
-      <div class="signal-trace-header">
+      <div class="signal-trace-header" role="region" aria-label="Signal trace log" aria-live="polite">
         <span class="section-title">Signal Trace</span>
-        <div class="signal-trace-filters">
-          <button class="filter-btn active" data-filter="all">All</button>
-          <button class="filter-btn" data-filter="emission">Emissions</button>
-          <button class="filter-btn" data-filter="edge_match">Edges</button>
-          <button class="filter-btn" data-filter="gate_result">Gates</button>
-          <button class="filter-btn" data-filter="loop">Loops</button>
+        <div class="signal-trace-filters" role="group" aria-label="Filter signal trace">
+          <button class="filter-btn active" data-filter="all" aria-pressed="true">All</button>
+          <button class="filter-btn" data-filter="emission" aria-pressed="false">Emissions</button>
+          <button class="filter-btn" data-filter="edge_match" aria-pressed="false">Edges</button>
+          <button class="filter-btn" data-filter="gate_result" aria-pressed="false">Gates</button>
+          <button class="filter-btn" data-filter="loop" aria-pressed="false">Loops</button>
         </div>
       </div>
-      <div class="signal-trace-list" id="signal-trace-list"></div>
+      <div class="signal-trace-list" id="signal-trace-list" role="log" aria-live="polite" aria-label="Signal trace entries"></div>
     `;
 
     const list = container.querySelector("#signal-trace-list") as HTMLElement;
@@ -46,7 +46,9 @@ export class SignalTrace {
   private setFilter(type: typeof this.filterType): void {
     this.filterType = type;
     this.container?.querySelectorAll<HTMLButtonElement>(".filter-btn").forEach(btn => {
-      btn.classList.toggle("active", btn.dataset.filter === type);
+      const isActive = btn.dataset.filter === type;
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-pressed", String(isActive));
     });
     this.render();
   }

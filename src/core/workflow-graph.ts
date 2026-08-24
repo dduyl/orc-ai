@@ -12,6 +12,9 @@ export interface GraphNode {
   error?: string;
   isGate: boolean;
   loopCount?: number;
+  exitCode?: number;
+  gate?: string;
+  output?: string;
 }
 
 export interface GraphEdge {

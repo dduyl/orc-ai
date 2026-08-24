@@ -808,6 +808,22 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     workflowLauncher.open();
   }
+  if ((e.ctrlKey || e.metaKey) && e.key === "1") {
+    e.preventDefault();
+    setActiveView("graph");
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key === "2") {
+    e.preventDefault();
+    setActiveView("steps");
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key === "3") {
+    e.preventDefault();
+    setActiveView("terminal");
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key === "4") {
+    e.preventDefault();
+    setActiveView("chat");
+  }
 });
 
 window.addEventListener("resize", fitTerm);

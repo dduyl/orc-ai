@@ -29,11 +29,15 @@ export class GraphCanvas {
     this.svg.setAttribute("width", "100%");
     this.svg.setAttribute("height", "100%");
     this.svg.style.cursor = "grab";
+    this.svg.setAttribute("role", "img");
+    this.svg.setAttribute("aria-label", "Workflow signal graph");
     this.svg.addEventListener("wheel", this.onWheel.bind(this), { passive: false });
     this.svg.addEventListener("mousedown", this.onMouseDown.bind(this));
     window.addEventListener("mousemove", this.onMouseMove.bind(this));
     window.addEventListener("mouseup", this.onMouseUp.bind(this));
     this.svg.addEventListener("dblclick", this.onDoubleClick.bind(this));
+    this.svg.addEventListener("keydown", this.onKeyDown.bind(this));
+    this.svg.setAttribute("tabindex", "0");
     container.appendChild(this.svg);
   }
 
@@ -53,6 +57,16 @@ export class GraphCanvas {
 
     const { nodes, edges } = graphData;
 
+    if (nodes.length === 0) {
+      this.svg.innerHTML = `
+        <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" 
+              font-family="var(--font-mono)" font-size="12" fill="var(--text-faint)">
+          No workflow selected
+        </text>
+      `;
+      return;
+    }
+
     const g = new dagre.graphlib.Graph({ multigraph: true, compound: true });
     g.setGraph({ rankdir: "TB", nodesep: 60, ranksep: 80, edgesep: 20 });
     g.setDefaultEdgeLabel(() => ({}));
@@ -61,7 +75,20 @@ export class GraphCanvas {
       g.setNode(node.id, { width: 140, height: 56, label: node.id });
     }
 
+    // Track loop edges for special rendering
+    const loopEdges = new Set<string>();
     for (const edge of edges) {
+      if (edge.kind === "any") {
+        // Check if this is a back-edge (loop)
+        const fromNode = nodes.find(n => n.id === edge.from);
+        const toNode = nodes.find(n => n.id === edge.to);
+        if (fromNode && toNode) {
+          // Simple heuristic: if edge goes "backwards" in topological order, it's a loop
+          // For now, mark all "any" edges as potential loop edges
+          const key = `${edge.from}->${edge.to}`;
+          loopEdges.add(key);
+        }
+      }
       g.setEdge(edge.from, edge.to, { label: edge.signal });
     }
 
@@ -124,6 +151,12 @@ export class GraphCanvas {
         gateIndicator.setAttribute("height", "12");
         gateIndicator.setAttribute("rx", "2");
         gateIndicator.setAttribute("class", `gate-indicator ${node.status}`);
+        // Add tooltip for gate result
+        if (node.exitCode !== undefined) {
+          const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+          title.textContent = `Gate: ${node.gate ?? "gate"} — exit ${node.exitCode}${node.output ? ` — ${node.output.slice(0, 120)}` : ""}`;
+          gateIndicator.appendChild(title);
+        }
         gEl.appendChild(gateIndicator);
       }
 
@@ -180,6 +213,10 @@ export class GraphCanvas {
       const layoutEdge = g.edge(edge.from, edge.to);
       if (!layoutEdge || !layoutEdge.points) continue;
 
+      const isLoop = edge.kind === "any" && 
+        nodes.find(n => n.id === edge.from) && 
+        nodes.find(n => n.id === edge.to);
+      
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       const points = layoutEdge.points;
       let d = `M${points[0].x},${points[0].y}`;
@@ -188,12 +225,23 @@ export class GraphCanvas {
       }
       path.setAttribute("d", d);
       path.setAttribute("fill", "none");
-      path.setAttribute("stroke", edge.matched ? "var(--accent)" : "var(--border-strong)");
-      path.setAttribute("stroke-width", edge.matched ? "2.5" : "1.5");
-      path.setAttribute("stroke-dasharray", edge.kind === "any" ? "6,4" : "none");
+      
+      // Loop edges: amber, dashed, with loop indicator
+      if (isLoop) {
+        path.setAttribute("stroke", "var(--accent)");
+        path.setAttribute("stroke-width", "2");
+        path.setAttribute("stroke-dasharray", "8,6");
+        path.setAttribute("class", "edge edge-loop");
+        // Add loop indicator at the end
+      } else {
+        path.setAttribute("stroke", edge.matched ? "var(--accent)" : "var(--border-strong)");
+        path.setAttribute("stroke-width", edge.matched ? "2.5" : "1.5");
+        path.setAttribute("stroke-dasharray", edge.kind === "any" ? "6,4" : "none");
+        path.setAttribute("class", "edge");
+      }
+      path.setAttribute("fill", "none");
       path.setAttribute("marker-end", "url(#arrowhead)");
-      path.setAttribute("class", "edge");
-      if (edge.matched) {
+      if (edge.matched && !isLoop) {
         path.setAttribute("filter", "url(#glow)");
       }
       viewport.insertBefore(path, viewport.firstChild);
@@ -369,5 +417,31 @@ export class GraphCanvas {
 
   private onDoubleClick(): void {
     this.fitToView();
+  }
+
+  private onKeyDown(e: KeyboardEvent): void {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const nodes = Array.from(this.nodeElements.keys());
+      const activeId = this.getActiveNodeId();
+      const activeIdx = activeId ? nodes.indexOf(activeId) : -1;
+      const nextIdx = (activeIdx + 1) % nodes.length;
+      if (nodes[nextIdx]) {
+        this.callbacks.onNodeClick(nodes[nextIdx]);
+      }
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      const activeId = this.getActiveNodeId();
+      if (activeId) this.callbacks.onNodeClick(activeId);
+    } else if (e.key === "Escape") {
+      this.fitToView();
+    }
+  }
+
+  private getActiveNodeId(): string | null {
+    for (const [id, el] of this.nodeElements) {
+      if (el.classList.contains("active")) return id;
+    }
+    return null;
   }
 }

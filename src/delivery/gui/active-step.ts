@@ -22,14 +22,14 @@ export class ActiveStep {
     if (!content) return;
 
     if (!data.stepId) {
-      content.innerHTML = '<div class="active-step-empty">No active step</div>';
+      content.innerHTML = '<div class="active-step-empty" aria-live="polite">No active step</div>';
       return;
     }
 
     const contextStr = data.context.length ? data.context.map(c => this.escapeHtml(c)).join(", ") : "\u2014";
     const emitsStr = data.emits.length ? data.emits.map(e => this.escapeHtml(e)).join(", ") : "\u2014";
     const waitingOnHtml = data.waitingOn
-      ? `<div class="info-row waiting"><span class="label">Waiting on</span><span class="value">${this.escapeHtml(data.waitingOn)}</span></div>`
+      ? `<div class="info-row waiting"><span class="label">Waiting on</span><span class="value" aria-live="polite">${this.escapeHtml(data.waitingOn)}</span></div>`
       : "";
 
     content.innerHTML = `
