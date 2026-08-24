@@ -5,6 +5,8 @@ export class WorkflowLauncher {
   private modal: HTMLDivElement | null = null;
   /** Document-level Escape handler registered for the lifetime of one modal. */
   private keydownHandler: ((e: KeyboardEvent) => void) | null = null;
+  /** Element to restore focus to when the modal closes. */
+  private returnFocusTo: HTMLElement | null = null;
   private workflows: any[] = [];
 
   async open(): Promise<void> {
@@ -13,8 +15,12 @@ export class WorkflowLauncher {
     // instead of stacking a second overlay behind the async workflow load.
     const reserved = document.createElement("div");
     reserved.className = "workflow-launcher-overlay";
+    reserved.setAttribute("role", "dialog");
+    reserved.setAttribute("aria-modal", "true");
+    reserved.setAttribute("aria-labelledby", "launcher-title");
     document.body.appendChild(reserved);
     this.modal = reserved;
+    this.returnFocusTo = document.activeElement as HTMLElement | null;
 
     await this.loadWorkflows();
     this.renderModal(reserved);
@@ -35,6 +41,8 @@ export class WorkflowLauncher {
       modal.remove();
       // Only clear if no newer modal took over during the fade window.
       if (this.modal === modal) this.modal = null;
+      this.returnFocusTo?.focus();
+      this.returnFocusTo = null;
     }, 200);
   }
 
@@ -55,7 +63,7 @@ export class WorkflowLauncher {
     overlay.innerHTML = `
       <div class="workflow-launcher-modal">
         <div class="launcher-header">
-          <h3>New Workflow Run</h3>
+          <h3 id="launcher-title">New Workflow Run</h3>
           <button class="launcher-close" aria-label="Close">✕</button>
         </div>
         <div class="launcher-body">
@@ -124,7 +132,28 @@ export class WorkflowLauncher {
 
     document.addEventListener("keydown", (this.keydownHandler = (e: KeyboardEvent) => {
       if (e.key === "Escape") this.close();
+      if (e.key === "Tab") this.trapFocus(e);
     }));
+  }
+
+  /** Keep Tab cycling inside the modal while it is open. */
+  private trapFocus(e: KeyboardEvent): void {
+    const modal = this.modal;
+    if (!modal) return;
+    const focusables = Array.from(
+      modal.querySelectorAll<HTMLElement>("button, select, textarea, input, [tabindex]:not([tabindex='-1'])"),
+    ).filter(el => !el.hasAttribute("disabled"));
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement as HTMLElement | null;
+    if (e.shiftKey && (active === first || !modal.contains(active))) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (active === last || !modal.contains(active))) {
+      e.preventDefault();
+      first.focus();
+    }
   }
 
   private renderParamsForm(workflowId: string): void {

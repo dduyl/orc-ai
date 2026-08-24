@@ -33,18 +33,18 @@ export class StepList {
     container.innerHTML = `
       <div class="step-list-header">
         <span class="section-title">Run Steps</span>
-        <div class="step-list-filters">
-          <button class="filter-btn active" data-filter="all">All</button>
-          <button class="filter-btn" data-filter="running">Running</button>
-          <button class="filter-btn" data-filter="failed">Failed</button>
-          <button class="filter-btn" data-filter="pending">Pending</button>
+        <div class="step-list-filters" role="group" aria-label="Filter steps">
+          <button class="filter-btn active" data-filter="all" aria-pressed="true">All</button>
+          <button class="filter-btn" data-filter="running" aria-pressed="false">Running</button>
+          <button class="filter-btn" data-filter="failed" aria-pressed="false">Failed</button>
+          <button class="filter-btn" data-filter="pending" aria-pressed="false">Pending</button>
         </div>
       </div>
       <div class="step-list-table-wrapper">
         <table class="step-list-table">
           <thead>
             <tr>
-              <th data-sort="order">Step</th>
+              <th data-sort="order" aria-sort="ascending">Step</th>
               <th data-sort="agent">Agent</th>
               <th data-sort="status">Status</th>
               <th data-sort="duration">Duration</th>
@@ -79,7 +79,9 @@ export class StepList {
   private setFilter(filter: typeof this.filter): void {
     this.filter = filter;
     this.container?.querySelectorAll<HTMLButtonElement>(".filter-btn").forEach(btn => {
-      btn.classList.toggle("active", btn.dataset.filter === filter);
+      const isActive = btn.dataset.filter === filter;
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-pressed", String(isActive));
     });
     this.render();
   }
@@ -91,7 +93,18 @@ export class StepList {
       this.sortColumn = column;
       this.sortDirection = "asc";
     }
+    this.syncSortIndicators();
     this.render();
+  }
+
+  private syncSortIndicators(): void {
+    this.container?.querySelectorAll<HTMLTableHeaderCellElement>("th[data-sort]").forEach(th => {
+      if (th.dataset.sort === this.sortColumn) {
+        th.setAttribute("aria-sort", this.sortDirection === "asc" ? "ascending" : "descending");
+      } else {
+        th.removeAttribute("aria-sort");
+      }
+    });
   }
 
   private getFilteredSteps(): StepRowData[] {
@@ -141,10 +154,18 @@ export class StepList {
 
     tbody.innerHTML = steps.map(step => this.renderRow(step)).join("");
 
-    tbody.querySelectorAll("tr[data-step-id]").forEach(row => {
-      row.addEventListener("click", () => {
+    tbody.querySelectorAll<HTMLElement>("tr[data-step-id]").forEach(row => {
+      const select = () => {
         const stepId = row.getAttribute("data-step-id");
         if (stepId) this.callbacks.onSelect(stepId);
+      };
+      row.setAttribute("tabindex", "0");
+      row.addEventListener("click", select);
+      row.addEventListener("keydown", (e: KeyboardEvent) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          select();
+        }
       });
     });
   }
@@ -159,7 +180,7 @@ export class StepList {
     const agent = step.agent ? escapeHtml(step.agent) : "—";
 
     return `
-      <tr data-step-id="${stepId}" class="step-row ${statusClass}">
+      <tr data-step-id="${stepId}" class="step-row ${statusClass}" aria-label="step ${stepId}, ${escapeHtml(step.status)}">
         <td>${stepId}</td>
         <td>${agent}</td>
         <td><span class="status-glyph ${statusClass}">${statusGlyph}</span> ${escapeHtml(step.status)}</td>

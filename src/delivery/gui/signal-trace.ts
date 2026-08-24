@@ -10,7 +10,7 @@ export class SignalTrace {
   mount(container: HTMLElement): void {
     this.container = container;
     container.innerHTML = `
-      <div class="signal-trace-header" role="region" aria-label="Signal trace log" aria-live="polite">
+      <div class="signal-trace-header" role="region" aria-label="Signal trace log">
         <span class="section-title">Signal Trace</span>
         <div class="signal-trace-filters" role="group" aria-label="Filter signal trace">
           <button class="filter-btn active" data-filter="all" aria-pressed="true">All</button>
@@ -20,7 +20,7 @@ export class SignalTrace {
           <button class="filter-btn" data-filter="loop" aria-pressed="false">Loops</button>
         </div>
       </div>
-      <div class="signal-trace-entries"></div>
+      <div class="signal-trace-entries" role="log"></div>
     `;
 
     const list = container.querySelector(".signal-trace-entries") as HTMLElement;
@@ -37,11 +37,17 @@ export class SignalTrace {
   }
 
   addEvent(event: SignalEvent): void {
+    // Prepend without rebuilding: keeps prior entry DOM nodes stable for
+    // screen readers (role=log announces the new child only).
+    const list = this.container?.querySelector(".signal-trace-entries") as HTMLElement;
+    if (!list) return;
     this.events.unshift(event);
     if (this.events.length > this.maxEvents) {
       this.events = this.events.slice(0, this.maxEvents);
     }
-    this.render();
+    if (!this.matchesFilter(event.type)) return;
+    list.querySelector(".signal-trace-empty")?.remove();
+    list.insertAdjacentHTML("afterbegin", this.renderEvent(event));
   }
 
   private setFilter(type: typeof this.filterType): void {
@@ -54,9 +60,13 @@ export class SignalTrace {
     this.render();
   }
 
+  private matchesFilter(type: SignalEvent["type"]): boolean {
+    return this.filterType === "all" || type === this.filterType;
+  }
+
   private getFilteredEvents(): SignalEvent[] {
     if (this.filterType === "all") return this.events;
-    return this.events.filter(e => e.type === this.filterType);
+    return this.events.filter(e => this.matchesFilter(e.type));
   }
 
   private render(): void {

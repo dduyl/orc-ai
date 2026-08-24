@@ -33,7 +33,9 @@ export class GraphCanvas {
     this.svg.setAttribute("width", "100%");
     this.svg.setAttribute("height", "100%");
     this.svg.style.cursor = "grab";
-    this.svg.setAttribute("role", "img");
+    // Interactive widget semantics: role=img would hide the clickable nodes
+    // from assistive tech while the canvas implements keyboard navigation.
+    this.svg.setAttribute("role", "group");
     this.svg.setAttribute("aria-label", "Workflow signal graph");
     this.svg.addEventListener("wheel", this.onWheel.bind(this), { passive: false });
     this.svg.addEventListener("mousedown", this.onMouseDown.bind(this));
@@ -120,6 +122,11 @@ export class GraphCanvas {
       const gEl = document.createElementNS("http://www.w3.org/2000/svg", "g");
       gEl.setAttribute("class", `node ${node.status} ${node.isGate ? "gate" : ""}`);
       gEl.setAttribute("data-step-id", node.id);
+      gEl.setAttribute("role", "button");
+      gEl.setAttribute(
+        "aria-label",
+        `step ${node.id}, ${node.status}${node.agent ? `, agent ${node.agent}` : ""}`,
+      );
       gEl.style.cursor = "pointer";
       gEl.addEventListener("click", () => this.callbacks.onNodeClick(node.id));
 
@@ -446,14 +453,15 @@ export class GraphCanvas {
 
   private onKeyDown(e: KeyboardEvent): void {
     if (e.key === "Tab") {
+      // Never trap focus: let Tab leave the canvas naturally.
+      return;
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowRight") {
       e.preventDefault();
-      const nodes = Array.from(this.nodeElements.keys());
-      const activeId = this.getActiveNodeId();
-      const activeIdx = activeId ? nodes.indexOf(activeId) : -1;
-      const nextIdx = (activeIdx + 1) % nodes.length;
-      if (nodes[nextIdx]) {
-        this.callbacks.onNodeClick(nodes[nextIdx]);
-      }
+      this.cycleActiveNode(1);
+    } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
+      e.preventDefault();
+      this.cycleActiveNode(-1);
     } else if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       const activeId = this.getActiveNodeId();
@@ -461,6 +469,16 @@ export class GraphCanvas {
     } else if (e.key === "Escape") {
       this.fitToView();
     }
+  }
+
+  private cycleActiveNode(delta: number): void {
+    const ids = Array.from(this.nodeElements.keys());
+    if (ids.length === 0) return;
+    const activeId = this.getActiveNodeId();
+    const nextIdx = ((activeId ? ids.indexOf(activeId) : -1) + delta + ids.length) % ids.length;
+    const nextId = ids[nextIdx];
+    this.setActiveNode(nextId);
+    this.callbacks.onNodeClick(nextId);
   }
 
   private getActiveNodeId(): string | null {
