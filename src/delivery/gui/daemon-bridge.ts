@@ -45,12 +45,16 @@ export class DaemonBridge {
 
   private mainBuffer = "";
   private stepBuffers = new Map<string, string>();
-  /** `pty` â†’ raw ANSI bytes on the main pipe; `acp` â†’ structured `MainFrame`s. */
+  /** `pty` → raw ANSI bytes on the main pipe; `acp` → structured `MainFrame`s. */
   private mainMode: "pty" | "acp" = "pty";
   private activeStepId = MAIN_STEP_ID;
   private latestRunId: string | null = null;
   private mainExited = false;
   private adapterId = "opencode";
+  /** Workflow definitions registry, lazily loaded once per bridge lifetime. */
+  private registry: WorkflowRegistry | null = null;
+  /** Definition of the active run, cached for signal-event derivation. */
+  private activeWorkflow: WorkflowDefinition | null = null;
 
   constructor(private readonly send: MainSender) {}
 
@@ -81,19 +85,54 @@ export class DaemonBridge {
     return this.requireClient().list();
   }
 
-  async startWorkflow(task: string, workflowId: string, _params?: Record<string, unknown>): Promise<{ runId: string }> {
+  async startWorkflow(task: string, workflowId: string, params?: Record<string, unknown>): Promise<{ runId: string }> {
     const client = this.requireClient();
-    const res = await client.start({ task, workflowId });
+    if (params && Object.keys(params).length > 0) {
+      // Wire contract is ready (StartParams.params); the daemon does not apply
+      // structured inputs yet — pending a daemon PR. Surface once, keep launching.
+      this.send(IPC.MainToRenderer.log, {
+        text: "[workflow] params collected but daemon-side application is not implemented yet; task text only",
+      });
+    }
+    const res = await client.start({ task, workflowId, params });
     this.trackRun(res.runId);
     this.stepBuffers.clear();
     this.send(IPC.MainToRenderer.log, { text: `Run started: ${workflowId}` });
     await this.attachRunTerminal(res.runId);
+    const workflow = await this.resolveDefinition(workflowId);
+    this.activeWorkflow = workflow;
     this.send(IPC.MainToRenderer["workflow-started"], {
       runId: res.runId,
       workflowId,
-      workflow: { version: 1, workflow: { id: workflowId, name: workflowId, steps: [], completion: "" } } as WorkflowDefinition,
+      workflow,
     });
     return res;
+  }
+
+  /** Load (once) and resolve a workflow definition by id; empty stub on miss. */
+  private async resolveDefinition(workflowId: string): Promise<WorkflowDefinition> {
+    const registered = await this.findRegistered(workflowId);
+    if (registered) return registered.definition;
+    return { version: 1, workflow: { id: workflowId, name: workflowId, steps: [], completion: "" } };
+  }
+
+  private async findRegistered(workflowId: string): Promise<RegisteredWorkflow | undefined> {
+    const registry = await this.ensureRegistry();
+    const found = registry.get(workflowId);
+    if (!found) {
+      this.send(IPC.MainToRenderer.log, {
+        text: `[workflow] definition '${workflowId}' not found in registry`,
+      });
+    }
+    return found;
+  }
+
+  private async ensureRegistry(): Promise<WorkflowRegistry> {
+    if (!this.registry) {
+      this.registry = new WorkflowRegistry();
+      this.registry.loadAll();
+    }
+    return this.registry;
   }
 
   async getWorkflowGraph(runId: string): Promise<WorkflowGraphData> {
@@ -102,12 +141,8 @@ export class DaemonBridge {
     if (!run) {
       return { nodes: [], edges: [] };
     }
-    // RunRecord has workflowId and workflowName, not the full WorkflowDefinition.
-    // We need to load the workflow from the registry.
-    const { WorkflowRegistry } = await import("../../application/planner/registry.js");
     const { buildGraphData } = await import("../../core/workflow-graph.js");
-    const registry = new WorkflowRegistry();
-    const registered = registry.get(run.workflowId);
+    const registered = await this.findRegistered(run.workflowId);
     if (!registered) {
       return { nodes: [], edges: [] };
     }
@@ -121,7 +156,7 @@ export class DaemonBridge {
   }
 
   async listWorkflows(): Promise<RegisteredWorkflow[]> {
-    const registry = new WorkflowRegistry();
+    const registry = await this.ensureRegistry();
     return registry.list();
   }
 
