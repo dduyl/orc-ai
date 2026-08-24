@@ -29,6 +29,7 @@ const DOM = `
     <button id="tab-steps">Steps</button>
     <button id="tab-chat">Chat</button>
     <button id="tab-terminal">Terminal</button>
+    <button id="btn-new-run">+ New Run</button>
     <span id="status-indicator"></span>
     <span id="status-text">Initializing.</span>
     <span id="sb-indicator"></span>

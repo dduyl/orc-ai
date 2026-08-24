@@ -61,6 +61,8 @@ export interface DomRefs {
   brandAdapter: HTMLElement;
   // graph view
   graphViewContainer: HTMLElement;
+  // workflow launcher
+  btnNewRun: HTMLButtonElement;
 }
 
 function req(id: string): HTMLElement {
@@ -125,5 +127,6 @@ export function getDomRefs(): DomRefs {
     toolList: req("tool-list"),
     brandAdapter: req("brand-adapter"),
     graphViewContainer: req("graph-view-container"),
+    btnNewRun: req("btn-new-run") as HTMLButtonElement,
   };
 }

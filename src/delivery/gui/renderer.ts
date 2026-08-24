@@ -7,6 +7,7 @@ import { GraphView } from "./views/graph-view.js";
 import { StepsView } from "./views/steps-view.js";
 import { SignalTrace } from "./signal-trace.js";
 import { ActiveStep } from "./active-step.js";
+import { WorkflowLauncher } from "./workflow-launcher.js";
 import { addEvent, setViewLabel, renderPTYTree, renderStepTree, type StepInfo } from "./ui-renderers.js";
 import { initSplitter } from "./splitter.js";
 import { GUIDE_TEXT } from "../../adapters/mcp/handlers/content.js";
@@ -24,6 +25,7 @@ const graphView = new GraphView();
 const stepsView = new StepsView();
 const signalTrace = new SignalTrace();
 const activeStep = new ActiveStep();
+const workflowLauncher = new WorkflowLauncher();
 const activity = new ActivityBox({
   box: refs.activityBox,
   permissionSection: refs.permissionSection,
@@ -369,6 +371,8 @@ refs.tabChat.addEventListener("click", () => setActiveView("chat"));
 refs.tabTerminal.addEventListener("click", () => setActiveView("terminal"));
 refs.tabGraph.addEventListener("click", () => setActiveView("graph"));
 refs.tabSteps.addEventListener("click", () => setActiveView("steps"));
+
+refs.btnNewRun.addEventListener("click", () => workflowLauncher.open());
 
 // Mount GraphView
 graphView.mount(refs.graphViewContainer);
@@ -777,6 +781,13 @@ term.onData((data: string) => {
 });
 
 // ── Boot ───────────────────────────────────────────────────────────────────
+window.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+    e.preventDefault();
+    workflowLauncher.open();
+  }
+});
+
 window.addEventListener("resize", fitTerm);
 window.addEventListener("load", () => {
   setTimeout(() => {
