@@ -288,6 +288,15 @@ body::before {
   font-family: var(--font-mono); font-size: 10px; letter-spacing: 1.6px;
   text-transform: uppercase; color: var(--text-faint);
 }
+.term-step-select {
+  background: var(--bg-inset); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm); padding: 2px 6px;
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary);
+  cursor: pointer; outline: none;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+.term-step-select:hover { border-color: var(--accent-edge); color: var(--text-primary); }
+.term-step-select:focus { border-color: var(--accent); }
 #terminal { flex: 1; overflow: hidden; }
 #terminal .xterm { height: 100%; }
 .xterm-viewport::-webkit-scrollbar { display: none; }
@@ -671,7 +680,13 @@ body::before {
 
       <!-- Terminal view -->
       <section id="terminal-view">
-        <div id="view-label"><span id="view-label-text">TERMINAL</span><span id="view-label-step"></span></div>
+        <div id="view-label">
+          <span id="view-label-text">TERMINAL</span>
+          <span id="view-label-step"></span>
+          <select id="term-step-select" class="term-step-select" aria-label="Select step" title="Select step to view">
+            <option value="__main__">Main (orchestrator)</option>
+          </select>
+        </div>
         <div id="terminal"></div>
       </section>
 

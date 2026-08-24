@@ -5,6 +5,7 @@ import { ActivityBox } from "./activity-box.js";
 import { MentionBox, type SuggestionItem } from "./mention-box.js";
 import { GraphView } from "./views/graph-view.js";
 import { StepsView } from "./views/steps-view.js";
+import { TerminalView } from "./views/terminal-view.js";
 import { SignalTrace } from "./signal-trace.js";
 import { ActiveStep } from "./active-step.js";
 import { WorkflowLauncher } from "./workflow-launcher.js";
@@ -23,6 +24,7 @@ const { term, fit: fitTermBase } = createTerminal(refs.termContainer);
 const chat = new ChatView(refs.chatList);
 const graphView = new GraphView();
 const stepsView = new StepsView();
+const terminalView = new TerminalView();
 const signalTrace = new SignalTrace();
 const activeStep = new ActiveStep();
 const workflowLauncher = new WorkflowLauncher();
@@ -380,6 +382,9 @@ graphView.mount(refs.graphViewContainer);
 // Mount StepsView
 stepsView.mount(refs.stepsView);
 
+// Mount TerminalView
+terminalView.mount(refs.terminalView);
+
 // Mount SignalTrace
 signalTrace.mount(refs.signalTraceList);
 
@@ -449,6 +454,12 @@ async function pollRunStatus(): Promise<void> {
     if (run) {
       renderStepTree(run, refs.stepTree);
       updateStepTreeFromRun(run);
+      terminalView.updateSteps((run.steps ?? []).map(s => ({
+  id: s.stepId,
+  name: s.stepId,
+  isActive: s.status === "running",
+  isMain: s.stepId === MAIN_STEP_ID,
+})));
     }
   } catch { /* ignore */ }
 }
@@ -564,12 +575,18 @@ api.onLog((data: { text: string }) => {
 api.onRunActive((data: { runId: string }) => {
   latestRunId = data.runId;
   pollRunStatus();
+
+  // Initialize terminal view step selector
+  api.listSteps().then(steps => terminalView.updateSteps(steps));
 });
 
 api.onWorkflowStarted((data: { runId: string; workflowId: string; workflow: any }) => {
   latestRunId = data.runId;
   graphView.init(data.workflow);
   setActiveView("graph");
+
+  // Update terminal view step selector
+  api.listSteps().then(steps => terminalView.updateSteps(steps));
 });
 
 api.onWorkflowComplete((data: { runId: string; status: "completed" | "failed"; finalSignal?: string }) => {
@@ -577,6 +594,7 @@ api.onWorkflowComplete((data: { runId: string; status: "completed" | "failed"; f
   if (data.runId === latestRunId) {
     graphView.setStepStatus([]);
     activeStep.render({ stepId: "", agent: "", context: [], emits: [] });
+    terminalView.updateSteps([]);
   }
 });
 
@@ -621,6 +639,10 @@ api.onStepActivated(async (data: { stepId: string }) => {
 
   graphView.onStepActivated(data.stepId);
   stepsView.setStepStatus([]); // Will be updated by pollRunStatus
+
+  // Update terminal view step selector
+  const steps = await api.listSteps();
+  terminalView.updateSteps(steps);
 });
 
 // ── Chat panel (ACP main) ──────────────────────────────────────────────────
