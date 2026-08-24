@@ -1,4 +1,4 @@
-import { api } from "../renderer.js";
+import { api } from "../api.js";
 import type { StepInfo } from "../ipc.js";
 
 export class TerminalView {

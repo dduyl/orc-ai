@@ -78,21 +78,10 @@ export class GraphCanvas {
       g.setNode(node.id, { width: 140, height: 56, label: node.id });
     }
 
-    // Track loop edges for special rendering
-    const loopEdges = new Set<string>();
+    // Name every edge by its full ref so parallel edges (on + any between the
+    // same pair) coexist in the multigraph instead of overwriting each other.
     for (const edge of edges) {
-      if (edge.kind === "any") {
-        // Check if this is a back-edge (loop)
-        const fromNode = nodes.find(n => n.id === edge.from);
-        const toNode = nodes.find(n => n.id === edge.to);
-        if (fromNode && toNode) {
-          // Simple heuristic: if edge goes "backwards" in topological order, it's a loop
-          // For now, mark all "any" edges as potential loop edges
-          const key = `${edge.from}->${edge.to}`;
-          loopEdges.add(key);
-        }
-      }
-      g.setEdge(edge.from, edge.to, { label: edge.signal });
+      g.setEdge(edge.from, edge.to, { label: edge.signal }, `${edge.from}->${edge.to}->${edge.signal}`);
     }
 
     dagre.layout(g);
@@ -214,7 +203,7 @@ export class GraphCanvas {
 
     this.edgeElements.clear();
     for (const edge of edges) {
-      const layoutEdge = g.edge(edge.from, edge.to);
+      const layoutEdge = g.edge(edge.from, edge.to, `${edge.from}->${edge.to}->${edge.signal}`);
       if (!layoutEdge || !layoutEdge.points) continue;
 
       const isLoop = edge.kind === "any" &&
@@ -253,7 +242,7 @@ export class GraphCanvas {
     }
 
     for (const edge of edges) {
-      const layoutEdge = g.edge(edge.from, edge.to);
+      const layoutEdge = g.edge(edge.from, edge.to, `${edge.from}->${edge.to}->${edge.signal}`);
       if (!layoutEdge || !layoutEdge.points || layoutEdge.points.length < 2) continue;
 
       const midIdx = Math.floor(layoutEdge.points.length / 2);

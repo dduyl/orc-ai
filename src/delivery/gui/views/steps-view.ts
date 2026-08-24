@@ -1,6 +1,6 @@
 import { StepList, type StepRowData } from "../step-list.js";
 import type { StepStatusRecord } from "../../../application/harness/persistence/Tracker.js";
-import { api } from "../renderer.js";
+import { api } from "../api.js";
 
 export class StepsView {
   private stepList: StepList;

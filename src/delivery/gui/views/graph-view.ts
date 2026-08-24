@@ -3,7 +3,7 @@ import { buildGraphData } from "../../../core/workflow-graph.js";
 import type { WorkflowGraphData, SignalEvent } from "../../../core/workflow-graph.js";
 import type { WorkflowDefinition } from "../../../core/schemas.js";
 import type { StepStatusRecord } from "../../../application/harness/persistence/Tracker.js";
-import { api } from "../renderer.js";
+import { api } from "../api.js";
 
 export class GraphView {
   public canvas: GraphCanvas;

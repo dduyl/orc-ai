@@ -1,5 +1,6 @@
 import { createTerminal } from "./terminal.js";
 import { getDomRefs } from "./dom-refs.js";
+import { api } from "./api.js";
 import { ChatView } from "./chat-view.js";
 import { ActivityBox } from "./activity-box.js";
 import { MentionBox, type SuggestionItem } from "./mention-box.js";
@@ -17,8 +18,6 @@ import type { WorkflowDefinition } from "../../core/schemas.js";
 import type { ChatFrame, CustomMode, PromptMention, SignalEvent } from "./ipc.js";
 
 const MAIN_STEP_ID = "__main__";
-
-export const api = window.electronAPI;
 
 const refs = getDomRefs();
 const { term, fit: fitTermBase } = createTerminal(refs.termContainer);

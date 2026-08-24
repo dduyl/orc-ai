@@ -30,22 +30,7 @@ export const TERM_THEME = {
   brightWhite: "#ffffff",
 } as const;
 
-export interface StepTerminal {
-  stepId: string;
-  buffer: string;
-  scrollTop: number;
-}
-
-export function createTerminal(container: HTMLElement): { 
-  term: Terminal; 
-  fit: () => void;
-  stepTerminals: Map<string, StepTerminal>;
-  setBuffer: (stepId: string, buffer: string) => void;
-  getBuffer: (stepId: string) => string;
-  saveStepState: (stepId: string) => void;
-  restoreStepState: (stepId: string) => void;
-  switchToStep: (stepId: string) => void;
-} {
+export function createTerminal(container: HTMLElement): { term: Terminal; fit: () => void } {
   const term = new Terminal({
     cursorBlink: true,
     cursorStyle: "block",
@@ -59,53 +44,6 @@ export function createTerminal(container: HTMLElement): {
   term.loadAddon(fitAddon);
   term.open(container);
 
-  const stepTerminals = new Map<string, StepTerminal>();
-  let currentStepId: string | null = null;
-
-  function saveStepState(stepId: string): void {
-    if (!currentStepId || currentStepId === stepId) return;
-    try {
-      // @ts-ignore - viewport is on renderer
-      const viewport = term.renderer.viewport;
-      stepTerminals.set(currentStepId, {
-        stepId: currentStepId,
-        buffer: getBuffer(currentStepId),
-        scrollTop: viewport.scrollTop,
-      });
-    } catch { /* ignore */ }
-  }
-
-  function restoreStepState(stepId: string): void {
-    const saved = stepTerminals.get(stepId);
-    if (!saved) return;
-    try {
-      term.reset();
-      term.write(saved.buffer);
-      
-      // @ts-ignore - viewport is on renderer
-      const viewport = term.renderer.viewport;
-      viewport.scrollTop = saved.scrollTop;
-    } catch { /* ignore */ }
-  }
-
-  function setBuffer(stepId: string, buffer: string): void {
-    if (!stepTerminals.has(stepId)) {
-      stepTerminals.set(stepId, { stepId, buffer: "", scrollTop: 0 });
-    }
-    const existing = stepTerminals.get(stepId)!;
-    existing.buffer = buffer;
-  }
-
-  function getBuffer(stepId: string): string {
-    return stepTerminals.get(stepId)?.buffer || "";
-  }
-
-  function switchToStep(stepId: string): void {
-    if (currentStepId) saveStepState(currentStepId);
-    currentStepId = stepId;
-    restoreStepState(stepId);
-  }
-
   return {
     term,
     fit: () => {
@@ -113,11 +51,5 @@ export function createTerminal(container: HTMLElement): {
         fitAddon.fit();
       } catch { /* ignore */ }
     },
-    stepTerminals,
-    setBuffer,
-    getBuffer,
-    saveStepState,
-    restoreStepState,
-    switchToStep,
   };
 }

@@ -1,4 +1,4 @@
-import { api } from "./renderer.js";
+import { api } from "./api.js";
 import { escapeHtml } from "./html.js";
 
 export class WorkflowLauncher {

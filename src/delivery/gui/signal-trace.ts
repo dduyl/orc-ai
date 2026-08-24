@@ -20,10 +20,10 @@ export class SignalTrace {
           <button class="filter-btn" data-filter="loop" aria-pressed="false">Loops</button>
         </div>
       </div>
-      <div class="signal-trace-list" id="signal-trace-list" role="log" aria-live="polite" aria-label="Signal trace entries"></div>
+      <div class="signal-trace-entries"></div>
     `;
 
-    const list = container.querySelector("#signal-trace-list") as HTMLElement;
+    const list = container.querySelector(".signal-trace-entries") as HTMLElement;
     list.addEventListener("scroll", () => this.onScroll(list));
 
     container.querySelectorAll<HTMLButtonElement>(".filter-btn").forEach(btn => {
@@ -61,7 +61,7 @@ export class SignalTrace {
 
   private render(): void {
     if (!this.container) return;
-    const list = this.container.querySelector("#signal-trace-list") as HTMLElement;
+    const list = this.container.querySelector(".signal-trace-entries") as HTMLElement;
     if (!list) return;
 
     const events = this.getFilteredEvents();
