@@ -12,6 +12,10 @@ import type { PermissionRequest } from "../../application/agents/acp/permission.
 import type { PermissionAnswerKind } from "../../application/agents/acp/types.js";
 import type { PromptMention } from "../../application/harness/daemon/rpc-protocol.js";
 import { getAdapter } from "../../application/agents/adapter.js";
+import { WorkflowRegistry } from "../../application/planner/registry.js";
+import type { WorkflowDefinition } from "../../core/schemas.js";
+import type { RegisteredWorkflow } from "../../application/planner/registry.js";
+import type { WorkflowGraphData, SignalEvent } from "../../core/workflow-graph.js";
 import { IPC, type MainSender, type StepInfo } from "./ipc.js";
 import type { ChatFrame } from "./ipc.js";
 export type { ChatFrame, StepInfo };
@@ -75,6 +79,50 @@ export class DaemonBridge {
 
   async listRuns(): Promise<RunRecord[]> {
     return this.requireClient().list();
+  }
+
+  async startWorkflow(task: string, workflowId: string, _params?: Record<string, unknown>): Promise<{ runId: string }> {
+    const client = this.requireClient();
+    const res = await client.start({ task, workflowId });
+    this.trackRun(res.runId);
+    this.stepBuffers.clear();
+    this.send(IPC.MainToRenderer.log, { text: `Run started: ${workflowId}` });
+    await this.attachRunTerminal(res.runId);
+    this.send(IPC.MainToRenderer["workflow-started"], {
+      runId: res.runId,
+      workflowId,
+      workflow: { version: 1, workflow: { id: workflowId, name: workflowId, steps: [], completion: "" } } as WorkflowDefinition,
+    });
+    return res;
+  }
+
+  async getWorkflowGraph(runId: string): Promise<WorkflowGraphData> {
+    const client = this.requireClient();
+    const run = await client.status(runId);
+    if (!run) {
+      return { nodes: [], edges: [] };
+    }
+    // RunRecord has workflowId and workflowName, not the full WorkflowDefinition.
+    // We need to load the workflow from the registry.
+    const { WorkflowRegistry } = await import("../../application/planner/registry.js");
+    const { buildGraphData } = await import("../../core/workflow-graph.js");
+    const registry = new WorkflowRegistry();
+    const registered = registry.get(run.workflowId);
+    if (!registered) {
+      return { nodes: [], edges: [] };
+    }
+    return buildGraphData(registered.definition, run.steps ?? []);
+  }
+
+  async getSignalTrace(runId: string, limit?: number): Promise<SignalEvent[]> {
+    // Signal events are not yet emitted by the daemon; return empty for now.
+    // When the daemon emits signal events, they will be buffered here.
+    return [];
+  }
+
+  async listWorkflows(): Promise<RegisteredWorkflow[]> {
+    const registry = new WorkflowRegistry();
+    return registry.list();
   }
 
   listSteps(): StepInfo[] {
@@ -367,6 +415,11 @@ export class DaemonBridge {
   private onWorkflowComplete(info: WorkflowCompleteInfo): void {
     if (info.runId) {
       this.send(IPC.MainToRenderer.log, { text: `[run ${info.runId}] workflow complete (${info.status ?? "?"})` });
+      this.send(IPC.MainToRenderer["workflow-complete"], {
+        runId: info.runId,
+        status: info.status === "completed" ? "completed" : "failed",
+        finalSignal: undefined,
+      });
       // Do NOT clear stepBuffers here: the combined `__screen__` replay and per-step
       // buffers keep the finished run viewable after completion (Phase E). Clearing
       // would wipe the history a toasted run is about to show.

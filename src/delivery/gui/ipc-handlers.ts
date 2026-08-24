@@ -43,4 +43,18 @@ ipcMain.handle(IPC.RendererToMainInvoke.prompt, (_event, text: string, mentions?
   ipcMain.handle(IPC.RendererToMainInvoke["set-config-option"], (_event, configId: string, value: string) =>
     bridge.setConfigOption(configId, value),
   );
+
+  ipcMain.handle(IPC.RendererToMainInvoke["start-workflow"], (_event, task: string, workflowId: string, params?: Record<string, unknown>) =>
+    bridge.startWorkflow(task, workflowId, params),
+  );
+
+  ipcMain.handle(IPC.RendererToMainInvoke["get-workflow-graph"], (_event, runId: string) =>
+    bridge.getWorkflowGraph(runId),
+  );
+
+  ipcMain.handle(IPC.RendererToMainInvoke["get-signal-trace"], (_event, runId: string, limit?: number) =>
+    bridge.getSignalTrace(runId, limit),
+  );
+
+  ipcMain.handle(IPC.RendererToMainInvoke["list-workflows"], () => bridge.listWorkflows());
 }
