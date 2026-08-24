@@ -17,6 +17,8 @@ export class GraphCanvas {
   private lastMouseX = 0;
   private lastMouseY = 0;
   private nodeElements = new Map<string, SVGGElement>();
+  /** Edge lookup keyed by "from->to->signal" for O(1) highlight targeting. */
+  private edgeElements = new Map<string, SVGPathElement>();
 
   constructor(callbacks: GraphCanvasCallbacks) {
     this.callbacks = callbacks;
@@ -49,6 +51,7 @@ export class GraphCanvas {
     this.container = null;
     this.graphData = null;
     this.nodeElements.clear();
+    this.edgeElements.clear();
   }
 
   render(graphData: WorkflowGraphData): void {
@@ -209,14 +212,15 @@ export class GraphCanvas {
       this.nodeElements.set(node.id, gEl);
     }
 
+    this.edgeElements.clear();
     for (const edge of edges) {
       const layoutEdge = g.edge(edge.from, edge.to);
       if (!layoutEdge || !layoutEdge.points) continue;
 
-      const isLoop = edge.kind === "any" && 
-        nodes.find(n => n.id === edge.from) && 
+      const isLoop = edge.kind === "any" &&
+        nodes.find(n => n.id === edge.from) &&
         nodes.find(n => n.id === edge.to);
-      
+
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       const points = layoutEdge.points;
       let d = `M${points[0].x},${points[0].y}`;
@@ -225,7 +229,7 @@ export class GraphCanvas {
       }
       path.setAttribute("d", d);
       path.setAttribute("fill", "none");
-      
+
       // Loop edges: amber, dashed, with loop indicator
       if (isLoop) {
         path.setAttribute("stroke", "var(--accent)");
@@ -245,6 +249,7 @@ export class GraphCanvas {
         path.setAttribute("filter", "url(#glow)");
       }
       viewport.insertBefore(path, viewport.firstChild);
+      this.edgeElements.set(`${edge.from}->${edge.to}->${edge.signal}`, path);
     }
 
     for (const edge of edges) {
@@ -311,25 +316,52 @@ export class GraphCanvas {
   }
 
   highlightEdge(from: string, to: string, signal: string, matched: boolean): void {
-    if (!this.svg) return;
-    const edges = this.svg.querySelectorAll(".edge");
-    edges.forEach((edgeEl) => {
-      const d = edgeEl.getAttribute("d");
-      if (d && this.edgeMatches(from, to, d)) {
-        edgeEl.setAttribute("stroke", matched ? "var(--accent)" : "var(--border-strong)");
-        edgeEl.setAttribute("stroke-width", matched ? "2.5" : "1.5");
-        if (matched) {
-          edgeEl.setAttribute("filter", "url(#glow)");
-          setTimeout(() => {
-            edgeEl.removeAttribute("filter");
-          }, 500);
-        }
-      }
-    });
+    const edgeEl = this.edgeElements.get(`${from}->${to}->${signal}`);
+    if (!edgeEl) return;
+    edgeEl.setAttribute("stroke", matched ? "var(--accent)" : "var(--border-strong)");
+    edgeEl.setAttribute("stroke-width", matched ? "2.5" : "1.5");
+    if (matched) {
+      edgeEl.setAttribute("filter", "url(#glow)");
+      setTimeout(() => {
+        edgeEl.removeAttribute("filter");
+      }, 500);
+    }
   }
 
-  private edgeMatches(from: string, to: string, d: string): boolean {
-    return true;
+  /** Inject or update the ⟳N loop badge on a node (driven by live loop events). */
+  setLoopCount(stepId: string, count: number): void {
+    if (count < 2) return;
+    const gEl = this.nodeElements.get(stepId);
+    if (!gEl) return;
+    let badge = gEl.querySelector(".loop-badge") as SVGGElement | null;
+    if (!badge) {
+      const rect = gEl.querySelector(".node-rect");
+      if (!rect) return;
+      const x = Number(rect.getAttribute("x"));
+      const y = Number(rect.getAttribute("y"));
+      badge = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      badge.setAttribute("class", "loop-badge");
+      const badgeBg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      badgeBg.setAttribute("x", String(x - 14));
+      badgeBg.setAttribute("y", String(y - 14));
+      badgeBg.setAttribute("width", "24");
+      badgeBg.setAttribute("height", "24");
+      badgeBg.setAttribute("rx", "12");
+      badgeBg.setAttribute("fill", "var(--accent)");
+      const badgeText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      badgeText.setAttribute("x", String(x - 2));
+      badgeText.setAttribute("y", String(y + 1));
+      badgeText.setAttribute("text-anchor", "middle");
+      badgeText.setAttribute("font-size", "11");
+      badgeText.setAttribute("font-weight", "700");
+      badgeText.setAttribute("fill", "var(--bg-base)");
+      badgeText.setAttribute("font-family", "var(--font-mono)");
+      badge.appendChild(badgeBg);
+      badge.appendChild(badgeText);
+      gEl.appendChild(badge);
+    }
+    const text = badge.querySelector("text");
+    if (text) text.textContent = `⟳${count}`;
   }
 
   setActiveNode(stepId: string): void {

@@ -71,6 +71,10 @@ export class GraphView {
     this.canvas.setActiveNode(stepId);
   }
 
+  setLoopCount(stepId: string, count: number): void {
+    this.canvas.setLoopCount(stepId, count);
+  }
+
   private renderGraph(): void {
     if (!this.workflow) return;
     const graphData = buildGraphData(this.workflow, this.stepStatus);

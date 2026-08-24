@@ -53,6 +53,7 @@ export function buildGraphData(
 
   for (const step of workflow.workflow.steps) {
     const status = statusById.get(step.id);
+    const isGate = step.type === "script";
     const node: GraphNode = {
       id: step.id,
       name: step.id,
@@ -62,16 +63,24 @@ export function buildGraphData(
       status: status?.status ?? "pending",
       duration: status?.duration ?? undefined,
       error: status?.error ?? undefined,
-      isGate: step.type === "script",
-      loopCount: status?.quota ? 1 : undefined,
+      isGate,
+      // Loop counts arrive live via loop-detected events (canvas badge),
+      // never from static topology or quota state.
     };
+    if (isGate && status) {
+      node.exitCode = status.status === "failed" ? 1 : 0;
+      node.output = status.error ?? undefined;
+      node.gate = step.run;
+    }
     nodes.push(node);
   }
 
   for (const step of workflow.workflow.steps) {
-    const refs = [...(step.on ?? []), ...(step.any ?? [])];
-    const kind = step.on ? "on" : "any";
-    for (const ref of refs) {
+    const refs = [
+      ...(step.on ?? []).map((ref): { ref: string; kind: "on" | "any" } => ({ ref, kind: "on" })),
+      ...(step.any ?? []).map((ref): { ref: string; kind: "on" | "any" } => ({ ref, kind: "any" })),
+    ];
+    for (const { ref, kind } of refs) {
       if (ref === "__start__") continue;
       const dot = ref.lastIndexOf(".");
       const from = ref.slice(0, dot);

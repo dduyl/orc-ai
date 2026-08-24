@@ -618,6 +618,7 @@ api.onGateResult((data: { stepId: string; gate: string; exitCode: number; output
 api.onLoopDetected((data: { stepId: string; iteration: number; reason: string; fromSignal: string }) => {
   const event: SignalEvent = { ...data, type: "loop", stepId: data.stepId, signal: data.fromSignal, timestamp: Date.now() };
   signalTrace.addEvent(event);
+  graphView.setLoopCount(data.stepId, data.iteration);
 });
 
 api.onStepContext((data: { stepId: string; agent: string; context: string[]; emits: string[] }) => {
