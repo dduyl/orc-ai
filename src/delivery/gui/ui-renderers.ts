@@ -1,5 +1,6 @@
 import type { RunRecord, StepStatusRecord } from "../../application/harness/persistence/Tracker.js";
 import type { StepInfo } from "./ipc.js";
+import { escapeHtml } from "./html.js";
 export type { StepInfo };
 
 /** Token colors mirrored from DESIGN.md (also see xterm theme in terminal.ts). */
@@ -122,12 +123,4 @@ export function renderStepTree(run: RunRecord, container: HTMLElement): void {
 
     container.appendChild(el);
   }
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
 }

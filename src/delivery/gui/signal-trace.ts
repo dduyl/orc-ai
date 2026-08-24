@@ -1,4 +1,5 @@
 import type { SignalEvent } from "../../core/workflow-graph.js";
+import { escapeHtml } from "./html.js";
 
 export class SignalTrace {
   private container: HTMLElement | null = null;
@@ -77,27 +78,31 @@ export class SignalTrace {
     let icon = "";
     let className = "";
     let text = "";
+    const stepId = escapeHtml(event.stepId);
+    const signal = escapeHtml(event.signal ?? "");
 
     switch (event.type) {
       case "emission":
         icon = "▶";
         className = "signal-emission";
-        text = `${event.stepId} emitted <strong>${event.signal}</strong>`;
+        text = `${stepId} emitted <strong>${signal}</strong>`;
         break;
       case "edge_match":
         icon = "⤷";
         className = "signal-edge";
-        text = `${event.stepId}.${event.signal} → ${(event as any).toStep}`;
+        text = `${stepId}.${signal} → ${escapeHtml((event as { toStep?: string }).toStep ?? "")}`;
         break;
-      case "gate_result":
+      case "gate_result": {
         icon = event.exitCode === 0 ? "✓" : "✗";
         className = `signal-gate ${event.exitCode === 0 ? "pass" : "fail"}`;
-        text = `Gate <strong>${(event as any).gate}</strong> exit ${event.exitCode}${event.output ? ` — ${event.output.slice(0, 80)}` : ""}`;
+        const output = (event as { output?: string }).output ?? "";
+        text = `Gate <strong>${escapeHtml(signal)}</strong> exit ${event.exitCode}${output ? ` — ${escapeHtml(output.slice(0, 80))}` : ""}`;
         break;
+      }
       case "loop":
         icon = "⟳";
         className = "signal-loop";
-        text = `Loop detected: ${event.stepId} iteration ${event.iteration} (from ${(event as any).fromSignal})`;
+        text = `Loop detected: ${stepId} iteration ${event.iteration} (from ${escapeHtml((event as { fromSignal?: string }).fromSignal ?? "")})`;
         break;
     }
 

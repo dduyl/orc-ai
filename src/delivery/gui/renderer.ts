@@ -13,6 +13,7 @@ import { addEvent, setViewLabel, renderPTYTree, renderStepTree, type StepInfo } 
 import { initSplitter } from "./splitter.js";
 import { GUIDE_TEXT } from "../../adapters/mcp/handlers/content.js";
 import type { AgentCommand, AgentConfigOption } from "../../application/harness/daemon/main-frame-codec.js";
+import type { WorkflowDefinition } from "../../core/schemas.js";
 import type { ChatFrame, CustomMode, PromptMention, SignalEvent } from "./ipc.js";
 
 const MAIN_STEP_ID = "__main__";
@@ -580,9 +581,12 @@ api.onRunActive((data: { runId: string }) => {
   api.listSteps().then(steps => terminalView.updateSteps(steps));
 });
 
-api.onWorkflowStarted((data: { runId: string; workflowId: string; workflow: any }) => {
+api.onWorkflowStarted((data: { runId: string; workflowId: string; workflow: WorkflowDefinition }) => {
   latestRunId = data.runId;
   graphView.init(data.workflow);
+  stepsView.setGateSteps(
+    data.workflow.workflow.steps.filter(s => s.type === "script").map(s => s.id),
+  );
   setActiveView("graph");
 
   // Update terminal view step selector

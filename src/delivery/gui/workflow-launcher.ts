@@ -1,5 +1,5 @@
 import { api } from "./renderer.js";
-import { SignalTrace } from "./signal-trace.js";
+import { escapeHtml } from "./html.js";
 
 export class WorkflowLauncher {
   private modal: HTMLDivElement | null = null;
@@ -48,7 +48,7 @@ export class WorkflowLauncher {
           <div class="launcher-field">
             <label for="launcher-workflow">Workflow</label>
             <select id="launcher-workflow">
-              ${this.workflows.map(w => `<option value="${w.id}">${w.name} (${w.id})</option>`).join("")}
+              ${this.workflows.map(w => `<option value="${escapeHtml(w.id)}">${escapeHtml(w.name)} (${escapeHtml(w.id)})</option>`).join("")}
             </select>
           </div>
           <div class="launcher-field">
@@ -125,36 +125,54 @@ export class WorkflowLauncher {
     }
 
     const inputs = workflow.definition.workflow.inputs;
-    const fields = Object.entries(inputs).map(([key, schema]: [string, any]) => {
+    const fields = Object.entries(inputs).map(([rawKey, rawSchema]: [string, any]) => {
+      const key = escapeHtml(rawKey);
+      const schema = rawSchema ?? {};
       const type = schema.type || "string";
       let inputHtml = "";
       if (type === "boolean") {
-        inputHtml = `<input type="checkbox" id="param-${key}" name="${key}" ${schema.default ? "checked" : ""}>`;
+        inputHtml = `<input type="checkbox" id="param-${key}" data-param="${key}" data-type="boolean" ${schema.default ? "checked" : ""}>`;
       } else if (schema.enum) {
-        inputHtml = `<select id="param-${key}" name="${key}">${schema.enum.map((v: string) => `<option value="${v}" ${v === schema.default ? "selected" : ""}>${v}</option>`).join("")}</select>`;
+        inputHtml = `<select id="param-${key}" data-param="${escapeHtml(rawKey)}" data-type="enum">${schema.enum.map((v: string) => `<option value="${escapeHtml(v)}" ${v === schema.default ? "selected" : ""}>${escapeHtml(v)}</option>`).join("")}</select>`;
       } else if (type === "number" || type === "integer") {
-        inputHtml = `<input type="number" id="param-${key}" name="${key}" value="${schema.default ?? ""}" step="${type === "integer" ? "1" : "any"}">`;
+        inputHtml = `<input type="number" id="param-${key}" data-param="${escapeHtml(rawKey)}" data-type="${type}" value="${schema.default ?? ""}" step="${type === "integer" ? "1" : "any"}">`;
       } else {
-        inputHtml = `<input type="text" id="param-${key}" name="${key}" value="${schema.default ?? ""}" placeholder="${schema.description ?? ""}">`;
+        inputHtml = `<input type="text" id="param-${key}" data-param="${escapeHtml(rawKey)}" data-type="string" value="${schema.default ?? ""}" placeholder="${escapeHtml(schema.description ?? "")}">`;
       }
-      return `<div class="param-field"><label for="param-${key}">${key}${schema.required ? " *" : ""}</label>${inputHtml}${schema.description ? `<span class="param-hint">${schema.description}</span>` : ""}</div>`;
+      return `<div class="param-field"><label for="param-${key}">${key}${schema.required ? " *" : ""}</label>${inputHtml}${schema.description ? `<span class="param-hint">${escapeHtml(schema.description)}</span>` : ""}</div>`;
     }).join("");
 
     paramsForm.innerHTML = fields;
     paramsContainer.style.display = "block";
   }
 
+  /**
+   * Collect parameter values directly from rendered `[data-param]` inputs,
+   * coercing per each field's declared schema type. Never uses FormData —
+   * the container is a plain div, and FormData on a non-form throws.
+   */
   private collectParams(): Record<string, unknown> {
-    const form = this.getModal().querySelector("#launcher-params-form") as HTMLFormElement;
+    const form = this.getModal().querySelector("#launcher-params-form");
     if (!form) return {};
-    const data = new FormData(form);
     const params: Record<string, unknown> = {};
-    data.forEach((value: FormDataEntryValue, key: string) => {
-      if (value === "on") params[key] = true;
-      else if (value === "off") params[key] = false;
-      else if (!isNaN(Number(value)) && value !== "") params[key] = Number(value);
-      else params[key] = value;
+    form.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-param]").forEach(el => {
+      const key = el.dataset.param!;
+      const type = el.dataset.type ?? "string";
+      if (type === "boolean") {
+        params[key] = (el as HTMLInputElement).checked;
+        return;
+      }
+      const raw = el.value;
+      if (type === "number" || type === "integer") {
+        const n = Number(raw);
+        params[key] = raw !== "" && !isNaN(n) ? n : undefined;
+      } else {
+        params[key] = raw;
+      }
     });
+    for (const key of Object.keys(params)) {
+      if (params[key] === undefined) delete params[key];
+    }
     return params;
   }
 }

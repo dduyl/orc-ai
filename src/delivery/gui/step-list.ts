@@ -1,11 +1,25 @@
+import { escapeHtml } from "./html.js";
+
 export interface StepListCallbacks {
   onSelect: (stepId: string) => void;
+}
+
+/** Normalized row shape fed by StepsView (derived from StepStatusRecord + definition). */
+export interface StepRowData {
+  stepId: string;
+  agent?: string;
+  status: "pending" | "running" | "completed" | "failed";
+  duration?: number | null;
+  signals?: string[];
+  isGate: boolean;
+  /** Original declaration order in the workflow (stable sort key). */
+  order: number;
 }
 
 export class StepList {
   private container: HTMLElement | null = null;
   private callbacks: StepListCallbacks;
-  private steps: any[] = [];
+  private steps: StepRowData[] = [];
   private filter: "all" | "running" | "failed" | "pending" = "all";
   private sortColumn: "order" | "status" | "duration" | "agent" = "order";
   private sortDirection: "asc" | "desc" = "asc";
@@ -57,7 +71,7 @@ export class StepList {
     this.steps = [];
   }
 
-  setSteps(steps: any[]): void {
+  setSteps(steps: StepRowData[]): void {
     this.steps = steps;
     this.render();
   }
@@ -80,7 +94,7 @@ export class StepList {
     this.render();
   }
 
-  private getFilteredSteps(): any[] {
+  private getFilteredSteps(): StepRowData[] {
     let filtered = this.steps;
     if (this.filter !== "all") {
       filtered = filtered.filter(s => s.status === this.filter);
@@ -125,7 +139,7 @@ export class StepList {
       return;
     }
 
-    tbody.innerHTML = steps.map((step, idx) => this.renderRow(step, idx)).join("");
+    tbody.innerHTML = steps.map(step => this.renderRow(step)).join("");
 
     tbody.querySelectorAll("tr[data-step-id]").forEach(row => {
       row.addEventListener("click", () => {
@@ -135,20 +149,22 @@ export class StepList {
     });
   }
 
-  private renderRow(step: any, idx: number): string {
+  private renderRow(step: StepRowData): string {
     const statusClass = step.status;
     const statusGlyph = this.getStatusGlyph(step.status);
     const duration = step.duration != null ? `${step.duration}s` : "—";
     const signals = step.signals?.length ? step.signals.join(", ") : "—";
     const gate = step.isGate ? (step.status === "completed" ? "✓ pass" : step.status === "failed" ? "✗ fail" : "▶ running") : "—";
+    const stepId = escapeHtml(step.stepId);
+    const agent = step.agent ? escapeHtml(step.agent) : "—";
 
     return `
-      <tr data-step-id="${step.stepId}" class="step-row ${statusClass}">
-        <td>${step.stepId}</td>
-        <td>${step.agent ?? "—"}</td>
-        <td><span class="status-glyph ${statusClass}">${statusGlyph}</span> ${step.status}</td>
+      <tr data-step-id="${stepId}" class="step-row ${statusClass}">
+        <td>${stepId}</td>
+        <td>${agent}</td>
+        <td><span class="status-glyph ${statusClass}">${statusGlyph}</span> ${escapeHtml(step.status)}</td>
         <td>${duration}</td>
-        <td>${signals}</td>
+        <td>${escapeHtml(signals)}</td>
         <td class="gate-column">${gate}</td>
       </tr>
     `;
