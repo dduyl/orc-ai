@@ -19,6 +19,8 @@ export class GraphCanvas {
   private nodeElements = new Map<string, SVGGElement>();
   /** Edge lookup keyed by "from->to->signal" for O(1) highlight targeting. */
   private edgeElements = new Map<string, SVGPathElement>();
+  private readonly onWindowMouseMove = (e: MouseEvent): void => this.onMouseMove(e);
+  private readonly onWindowMouseUp = (): void => this.onMouseUp();
 
   constructor(callbacks: GraphCanvasCallbacks) {
     this.callbacks = callbacks;
@@ -35,8 +37,8 @@ export class GraphCanvas {
     this.svg.setAttribute("aria-label", "Workflow signal graph");
     this.svg.addEventListener("wheel", this.onWheel.bind(this), { passive: false });
     this.svg.addEventListener("mousedown", this.onMouseDown.bind(this));
-    window.addEventListener("mousemove", this.onMouseMove.bind(this));
-    window.addEventListener("mouseup", this.onMouseUp.bind(this));
+    window.addEventListener("mousemove", this.onWindowMouseMove);
+    window.addEventListener("mouseup", this.onWindowMouseUp);
     this.svg.addEventListener("dblclick", this.onDoubleClick.bind(this));
     this.svg.addEventListener("keydown", this.onKeyDown.bind(this));
     this.svg.setAttribute("tabindex", "0");
@@ -44,6 +46,8 @@ export class GraphCanvas {
   }
 
   unmount(): void {
+    window.removeEventListener("mousemove", this.onWindowMouseMove);
+    window.removeEventListener("mouseup", this.onWindowMouseUp);
     if (this.container) {
       this.container.innerHTML = "";
     }

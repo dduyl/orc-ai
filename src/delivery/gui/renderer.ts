@@ -15,6 +15,7 @@ import { initSplitter } from "./splitter.js";
 import { GUIDE_TEXT } from "../../adapters/mcp/handlers/content.js";
 import type { AgentCommand, AgentConfigOption } from "../../application/harness/daemon/main-frame-codec.js";
 import type { WorkflowDefinition } from "../../core/schemas.js";
+import type { RunRecord } from "../../application/harness/persistence/Tracker.js";
 import type { ChatFrame, CustomMode, PromptMention, SignalEvent } from "./ipc.js";
 
 const MAIN_STEP_ID = "__main__";
@@ -454,12 +455,6 @@ async function pollRunStatus(): Promise<void> {
     if (run) {
       renderStepTree(run, refs.stepTree);
       updateStepTreeFromRun(run);
-      terminalView.updateSteps((run.steps ?? []).map(s => ({
-  id: s.stepId,
-  name: s.stepId,
-  isActive: s.status === "running",
-  isMain: s.stepId === MAIN_STEP_ID,
-})));
     }
   } catch { /* ignore */ }
 }
@@ -575,9 +570,6 @@ api.onLog((data: { text: string }) => {
 api.onRunActive((data: { runId: string }) => {
   latestRunId = data.runId;
   pollRunStatus();
-
-  // Initialize terminal view step selector
-  api.listSteps().then(steps => terminalView.updateSteps(steps));
 });
 
 api.onWorkflowStarted((data: { runId: string; workflowId: string; workflow: WorkflowDefinition }) => {
@@ -587,9 +579,6 @@ api.onWorkflowStarted((data: { runId: string; workflowId: string; workflow: Work
     data.workflow.workflow.steps.filter(s => s.type === "script").map(s => s.id),
   );
   setActiveView("graph");
-
-  // Update terminal view step selector
-  api.listSteps().then(steps => terminalView.updateSteps(steps));
 });
 
 api.onWorkflowComplete((data: { runId: string; status: "completed" | "failed"; finalSignal?: string }) => {
@@ -597,7 +586,6 @@ api.onWorkflowComplete((data: { runId: string; status: "completed" | "failed"; f
   if (data.runId === latestRunId) {
     graphView.setStepStatus([]);
     activeStep.render({ stepId: "", agent: "", context: [], emits: [] });
-    terminalView.updateSteps([]);
   }
 });
 
@@ -642,11 +630,6 @@ api.onStepActivated(async (data: { stepId: string }) => {
   term.focus();
 
   graphView.onStepActivated(data.stepId);
-  stepsView.setStepStatus([]); // Will be updated by pollRunStatus
-
-  // Update terminal view step selector
-  const steps = await api.listSteps();
-  terminalView.updateSteps(steps);
 });
 
 // ── Chat panel (ACP main) ──────────────────────────────────────────────────
@@ -697,9 +680,21 @@ function syncComposer(): void {
   if (activeView === "chat") refs.chatInput.focus();
 }
 
-function updateStepTreeFromRun(run: any): void {
+function updateStepTreeFromRun(run: RunRecord): void {
   if (!run || !run.steps) return;
   graphView.setStepStatus(run.steps);
+  stepsView.setStepStatus(run.steps);
+  // Sole caller of updateSteps: the poll owns the terminal dropdown so rapid
+  // step transitions never rebuild it mid-interaction.
+  terminalView.updateSteps([
+    { id: MAIN_STEP_ID, name: "orchestrator", isActive: !run.currentStepId, isMain: true },
+    ...run.steps.map(s => ({
+      id: s.stepId,
+      name: s.stepId,
+      isActive: s.stepId === run.currentStepId || (s.status === "running" && !run.currentStepId),
+      isMain: false,
+    })),
+  ]);
 }
 
 /** Pull `@path` mentions out of a composer value, leaving the rest as text. */

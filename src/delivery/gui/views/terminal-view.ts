@@ -4,6 +4,8 @@ import type { StepInfo } from "../ipc.js";
 export class TerminalView {
   private container: HTMLElement | null = null;
   private stepSelect: HTMLSelectElement | null = null;
+  /** Signature of the last rendered option set; identical input skips the rebuild. */
+  private lastSignature = "";
 
   mount(container: HTMLElement): void {
     this.container = container;
@@ -20,6 +22,12 @@ export class TerminalView {
 
   updateSteps(steps: StepInfo[]): void {
     if (!this.stepSelect) return;
+
+    // The poll feeds this every 2s; rebuilding identical options would close
+    // an open dropdown and reset selection, so skip when nothing changed.
+    const signature = steps.map(s => `${s.id}:${s.isActive ? 1 : 0}`).join("|");
+    if (signature === this.lastSignature) return;
+    this.lastSignature = signature;
 
     const currentValue = this.stepSelect.value;
     const activeStep = steps.find(s => s.isActive);

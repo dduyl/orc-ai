@@ -3,22 +3,38 @@ import { escapeHtml } from "./html.js";
 
 export class WorkflowLauncher {
   private modal: HTMLDivElement | null = null;
+  /** Document-level Escape handler registered for the lifetime of one modal. */
+  private keydownHandler: ((e: KeyboardEvent) => void) | null = null;
   private workflows: any[] = [];
 
   async open(): Promise<void> {
     if (this.modal) return;
+    // Reserve the modal synchronously so rapid re-invocations hit the guard
+    // instead of stacking a second overlay behind the async workflow load.
+    const reserved = document.createElement("div");
+    reserved.className = "workflow-launcher-overlay";
+    document.body.appendChild(reserved);
+    this.modal = reserved;
+
     await this.loadWorkflows();
-    this.renderModal();
+    this.renderModal(reserved);
     this.bindEvents();
-    this.modal!.classList.add("visible");
-    (this.modal!.querySelector("#launcher-task") as HTMLTextAreaElement)?.focus();
+    reserved.classList.add("visible");
+    (reserved.querySelector("#launcher-task") as HTMLTextAreaElement)?.focus();
   }
 
   close(): void {
-    this.modal?.classList.remove("visible");
+    const modal = this.modal;
+    if (!modal) return;
+    if (this.keydownHandler) {
+      document.removeEventListener("keydown", this.keydownHandler);
+      this.keydownHandler = null;
+    }
+    modal.classList.remove("visible");
     setTimeout(() => {
-      this.modal?.remove();
-      this.modal = null;
+      modal.remove();
+      // Only clear if no newer modal took over during the fade window.
+      if (this.modal === modal) this.modal = null;
     }, 200);
   }
 
@@ -35,9 +51,7 @@ export class WorkflowLauncher {
     }
   }
 
-  private renderModal(): void {
-    const overlay = document.createElement("div");
-    overlay.className = "workflow-launcher-overlay";
+  private renderModal(overlay: HTMLDivElement): void {
     overlay.innerHTML = `
       <div class="workflow-launcher-modal">
         <div class="launcher-header">
@@ -108,9 +122,9 @@ export class WorkflowLauncher {
       }
     });
 
-    document.addEventListener("keydown", (e) => {
+    document.addEventListener("keydown", (this.keydownHandler = (e: KeyboardEvent) => {
       if (e.key === "Escape") this.close();
-    });
+    }));
   }
 
   private renderParamsForm(workflowId: string): void {
