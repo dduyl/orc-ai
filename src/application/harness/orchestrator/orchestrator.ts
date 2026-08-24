@@ -147,9 +147,24 @@ export async function orchestrate(
       paused: outcomes.filter(o => o.status === "paused").length,
     };
 
-    const finalStatus: "cancelled" | "paused" | "failed" | "completed" = signal?.aborted
+    const hasNeedsHuman = outcomes.some(o =>
+      o.needsHuman ||
+      o.failureReason === "loop_detected" ||
+      o.failureReason === "budget_exceeded" ||
+      o.failureReason === "exhausted_retries" ||
+      o.error?.includes("loop detected") ||
+      o.error?.includes("step budget exceeded")
+    );
+
+    const finalStatus: "cancelled" | "paused" | "failed" | "completed" | "needs_human" = signal?.aborted
       ? "cancelled"
-      : pausedQuota ? "paused" : report.failed > 0 ? "failed" : "completed";
+      : pausedQuota
+      ? "paused"
+      : hasNeedsHuman
+      ? "needs_human"
+      : report.failed > 0
+      ? "failed"
+      : "completed";
 
     if (tracker) {
       if (finalStatus === "paused") {

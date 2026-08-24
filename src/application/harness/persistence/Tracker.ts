@@ -8,7 +8,7 @@ export interface StepStatusRecord {
   agent: string | null;
   task: string | null;
   signals: string[];
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "needs_human";
   startedAt: number | null;
   completedAt: number | null;
   duration: number | null;
@@ -16,7 +16,7 @@ export interface StepStatusRecord {
   quota: QuotaInfo | null;
 }
 
-export type RunStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "paused";
+export type RunStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "paused" | "needs_human";
 
 export interface RunRecord {
   runId: string;

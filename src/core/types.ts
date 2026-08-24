@@ -14,6 +14,7 @@ export enum StepStatus {
   Running = "running",
   Completed = "completed",
   Failed = "failed",
+  NeedsHuman = "needs_human",
 }
 
 export enum FailureReason {
@@ -26,6 +27,8 @@ export enum FailureReason {
   BudgetExceeded = "budget_exceeded",
   LoopDetected = "loop_detected",
   QuotaExhausted = "quota_exhausted",
+  ExhaustedRetries = "exhausted_retries",
+  NeedsHuman = "needs_human",
 }
 
 export interface AgentAdapterConfig {

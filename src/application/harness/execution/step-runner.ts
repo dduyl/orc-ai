@@ -56,6 +56,8 @@ export interface StepOutcome {
    * `providers/set`) when the step then completed on that provider.
    */
   providerFailover?: string;
+  /** ADR-016: whether the failure requires human escalation. */
+  needsHuman?: boolean;
 }
 
 export type StepHandler = (step: WorkflowStep, ctx: RunContext) => Promise<StepOutcome>;
@@ -207,8 +209,15 @@ export async function runWorkflow(
     }
   }
 
-  function failOutcome(s: WorkflowStep, error: string): StepOutcome {
-    const o: StepOutcome = { stepId: s.id, status: "failed", error, retries: 0 };
+  function failOutcome(s: WorkflowStep, error: string, needsHuman?: boolean, failureReason?: string): StepOutcome {
+    const o: StepOutcome = {
+      stepId: s.id,
+      status: "failed",
+      error,
+      retries: 0,
+      ...(needsHuman ? { needsHuman: true } : {}),
+      ...(failureReason ? { failureReason } : {}),
+    };
     ctx.stepResults.set(s.id, o);
     terminal.add(s.id);
     upsertOutcome(o);
@@ -224,7 +233,7 @@ export async function runWorkflow(
 
     totalRuns++;
     if (totalRuns > MAX_TOTAL_RUNS) {
-      failOutcome(s, `step budget exceeded: ${totalRuns} total runs > ${MAX_TOTAL_RUNS} max`);
+      failOutcome(s, `step budget exceeded: ${totalRuns} total runs > ${MAX_TOTAL_RUNS} max`, true, "budget_exceeded");
       propagateFailure(s.id);
       pump();
       tryFinish();
@@ -232,7 +241,7 @@ export async function runWorkflow(
     }
     const runs = (stepRunCounts.get(s.id) ?? 0) + 1;
     if (runs > MAX_STEP_RUNS) {
-      failOutcome(s, `loop detected: step '${s.id}' ran ${runs} times > ${MAX_STEP_RUNS} max`);
+      failOutcome(s, `loop detected: step '${s.id}' ran ${runs} times > ${MAX_STEP_RUNS} max`, true, "loop_detected");
       propagateFailure(s.id);
       pump();
       tryFinish();

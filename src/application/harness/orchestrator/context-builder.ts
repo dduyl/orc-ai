@@ -67,6 +67,7 @@ export function buildStepContext(
   }
   if (step.agent === "spec" || step.agent === "arch") {
     parts.push(`=== Bounded Research Budget (ADR-008) ===\nYou are permitted up to 5 research tool calls for this step. Write findings that inform your decision into your artifact's reasoning. If research is inconclusive, finalize with an explicit \`unverified_assumption\` flag instead of stalling.`);
+    parts.push(`=== Human Escalation (ADR-016) ===\nIf you encounter consequential ambiguity where guessing wrong would require redoing significant downstream work and no reasonable default exists, document an explicit question or escalation for human review.`);
   } else if (step.agent) {
     parts.push(`=== Research Restrictions (ADR-008) ===\nDocument any unknown requirements as explicit assumptions in your output artifact; open-ended research tool-call loops are restricted for role '${step.agent}'.`);
   }
