@@ -42,6 +42,7 @@ import { registerPtyWriter } from "../signalling/pty-notifier.js";
 import type { PermissionRequest } from "../../agents/acp/permission.js";
 import type { PermissionAnswerKind } from "../../agents/acp/types.js";
 import { log } from "../../../core/log.js";
+import { CodeGraphService } from "../graph/code-graph.js";
 
 /**
  * Headless run daemon over named pipes (ADR-025 Phase C step 3).
@@ -374,6 +375,9 @@ export class DaemonServer {
       }
       this.mcpServer = null;
     }
+
+    // Release CodeGraph watchers + DB handles before shutting down.
+    CodeGraphService.closeAll();
 
     await new Promise<void>((resolve) => {
       const server = this.controlServer;
