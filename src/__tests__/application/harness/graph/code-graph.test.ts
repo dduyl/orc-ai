@@ -180,7 +180,7 @@ describe("harness/graph/code-graph", () => {
     });
 
     expect(result.nodes.length).toBeGreaterThan(0);
-    expect(result.summary).toContain("Structural code graph");
+    expect(result.summary).toMatch(/^Static/);
   });
 
   it("falls back when library returns empty results", async () => {
@@ -194,6 +194,7 @@ describe("harness/graph/code-graph", () => {
 
     expect(result).toBeDefined();
     expect(result.nodes.length).toBeGreaterThan(0);
+    expect(result.summary).toMatch(/^Static/);
   });
 
   // Watcher lifecycle
