@@ -1,29 +1,9 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { log } from "../../../core/log.js";
-import type { CodeGraph as CodeGraphType } from "@colbymchenry/codegraph";
 
-// Lazy-import CodeGraph to avoid hard fail when the native binary is absent.
-// The import resolves once at first query; subsequent calls use the cached ref.
-let _CodeGraphClass: typeof CodeGraphType | null = null;
-
-async function loadCodeGraph(): Promise<typeof CodeGraphType | null> {
-  if (_CodeGraphClass) return _CodeGraphClass;
-  try {
-    const mod = await import("@colbymchenry/codegraph");
-    // The CJS interop may expose CodeGraph as a named export or on .default.
-    const CG = (mod as Record<string, unknown>).CodeGraph
-      ?? (mod as Record<string, unknown>).default;
-    if (typeof CG === "function") {
-      _CodeGraphClass = CG as unknown as typeof CodeGraphType;
-      return _CodeGraphClass;
-    }
-    return null;
-  } catch {
-    log.debug("[code-graph] @colbymchenry/codegraph not loadable — native binary missing or incompatible");
-    return null;
-  }
-}
+// Re-export the type so consumers can reference the CodeGraph class.
+type CGModule = typeof import("@colbymchenry/codegraph");
 
 export type QueryType = "dependencies" | "callers" | "callees" | "blast_radius";
 
@@ -79,17 +59,27 @@ function nodeTypeFromKind(kind: string): NodeInfo["type"] {
  * Attempt 2: static regex fallback (unchanged from ADR-002).
  */
 export class CodeGraphService {
-  private static instances = new Map<string, CodeGraphType>();
+  private static instances = new Map<string, { close(): void }>();
 
   /**
    * Obtain (or create) a cached CodeGraph instance for the given root.
    * Returns null when the library is not loadable or the index doesn't exist.
    */
-  private static async getInstance(root: string): Promise<CodeGraphType | null> {
+  private static async getInstance(root: string) {
     const cached = CodeGraphService.instances.get(root);
     if (cached) return cached;
 
-    const CG = await loadCodeGraph();
+    let CG: CGModule["CodeGraph"] | undefined;
+    try {
+      const mod: CGModule = await import("@colbymchenry/codegraph");
+      // CJS interop: CodeGraph may be a named export or on .default.
+      CG = (mod as Record<string, unknown>).CodeGraph as CGModule["CodeGraph"]
+        ?? (mod as Record<string, unknown>).default as CGModule["CodeGraph"];
+    } catch {
+      log.debug("[code-graph] @colbymchenry/codegraph not loadable — native binary missing or incompatible");
+      return null;
+    }
+
     if (!CG) return null;
 
     try {
@@ -124,7 +114,7 @@ export class CodeGraphService {
     CodeGraphService.instances.clear();
   }
 
-  static async queryCodeGraph(opts: CodeGraphQueryOptions): Promise<CodeGraphQueryResult> {
+  static async queryCodeGraph(opts: CodeGraphQueryOptions) {
     const root = opts.projectDir ?? process.cwd();
     const depth = opts.depth ?? 2;
 
@@ -132,7 +122,7 @@ export class CodeGraphService {
     try {
       const cg = await CodeGraphService.getInstance(root);
       if (cg) {
-        const libResult = CodeGraphService.queryViaLibrary(cg, opts, depth);
+        const libResult = CodeGraphService.queryViaLibrary(cg as unknown as CGModule["CodeGraph"], opts, depth);
         if (libResult) return libResult;
       }
     } catch (err: unknown) {
@@ -145,7 +135,7 @@ export class CodeGraphService {
   }
 
   private static queryViaLibrary(
-    cg: CodeGraphType,
+    cg: any,
     opts: CodeGraphQueryOptions,
     _depth: number,
   ): CodeGraphQueryResult | null {
@@ -223,7 +213,7 @@ export class CodeGraphService {
         for (const [, n] of sub.nodes) {
           nodes.push({ id: n.id, name: n.name, type: nodeTypeFromKind(n.kind) });
         }
-        const edges: EdgeInfo[] = sub.edges.map(e => ({
+        const edges: EdgeInfo[] = sub.edges.map((e: any) => ({
           source: e.source,
           target: e.target,
           relationship: mapEdgeKind(e.kind),
