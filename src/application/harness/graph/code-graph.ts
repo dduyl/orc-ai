@@ -1,7 +1,46 @@
-import { execSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative, extname } from "node:path";
+import { join, relative } from "node:path";
 import { log } from "../../../core/log.js";
+
+// Re-export the type so consumers can reference the CodeGraph class.
+type CGModule = typeof import("@colbymchenry/codegraph");
+
+/** Minimal types matching the @colbymchenry/codegraph API subset actually used. */
+interface CGNode {
+  id: string;
+  name: string;
+  kind: string;
+  filePath?: string;
+}
+interface CGEdge {
+  source: string;
+  target: string;
+  kind: string;
+}
+interface CGSearchResult {
+  node: CGNode;
+}
+interface CGCallerResult {
+  node: CGNode;
+  edge: CGEdge;
+}
+interface CGImpactResult {
+  nodes: Map<string, CGNode>;
+  edges: CGEdge[];
+  roots: string[];
+}
+
+/** Minimal interface matching the @colbymchenry/codegraph methods actually used. */
+interface CodeGraphInstance {
+  searchNodes(query: string): CGSearchResult[];
+  getCallers(target: string, depth: number): CGCallerResult[];
+  getCallees(target: string, depth: number): CGCallerResult[];
+  getImpactRadius(target: string, depth: number): CGImpactResult;
+  getOutgoingEdges(nodeId: string): CGEdge[];
+  sync(): Promise<unknown>;
+  watch(): void;
+  close(): void;
+}
 
 export type QueryType = "dependencies" | "callers" | "callees" | "blast_radius";
 
@@ -32,38 +71,210 @@ export interface CodeGraphQueryResult {
   summary: string;
 }
 
+const EDGE_KIND_MAP: Record<string, EdgeInfo["relationship"]> = {
+  imports: "imports",
+  calls: "calls",
+  references: "depends_on",
+  extends: "depends_on",
+  implements: "depends_on",
+};
+
+function mapEdgeKind(kind: string): EdgeInfo["relationship"] {
+  return EDGE_KIND_MAP[kind] ?? "depends_on";
+}
+
+function nodeTypeFromKind(kind: string): NodeInfo["type"] {
+  if (kind === "file") return "file";
+  if (kind === "module" || kind === "import" || kind === "export") return "module";
+  return "symbol";
+}
+
+/**
+ * Structural code graph queries via @colbymchenry/codegraph (ADR-027).
+ *
+ * Attempt 1: library API — CodeGraph.open → query methods.
+ * Attempt 2: static regex fallback (unchanged from ADR-027).
+ */
 export class CodeGraphService {
+  private static instances = new Map<string, CodeGraphInstance>();
+
   /**
-   * Execute a structural code graph query via CodeGraphContext (ADR-002),
-   * falling back to static AST import parsing if the CLI is unavailable.
+   * Obtain (or create) a cached CodeGraph instance for the given root.
+   * Returns null when the library is not loadable or the index doesn't exist.
    */
-  static async queryCodeGraph(opts: CodeGraphQueryOptions): Promise<CodeGraphQueryResult> {
+  private static async getInstance(root: string) {
+    const cached = CodeGraphService.instances.get(root);
+    if (cached) return cached;
+
+    let CG: CGModule["CodeGraph"] | undefined;
+    try {
+      const mod: CGModule = await import("@colbymchenry/codegraph");
+      // CJS interop: CodeGraph may be a named export or on .default.
+      CG = (mod as Record<string, unknown>).CodeGraph as CGModule["CodeGraph"]
+        ?? (mod as Record<string, unknown>).default as CGModule["CodeGraph"];
+    } catch {
+      log.debug("[code-graph] @colbymchenry/codegraph not loadable — native binary missing or incompatible");
+      return null;
+    }
+
+    if (!CG) return null;
+
+    try {
+      const cg = await CG.open(root, { sync: false });
+      // Connect-time catch-up: reconcile files changed while daemon was offline.
+      await cg.sync();
+      // Start native OS file watcher (FSEvents/inotify/ReadDirectoryChangesW).
+      cg.watch();
+      CodeGraphService.instances.set(root, cg);
+      log.debug(`[code-graph] opened index for ${root}`);
+      return cg;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.debug(`[code-graph] CodeGraph.open failed for ${root}: ${msg}`);
+      return null;
+    }
+  }
+
+  /**
+   * Close all cached CodeGraph instances and release watchers + DB handles.
+   * Called from DaemonServer.stop().
+   */
+  static closeAll(): void {
+    for (const [root, cg] of CodeGraphService.instances) {
+      try {
+        cg.close();
+        log.debug(`[code-graph] closed index for ${root}`);
+      } catch {
+        /* ignore — best-effort cleanup */
+      }
+    }
+    CodeGraphService.instances.clear();
+  }
+
+  static async queryCodeGraph(opts: CodeGraphQueryOptions) {
     const root = opts.projectDir ?? process.cwd();
     const depth = opts.depth ?? 2;
 
-    // Attempt 1: Execute pinned codegraphcontext CLI if available
+    // Attempt 1: library API
     try {
-      const cliResult = execSync(
-        `npx --no-install codegraphcontext query --type ${opts.queryType} --target "${opts.target}" --depth ${depth}`,
-        { cwd: root, encoding: "utf-8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"] }
-      );
-      const parsed = JSON.parse(cliResult);
-      if (parsed && Array.isArray(parsed.nodes) && Array.isArray(parsed.edges)) {
-        return {
-          queryType: opts.queryType,
-          target: opts.target,
-          nodes: parsed.nodes,
-          edges: parsed.edges,
-          summary: parsed.summary ?? `CodeGraphContext queried ${parsed.nodes.length} nodes across depth ${depth}.`,
-        };
+      const cg = await CodeGraphService.getInstance(root);
+      if (cg) {
+        const libResult = CodeGraphService.queryViaLibrary(cg, opts, depth);
+        if (libResult) return libResult;
       }
-    } catch {
-      log.debug("[code-graph] codegraphcontext CLI query unavailable, falling back to static parser");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.debug(`[code-graph] library query failed, falling back to static parser: ${msg}`);
     }
 
-    // Attempt 2: Static import & dependency graph parser
+    // Attempt 2: static regex fallback
     return CodeGraphService.parseStaticGraph(root, opts.queryType, opts.target, depth);
   }
+
+  private static queryViaLibrary(
+    cg: CodeGraphInstance,
+    opts: CodeGraphQueryOptions,
+    _depth: number,
+  ): CodeGraphQueryResult | null {
+    const { queryType, target } = opts;
+
+    switch (queryType) {
+      case "dependencies": {
+        const results = cg.searchNodes(target);
+        if (!results.length) return null;
+        const nodes: NodeInfo[] = [];
+        const edges: EdgeInfo[] = [];
+        const seenEdges = new Set<string>();
+        for (const r of results) {
+          const n = r.node;
+          nodes.push({ id: n.id, name: n.name, type: nodeTypeFromKind(n.kind) });
+          // Derive dependency edges from each result's outgoing imports
+          const outgoing = cg.getOutgoingEdges(n.id);
+          for (const e of outgoing) {
+            if (e.kind === "imports") {
+              const key = `${e.source}→${e.target}`;
+              if (!seenEdges.has(key)) {
+                seenEdges.add(key);
+                edges.push({ source: e.source, target: e.target, relationship: "imports" });
+              }
+            }
+          }
+        }
+        return {
+          queryType,
+          target,
+          nodes,
+          edges,
+          summary: `CodeGraph library: found ${nodes.length} nodes for '${target}' (dependencies).`,
+        };
+      }
+
+      case "callers": {
+        const results = cg.getCallers(target, _depth);
+        if (!results.length) return null;
+        const nodes: NodeInfo[] = [{ id: target, name: target, type: "symbol" }];
+        const edges: EdgeInfo[] = [];
+        for (const { node, edge } of results) {
+          nodes.push({ id: node.id, name: node.name, type: nodeTypeFromKind(node.kind) });
+          edges.push({ source: edge.source, target: edge.target, relationship: mapEdgeKind(edge.kind) });
+        }
+        return {
+          queryType,
+          target,
+          nodes,
+          edges,
+          summary: `CodeGraph library: ${results.length} caller(s) of '${target}'.`,
+        };
+      }
+
+      case "callees": {
+        const results = cg.getCallees(target, _depth);
+        if (!results.length) return null;
+        const nodes: NodeInfo[] = [{ id: target, name: target, type: "symbol" }];
+        const edges: EdgeInfo[] = [];
+        for (const { node, edge } of results) {
+          nodes.push({ id: node.id, name: node.name, type: nodeTypeFromKind(node.kind) });
+          edges.push({ source: edge.source, target: edge.target, relationship: mapEdgeKind(edge.kind) });
+        }
+        return {
+          queryType,
+          target,
+          nodes,
+          edges,
+          summary: `CodeGraph library: ${results.length} callee(s) of '${target}'.`,
+        };
+      }
+
+      case "blast_radius": {
+        const sub = cg.getImpactRadius(target, _depth);
+        const nodeCount = sub.nodes.size;
+        if (nodeCount === 0) return null;
+        const nodes: NodeInfo[] = [];
+        for (const [, n] of sub.nodes) {
+          nodes.push({ id: n.id, name: n.name, type: nodeTypeFromKind(n.kind) });
+        }
+        const edges: EdgeInfo[] = sub.edges.map(e => ({
+          source: e.source,
+          target: e.target,
+          relationship: mapEdgeKind(e.kind),
+        }));
+        return {
+          queryType,
+          target,
+          nodes,
+          edges,
+          summary: `CodeGraph library: blast radius of '${target}' = ${nodeCount} node(s), ${edges.length} edge(s).`,
+        };
+      }
+
+      default:
+        return null;
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Attempt 2 — static regex fallback (unchanged from ADR-027)        */
+  /* ------------------------------------------------------------------ */
 
   private static parseStaticGraph(
     root: string,
@@ -98,7 +309,7 @@ export class CodeGraphService {
         target,
         nodes,
         edges,
-        summary: `Static blast-radius analysis found ${nodes.length - 1} files referencing symbol '${target}'.`,
+        summary: `Static ${queryType} for '${target}': ${nodes.length - 1} files referencing symbol.`,
       };
     }
 
@@ -126,7 +337,7 @@ export class CodeGraphService {
       target: start,
       nodes,
       edges,
-      summary: `Structural code graph for '${start}': ${nodes.length} nodes, ${edges.length} edges (depth ${depth}).`,
+      summary: `Static ${queryType} for '${start}': ${nodes.length} nodes, ${edges.length} edges.`,
     };
   }
 

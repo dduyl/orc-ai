@@ -121,7 +121,7 @@ export function handleListTools(): ListToolsResult {
       },
       {
         name: "code_graph_query",
-        description: "Query structural code dependency graph, call graph, and blast radius (ADR-002: CodeGraphContext).",
+        description: "Query structural code dependency graph, call graph, and blast radius (ADR-027: @colbymchenry/codegraph).",
         inputSchema: {
           type: "object",
           properties: {
