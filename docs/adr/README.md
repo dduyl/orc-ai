@@ -14,7 +14,7 @@ trusting an "Implemented" mark after further changes.
 | # | Title | Decision | Implementation | Notes |
 |---|---|---|---|---|
 | 001 | Deterministic Validation as Ground Truth | Accepted | Implemented | `type: script` steps gate on a real exit code; built-in workflows (`feat-impl-builtin`, `bug-fix-builtin`) now gate code + tests through script gates with repair feedback to the producer |
-| 002 | Code Graph via CodeGraphContext | Accepted | Implemented | Integrated CodeGraphService, exposed code_graph_query MCP tool, and context hint for Architecture Agent |
+| 002 | Code Graph via CodeGraphContext | Deprecated (see ADR-027) | Implemented | Integrated CodeGraphService, exposed code_graph_query MCP tool, and context hint for Architecture Agent |
 | 003 | Index File Ownership by Convention | Accepted | Unverified | Whether specs.json/adrs.json/etc. are actually written was not confirmed |
 | 004 | Architecture Gate and Mandatory-Precision Contract | Accepted | Partial | Gate exists via a review step; contract is schema-optional, not enforced as precise |
 | 005 | Test Timing and Target | Accepted | Unverified | Actual agent prompt content not inspected |
@@ -39,6 +39,7 @@ trusting an "Implemented" mark after further changes.
 | 024 | Concise Agent-to-Orchestrator Summaries | Proposed | Not Implemented | Prompt-only change, not yet applied to any role's prompt |
 | 025 | Detached Daemon Run Host with Attachable GUI | Accepted | Implemented | Phase A: migrated all 3 consumers to `node:sqlite` (Checkpointer/Tracker/run-db). Phase B/C: frame transport + TerminalStore + daemon control protocol. Phase D: daemon hosts MCP :3100 (`orc mcp`), owns main terminal + `input` RPC, GUI is a pure `PipeClient` (`daemon-bridge.ts`, `pty-manager.ts`/`run-db.ts` deleted, zero native deps), `node-pty` host-only ABI; daemon survives GUI close. D-3 (main PTY passthrough) superseded by ADR-026 — the `__main__` terminal now renders ORC's ACP chat instead of the agent's TUI |
 | 026 | Runtime Substrate: ACP-Driven Coding Agent | Accepted | Partial | Supersedes ADR-007 (PTY) and ADR-025 D-3 (main PTY passthrough). Covers both step subagents and the main interactive session. PR 1 (`feat/acp-substrate`): protocol client + acp-opencode/acp-claude strategies + adapter dispatch shim + step render bridge (tool-call diffs → terminal lines) + hook pass-through for Tracker — live; main session still PTY. PR 2 (`feat/acp-main-client`): main session ACP-backed — daemon-bridge forwards structured `chat-frame`s; GUI renders a DOM chat panel (`chat-view.ts`) with Chat/Terminal view tabs, a permission dialog driven by `requestPermission` options, and a terminal themed to DESIGN.md tokens; step subagents (PR 1) remain live |
+| 027 | Code Graph via @colbymchenry/codegraph (library) | Accepted | Not Implemented | Replaces ADR-002; library import replaces broken CodeGraphContext CLI |
 
 ## When a later ADR replaces an earlier one
 
