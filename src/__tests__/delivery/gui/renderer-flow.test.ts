@@ -25,14 +25,23 @@ const DOM = `
 <div id="app">
   <header id="titlebar">
     <div class="brand">ORC<span id="brand-adapter"></span></div>
+    <button id="tab-graph">Graph</button>
+    <button id="tab-steps">Steps</button>
     <button id="tab-chat">Chat</button>
     <button id="tab-terminal">Terminal</button>
+    <button id="btn-new-run">+ New Run</button>
     <span id="status-indicator"></span>
     <span id="status-text">Initializing.</span>
     <span id="sb-indicator"></span>
     <span id="sb-text">Initializing.</span>
   </header>
   <div id="main"><div id="content">
+    <section id="graph-view" class="active">
+      <div id="graph-view-container"></div>
+    </section>
+    <section id="steps-view">
+      <div class="muted-empty">› No active run</div>
+    </section>
     <section id="chat-view">
       <div id="chat-scroll"><div id="chat-list"></div></div>
       <div id="chat-inputbar"><div id="chat-busy" hidden><span id="chat-busy-text">Agent is working.</span><button id="chat-cancel">Cancel</button></div></div>
@@ -47,7 +56,31 @@ const DOM = `
     <aside id="right-panel">
       <span id="info-adapter">-</span><span id="info-status">Connecting</span>
       <span id="info-mode">-</span><span id="info-pid">-</span><span id="info-size">-</span>
-      <div id="step-tree"></div><div id="pty-tree"></div><div id="event-list"></div>
+      <div id="inspector-run">
+        <div id="step-tree"></div>
+      </div>
+      <div id="inspector-active-step">
+        <div class="active-step-content">
+          <div class="active-step-empty">No active step</div>
+        </div>
+      </div>
+      <div id="inspector-signal-trace">
+        <div class="signal-trace-header">
+          <span class="section-title">Signal Trace</span>
+          <div class="signal-trace-filters">
+            <button class="filter-btn active" data-filter="all">All</button>
+            <button class="filter-btn" data-filter="emission">Emissions</button>
+            <button class="filter-btn" data-filter="edge_match">Edges</button>
+            <button class="filter-btn" data-filter="gate_result">Gates</button>
+            <button class="filter-btn" data-filter="loop">Loops</button>
+          </div>
+        </div>
+        <div class="signal-trace-list" id="signal-trace-list">
+          <div class="signal-trace-empty">Waiting for signals…</div>
+        </div>
+      </div>
+      <div id="pty-tree"></div>
+      <div id="event-list"></div>
     </aside>
   </div></div>
   <footer id="statusbar">
@@ -97,6 +130,13 @@ function createApiStub(): {
     onPermissionRequested: on("permission"),
     onChatFrame: on("chatFrame"),
     onChatReset: on("chatReset"),
+    onWorkflowStarted: on("workflowStarted"),
+    onWorkflowComplete: on("workflowComplete"),
+    onSignalEmitted: on("signalEmitted"),
+    onEdgeMatched: on("edgeMatched"),
+    onStepContext: on("stepContext"),
+    onGateResult: on("gateResult"),
+    onLoopDetected: on("loopDetected"),
     write: (...a: unknown[]) => (calls.write ??= []).push(a),
     prompt: vi.fn(async () => {}),
     cancelMain: (...a: unknown[]) => (calls.cancelMain ??= []).push(a),
@@ -111,6 +151,11 @@ function createApiStub(): {
     listSkills: vi.fn(async () => []),
     findFiles: vi.fn(async () => ({ entries: [] })),
     setConfigOption: vi.fn(async () => {}),
+    startWorkflow: vi.fn(async () => ({ runId: "r1" })),
+    getWorkflowGraph: vi.fn(async () => ({ nodes: [], edges: [] })),
+    getSignalTrace: vi.fn(async () => []),
+    listWorkflows: vi.fn(async () => []),
+    getBootLog: vi.fn(async () => []),
   };
   return { api, handlers, calls };
 }

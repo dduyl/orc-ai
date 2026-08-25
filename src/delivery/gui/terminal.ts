@@ -37,6 +37,7 @@ export function createTerminal(container: HTMLElement): { term: Terminal; fit: (
     fontSize: 13,
     fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
     theme: TERM_THEME,
+    scrollback: 10000,
   });
 
   const fitAddon = new FitAddon();

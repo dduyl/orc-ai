@@ -3,7 +3,7 @@ import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, normalize, relative } from "node:path";
-import { IPC, type CustomMode, type FsEntry, type FsFindResult, type GuiApi } from "./ipc.js";
+import { IPC, type CustomMode, type FsEntry, type FsFindResult, type GuiApi, type RegisteredWorkflow, type WorkflowDefinition, type WorkflowGraphData, type SignalEvent } from "./ipc.js";
 
 /**
  * Workspace root for the local `@`-mention fs walk. Main passes it via
@@ -108,6 +108,27 @@ const api: GuiApi = {
   onChatReset: (cb) => {
     ipcRenderer.on(IPC.MainToRenderer["chat-reset"], () => cb());
   },
+  onWorkflowStarted: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer["workflow-started"], (_event, data) => cb(data));
+  },
+  onWorkflowComplete: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer["workflow-complete"], (_event, data) => cb(data));
+  },
+  onSignalEmitted: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer["signal-emitted"], (_event, data) => cb(data));
+  },
+  onEdgeMatched: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer["edge-matched"], (_event, data) => cb(data));
+  },
+  onGateResult: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer["gate-result"], (_event, data) => cb(data));
+  },
+  onLoopDetected: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer["loop-detected"], (_event, data) => cb(data));
+  },
+  onStepContext: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer["step-context"], (_event, data) => cb(data));
+  },
   write: (data) => ipcRenderer.send(IPC.RendererToMain.input, data),
   prompt: (text, mentions) => ipcRenderer.invoke(IPC.RendererToMainInvoke.prompt, text, mentions),
   cancelMain: () => ipcRenderer.send(IPC.RendererToMain["cancel-main"]),
@@ -121,6 +142,12 @@ const api: GuiApi = {
   listRuns: () => ipcRenderer.invoke(IPC.RendererToMainInvoke["list-runs"]),
   setConfigOption: (configId, value) =>
     ipcRenderer.invoke(IPC.RendererToMainInvoke["set-config-option"], configId, value),
+  startWorkflow: (task, workflowId, params) =>
+    ipcRenderer.invoke(IPC.RendererToMainInvoke["start-workflow"], task, workflowId, params),
+  getWorkflowGraph: (runId) => ipcRenderer.invoke(IPC.RendererToMainInvoke["get-workflow-graph"], runId),
+  getSignalTrace: (runId, limit) => ipcRenderer.invoke(IPC.RendererToMainInvoke["get-signal-trace"], runId, limit),
+  listWorkflows: () => ipcRenderer.invoke(IPC.RendererToMainInvoke["list-workflows"]),
+  getBootLog: () => ipcRenderer.invoke(IPC.RendererToMainInvoke["get-boot-log"]),
   findFiles: async (query: string): Promise<FsFindResult> => {
     const cwd = workspaceCwd();
     const text = query.replace(/\\/g, "/");

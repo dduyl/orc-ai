@@ -16,10 +16,17 @@ import type { ProgressEvent } from "../../application/harness/orchestrator/index
 import type { RunRecord } from "../../application/harness/persistence/Tracker.js";
 import type { PermissionRequest } from "../../application/agents/acp/permission.js";
 import type { PermissionAnswerKind } from "../../application/agents/acp/types.js";
+import type { WorkflowDefinition } from "../../core/schemas.js";
+import type { RegisteredWorkflow } from "../../application/planner/registry.js";
+import type { WorkflowGraphData, SignalEvent } from "../../core/workflow-graph.js";
 export type {
   PermissionRequest,
   PermissionAnswerKind,
   PromptMention,
+  WorkflowDefinition,
+  RegisteredWorkflow,
+  WorkflowGraphData,
+  SignalEvent,
 };
 
 /**
@@ -92,6 +99,13 @@ export interface MainToRendererEvents {
   "chat-frame": { frame: ChatFrame };
   "chat-reset": Record<string, never>;
   "stream-event": ProgressEvent;
+  "workflow-started": { runId: string; workflowId: string; workflow: WorkflowDefinition };
+  "workflow-complete": { runId: string; status: "completed" | "failed"; finalSignal?: string };
+  "signal-emitted": { stepId: string; signal: string; payload?: unknown; timestamp: number };
+  "edge-matched": { fromStep: string; signal: string; toStep: string; timestamp: number };
+  "gate-result": { stepId: string; gate: string; exitCode: number; output: string };
+  "loop-detected": { stepId: string; iteration: number; reason: string; fromSignal: string };
+  "step-context": { stepId: string; agent: string; context: string[]; emits: string[] };
 }
 
 /** The main process's channel → payload send function consumed by the bridge. */
@@ -117,6 +131,12 @@ export interface RendererToMainInvoke {
   "get-run-status": { args: [runId: string]; result: RunRecord };
   "list-runs": { args: []; result: RunRecord[] };
   "set-config-option": { args: [configId: string, value: string]; result: void };
+  "start-workflow": { args: [task: string, workflowId: string, params?: Record<string, unknown>]; result: { runId: string } };
+  "get-workflow-graph": { args: [runId: string]; result: WorkflowGraphData };
+  "get-signal-trace": { args: [runId: string, limit?: number]; result: SignalEvent[] };
+  "list-workflows": { args: []; result: RegisteredWorkflow[] };
+  /** Boot output of the spawned daemon (renderer pulls once it is listening). */
+  "get-boot-log": { args: []; result: string[] };
 }
 
 // ── Channel names (runtime strings, mirrored 1:1 to the contracts) ─────────
@@ -137,6 +157,11 @@ export const IPC = {
     "get-run-status": "get-run-status",
     "list-runs": "list-runs",
     "set-config-option": "set-config-option",
+    "start-workflow": "start-workflow",
+    "get-workflow-graph": "get-workflow-graph",
+    "get-signal-trace": "get-signal-trace",
+    "list-workflows": "list-workflows",
+    "get-boot-log": "get-boot-log",
   },
   MainToRenderer: {
     output: "output",
@@ -149,6 +174,13 @@ export const IPC = {
     "chat-frame": "chat-frame",
     "chat-reset": "chat-reset",
     "stream-event": "stream-event",
+    "workflow-started": "workflow-started",
+    "workflow-complete": "workflow-complete",
+    "signal-emitted": "signal-emitted",
+    "edge-matched": "edge-matched",
+    "gate-result": "gate-result",
+    "loop-detected": "loop-detected",
+    "step-context": "step-context",
   },
 } as const satisfies {
   RendererToMain: Record<keyof RendererToMainSend, string>;
@@ -169,6 +201,13 @@ export interface GuiApi {
   onPermissionRequested(cb: (data: PermissionRequest) => void): void;
   onChatFrame(cb: (data: { frame: ChatFrame }) => void): void;
   onChatReset(cb: () => void): void;
+  onWorkflowStarted(cb: (data: { runId: string; workflowId: string; workflow: WorkflowDefinition }) => void): void;
+  onWorkflowComplete(cb: (data: { runId: string; status: "completed" | "failed"; finalSignal?: string }) => void): void;
+  onSignalEmitted(cb: (data: { stepId: string; signal: string; payload?: unknown; timestamp: number }) => void): void;
+  onEdgeMatched(cb: (data: { fromStep: string; signal: string; toStep: string; timestamp: number }) => void): void;
+  onGateResult(cb: (data: { stepId: string; gate: string; exitCode: number; output: string }) => void): void;
+  onLoopDetected(cb: (data: { stepId: string; iteration: number; reason: string; fromSignal: string }) => void): void;
+  onStepContext(cb: (data: { stepId: string; agent: string; context: string[]; emits: string[] }) => void): void;
   write(data: string): void;
   prompt(text: string, mentions?: PromptMention[]): Promise<void>;
   cancelMain(): void;
@@ -193,6 +232,16 @@ export interface GuiApi {
    * command picker into `cmd` / `skill` / `other`.
    */
   listSkills(): Promise<string[]>;
+  /** Start a workflow run with task and optional parameters. */
+  startWorkflow(task: string, workflowId: string, params?: Record<string, unknown>): Promise<{ runId: string }>;
+  /** Get the workflow graph data for a run. */
+  getWorkflowGraph(runId: string): Promise<WorkflowGraphData>;
+  /** Get the signal trace for a run. */
+  getSignalTrace(runId: string, limit?: number): Promise<SignalEvent[]>;
+  /** List all available workflows (builtins + user). */
+  listWorkflows(): Promise<RegisteredWorkflow[]>;
+  /** Boot output of the spawned daemon, buffered in main (renderer pulls on load). */
+  getBootLog(): Promise<string[]>;
 }
 
 declare global {

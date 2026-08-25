@@ -18,12 +18,21 @@ export interface DomRefs {
   eventList: HTMLElement;
   stepTree: HTMLElement;
   ptyTree: HTMLElement;
+  // inspector new sections
+  inspectorRun: HTMLElement;
+  inspectorActiveStep: HTMLElement;
+  inspectorSignalTrace: HTMLElement;
+  signalTraceList: HTMLElement;
   // layout
   splitter: HTMLElement;
   rightPanel: HTMLElement;
   // views + navigation
+  graphView: HTMLElement;
+  stepsView: HTMLElement;
   chatView: HTMLElement;
   terminalView: HTMLElement;
+  tabGraph: HTMLButtonElement;
+  tabSteps: HTMLButtonElement;
   tabChat: HTMLButtonElement;
   tabTerminal: HTMLButtonElement;
   // chat panel
@@ -50,6 +59,10 @@ export interface DomRefs {
   toolsSection: HTMLElement;
   toolList: HTMLElement;
   brandAdapter: HTMLElement;
+  // graph view
+  graphViewContainer: HTMLElement;
+  // workflow launcher
+  btnNewRun: HTMLButtonElement;
 }
 
 function req(id: string): HTMLElement {
@@ -77,10 +90,18 @@ export function getDomRefs(): DomRefs {
     eventList: req("event-list"),
     stepTree: req("step-tree"),
     ptyTree: req("pty-tree"),
+    inspectorRun: req("inspector-run"),
+    inspectorActiveStep: req("inspector-active-step"),
+    inspectorSignalTrace: req("inspector-signal-trace"),
+    signalTraceList: req("signal-trace-list"),
     splitter: req("splitter"),
     rightPanel: req("right-panel"),
+    graphView: req("graph-view"),
+    stepsView: req("steps-view"),
     chatView: req("chat-view"),
     terminalView: req("terminal-view"),
+    tabGraph: req("tab-graph") as HTMLButtonElement,
+    tabSteps: req("tab-steps") as HTMLButtonElement,
     tabChat: req("tab-chat") as HTMLButtonElement,
     tabTerminal: req("tab-terminal") as HTMLButtonElement,
     chatList: req("chat-list"),
@@ -105,5 +126,7 @@ export function getDomRefs(): DomRefs {
     toolsSection: req("activity-tools"),
     toolList: req("tool-list"),
     brandAdapter: req("brand-adapter"),
+    graphViewContainer: req("graph-view-container"),
+    btnNewRun: req("btn-new-run") as HTMLButtonElement,
   };
 }

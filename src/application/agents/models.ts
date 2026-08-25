@@ -1,5 +1,9 @@
 import type { Tier } from "./config.js";
-import snapshot from "./models-snapshot.json";
+// `type: "json"` is mandatory under strict Node ESM (v22+): a bare JSON
+// import throws ERR_IMPORT_ATTRIBUTE_MISSING before any code runs — which
+// is exactly how the spawned `orc daemon` child died at boot while every
+// vitest run stayed green (vite resolves JSON leniently).
+import snapshot from "./models-snapshot.json" with { type: "json" };
 
 /**
  * Strong-tier input-price threshold, inclusive: a model whose $/1M input

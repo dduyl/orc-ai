@@ -1,21 +1,34 @@
 import { createTerminal } from "./terminal.js";
 import { getDomRefs } from "./dom-refs.js";
+import { api } from "./api.js";
 import { ChatView } from "./chat-view.js";
 import { ActivityBox } from "./activity-box.js";
 import { MentionBox, type SuggestionItem } from "./mention-box.js";
+import { GraphView } from "./views/graph-view.js";
+import { StepsView } from "./views/steps-view.js";
+import { TerminalView } from "./views/terminal-view.js";
+import { SignalTrace } from "./signal-trace.js";
+import { ActiveStep } from "./active-step.js";
+import { WorkflowLauncher } from "./workflow-launcher.js";
 import { addEvent, setViewLabel, renderPTYTree, renderStepTree, type StepInfo } from "./ui-renderers.js";
 import { initSplitter } from "./splitter.js";
 import { GUIDE_TEXT } from "../../adapters/mcp/handlers/content.js";
 import type { AgentCommand, AgentConfigOption } from "../../application/harness/daemon/main-frame-codec.js";
-import type { ChatFrame, CustomMode, PromptMention } from "./ipc.js";
+import type { WorkflowDefinition } from "../../core/schemas.js";
+import type { RunRecord } from "../../application/harness/persistence/Tracker.js";
+import type { ChatFrame, CustomMode, PromptMention, SignalEvent } from "./ipc.js";
 
 const MAIN_STEP_ID = "__main__";
-
-const api = window.electronAPI;
 
 const refs = getDomRefs();
 const { term, fit: fitTermBase } = createTerminal(refs.termContainer);
 const chat = new ChatView(refs.chatList);
+const graphView = new GraphView();
+const stepsView = new StepsView();
+const terminalView = new TerminalView();
+const signalTrace = new SignalTrace();
+const activeStep = new ActiveStep();
+const workflowLauncher = new WorkflowLauncher();
 const activity = new ActivityBox({
   box: refs.activityBox,
   permissionSection: refs.permissionSection,
@@ -41,7 +54,7 @@ let currentStepId: string | null = MAIN_STEP_ID;
 let mainMode: "pty" | "acp" = "pty";
 let connected = false;
 let busy = false;
-let activeView: "chat" | "terminal" = "chat";
+let activeView: "graph" | "steps" | "chat" | "terminal" = "graph";
 
 // ── Composer mention + command picker (local fs walk / ACP commands) ────────
 let suggestionGen = 0;
@@ -357,24 +370,57 @@ document.addEventListener("click", (e) => {
   }
 });
 
+refs.tabChat.addEventListener("click", () => setActiveView("chat"));
+refs.tabTerminal.addEventListener("click", () => setActiveView("terminal"));
+refs.tabGraph.addEventListener("click", () => setActiveView("graph"));
+refs.tabSteps.addEventListener("click", () => setActiveView("steps"));
+
+refs.btnNewRun.addEventListener("click", () => workflowLauncher.open());
+
+// Mount GraphView
+graphView.mount(refs.graphViewContainer);
+
+// Mount StepsView
+stepsView.mount(refs.stepsView);
+
+// Mount TerminalView
+terminalView.mount(refs.terminalView);
+
+// Mount SignalTrace
+signalTrace.mount(refs.signalTraceList);
+
+// Mount ActiveStep
+activeStep.mount(refs.inspectorActiveStep);
+
 // ── View navigation ────────────────────────────────────────────────────────
-function setActiveView(view: "chat" | "terminal"): void {
+function setActiveView(view: "graph" | "steps" | "chat" | "terminal"): void {
   activeView = view;
-  const chatActive = view === "chat";
-  refs.chatView.classList.toggle("active", chatActive);
-  refs.terminalView.classList.toggle("visible", !chatActive);
-  refs.tabChat.classList.toggle("active", chatActive);
-  refs.tabTerminal.classList.toggle("active", !chatActive);
-  if (chatActive) {
+  const isGraph = view === "graph";
+  const isSteps = view === "steps";
+  const isChat = view === "chat";
+  const isTerminal = view === "terminal";
+
+  refs.graphView.classList.toggle("active", isGraph);
+  refs.stepsView.classList.toggle("active", isSteps);
+  refs.chatView.classList.toggle("active", isChat);
+  refs.terminalView.classList.toggle("visible", isTerminal);
+
+  refs.tabGraph.classList.toggle("active", isGraph);
+  refs.tabSteps.classList.toggle("active", isSteps);
+  refs.tabChat.classList.toggle("active", isChat);
+  refs.tabTerminal.classList.toggle("active", isTerminal);
+
+  if (isGraph) {
+    graphView.fitToView();
+  } else if (isSteps) {
+    // Steps view is already rendered via pollRunStatus
+  } else if (isChat) {
     refs.chatInput.focus();
-  } else {
+  } else if (isTerminal) {
     fitTerm();
     term.focus();
   }
 }
-
-refs.tabChat.addEventListener("click", () => setActiveView("chat"));
-refs.tabTerminal.addEventListener("click", () => setActiveView("terminal"));
 
 // ── Session state ──────────────────────────────────────────────────────────
 function setBusy(working: boolean, label?: string): void {
@@ -406,7 +452,10 @@ async function pollRunStatus(): Promise<void> {
   if (!latestRunId) return;
   try {
     const run = await api.getRunStatus(latestRunId);
-    if (run) renderStepTree(run, refs.stepTree);
+    if (run) {
+      renderStepTree(run, refs.stepTree);
+      updateStepTreeFromRun(run);
+    }
   } catch { /* ignore */ }
 }
 
@@ -523,6 +572,50 @@ api.onRunActive((data: { runId: string }) => {
   pollRunStatus();
 });
 
+api.onWorkflowStarted((data: { runId: string; workflowId: string; workflow: WorkflowDefinition }) => {
+  latestRunId = data.runId;
+  graphView.init(data.workflow);
+  stepsView.setGateSteps(
+    data.workflow.workflow.steps.filter(s => s.type === "script").map(s => s.id),
+  );
+  setActiveView("graph");
+});
+
+api.onWorkflowComplete((data: { runId: string; status: "completed" | "failed"; finalSignal?: string }) => {
+  addEvent(`Workflow ${data.status} (${data.finalSignal ?? "—"})`, refs.eventList);
+  if (data.runId === latestRunId) {
+    graphView.setStepStatus([]);
+    activeStep.render({ stepId: "", agent: "", context: [], emits: [] });
+  }
+});
+
+api.onSignalEmitted((data: { stepId: string; signal: string; payload?: unknown; timestamp: number }) => {
+  const event: SignalEvent = { ...data, type: "emission" };
+  graphView.onSignalEmitted(event);
+  signalTrace.addEvent(event);
+});
+
+api.onEdgeMatched((data: { fromStep: string; signal: string; toStep: string; timestamp: number }) => {
+  const event: SignalEvent = { ...data, type: "edge_match", stepId: data.fromStep };
+  graphView.onEdgeMatched(event);
+  signalTrace.addEvent(event);
+});
+
+api.onGateResult((data: { stepId: string; gate: string; exitCode: number; output: string }) => {
+  const event: SignalEvent = { ...data, type: "gate_result", stepId: data.stepId, signal: data.gate, timestamp: Date.now() };
+  signalTrace.addEvent(event);
+});
+
+api.onLoopDetected((data: { stepId: string; iteration: number; reason: string; fromSignal: string }) => {
+  const event: SignalEvent = { ...data, type: "loop", stepId: data.stepId, signal: data.fromSignal, timestamp: Date.now() };
+  signalTrace.addEvent(event);
+  graphView.setLoopCount(data.stepId, data.iteration);
+});
+
+api.onStepContext((data: { stepId: string; agent: string; context: string[]; emits: string[] }) => {
+  activeStep.render(data);
+});
+
 api.onStepActivated(async (data: { stepId: string }) => {
   currentStepId = data.stepId;
 
@@ -535,6 +628,8 @@ api.onStepActivated(async (data: { stepId: string }) => {
   setActiveView(mainMode === "acp" && isMain ? "chat" : "terminal");
   refreshPTYTree();
   term.focus();
+
+  graphView.onStepActivated(data.stepId);
 });
 
 // ── Chat panel (ACP main) ──────────────────────────────────────────────────
@@ -583,6 +678,23 @@ function syncComposer(): void {
   refs.chatSend.disabled = !(connected && mainMode === "acp") || busy;
   refs.chatInput.disabled = !(connected && mainMode === "acp") || busy;
   if (activeView === "chat") refs.chatInput.focus();
+}
+
+function updateStepTreeFromRun(run: RunRecord): void {
+  if (!run || !run.steps) return;
+  graphView.setStepStatus(run.steps);
+  stepsView.setStepStatus(run.steps);
+  // Sole caller of updateSteps: the poll owns the terminal dropdown so rapid
+  // step transitions never rebuild it mid-interaction.
+  terminalView.updateSteps([
+    { id: MAIN_STEP_ID, name: "orchestrator", isActive: !run.currentStepId, isMain: true },
+    ...run.steps.map(s => ({
+      id: s.stepId,
+      name: s.stepId,
+      isActive: s.stepId === run.currentStepId || (s.status === "running" && !run.currentStepId),
+      isMain: false,
+    })),
+  ]);
 }
 
 /** Pull `@path` mentions out of a composer value, leaving the rest as text. */
@@ -690,6 +802,35 @@ term.onData((data: string) => {
 });
 
 // ── Boot ───────────────────────────────────────────────────────────────────
+// Pull daemon boot output buffered in main: lines emitted before this
+// renderer started listening were unreachable via the log channel.
+api.getBootLog().then((lines) => {
+  for (const line of lines) addEvent(line, refs.eventList);
+}).catch(() => { /* best effort */ });
+
+window.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+    e.preventDefault();
+    workflowLauncher.open();
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key === "1") {
+    e.preventDefault();
+    setActiveView("graph");
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key === "2") {
+    e.preventDefault();
+    setActiveView("steps");
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key === "3") {
+    e.preventDefault();
+    setActiveView("terminal");
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key === "4") {
+    e.preventDefault();
+    setActiveView("chat");
+  }
+});
+
 window.addEventListener("resize", fitTerm);
 window.addEventListener("load", () => {
   setTimeout(() => {

@@ -12,6 +12,10 @@ import type { PermissionRequest } from "../../application/agents/acp/permission.
 import type { PermissionAnswerKind } from "../../application/agents/acp/types.js";
 import type { PromptMention } from "../../application/harness/daemon/rpc-protocol.js";
 import { getAdapter } from "../../application/agents/adapter.js";
+import { WorkflowRegistry } from "../../application/planner/registry.js";
+import type { WorkflowDefinition } from "../../core/schemas.js";
+import type { RegisteredWorkflow } from "../../application/planner/registry.js";
+import type { WorkflowGraphData, SignalEvent } from "../../core/workflow-graph.js";
 import { IPC, type MainSender, type StepInfo } from "./ipc.js";
 import type { ChatFrame } from "./ipc.js";
 export type { ChatFrame, StepInfo };
@@ -41,12 +45,20 @@ export class DaemonBridge {
 
   private mainBuffer = "";
   private stepBuffers = new Map<string, string>();
-  /** `pty` â†’ raw ANSI bytes on the main pipe; `acp` â†’ structured `MainFrame`s. */
+  /** `pty` → raw ANSI bytes on the main pipe; `acp` → structured `MainFrame`s. */
   private mainMode: "pty" | "acp" = "pty";
   private activeStepId = MAIN_STEP_ID;
   private latestRunId: string | null = null;
   private mainExited = false;
   private adapterId = "opencode";
+  /** Workflow definitions registry, lazily loaded once per bridge lifetime. */
+  private registry: WorkflowRegistry | null = null;
+  /** Definition of the active run, cached for signal-event derivation. */
+  private activeWorkflow: WorkflowDefinition | null = null;
+  /** Per-run step start counters (key `runId:stepId`) for loop detection. */
+  private stepStartCounts = new Map<string, number>();
+  /** Per-step last inbound matched signal (key `runId:stepId`) for loop attribution. */
+  private lastInboundSignal = new Map<string, string>();
 
   constructor(private readonly send: MainSender) {}
 
@@ -75,6 +87,81 @@ export class DaemonBridge {
 
   async listRuns(): Promise<RunRecord[]> {
     return this.requireClient().list();
+  }
+
+  async startWorkflow(task: string, workflowId: string, params?: Record<string, unknown>): Promise<{ runId: string }> {
+    const client = this.requireClient();
+    if (params && Object.keys(params).length > 0) {
+      // Wire contract is ready (StartParams.params); the daemon does not apply
+      // structured inputs yet — pending a daemon PR. Surface once, keep launching.
+      this.send(IPC.MainToRenderer.log, {
+        text: "[workflow] params collected but daemon-side application is not implemented yet; task text only",
+      });
+    }
+    const res = await client.start({ task, workflowId, params });
+    this.trackRun(res.runId);
+    this.stepBuffers.clear();
+    this.send(IPC.MainToRenderer.log, { text: `Run started: ${workflowId}` });
+    await this.attachRunTerminal(res.runId);
+    const workflow = await this.resolveDefinition(workflowId);
+    this.activeWorkflow = workflow;
+    this.send(IPC.MainToRenderer["workflow-started"], {
+      runId: res.runId,
+      workflowId,
+      workflow,
+    });
+    return res;
+  }
+
+  /** Load (once) and resolve a workflow definition by id; empty stub on miss. */
+  private async resolveDefinition(workflowId: string): Promise<WorkflowDefinition> {
+    const registered = await this.findRegistered(workflowId);
+    if (registered) return registered.definition;
+    return { version: 1, workflow: { id: workflowId, name: workflowId, steps: [], completion: "" } };
+  }
+
+  private async findRegistered(workflowId: string): Promise<RegisteredWorkflow | undefined> {
+    const registry = await this.ensureRegistry();
+    const found = registry.get(workflowId);
+    if (!found) {
+      this.send(IPC.MainToRenderer.log, {
+        text: `[workflow] definition '${workflowId}' not found in registry`,
+      });
+    }
+    return found;
+  }
+
+  private async ensureRegistry(): Promise<WorkflowRegistry> {
+    if (!this.registry) {
+      this.registry = new WorkflowRegistry();
+      this.registry.loadAll();
+    }
+    return this.registry;
+  }
+
+  async getWorkflowGraph(runId: string): Promise<WorkflowGraphData> {
+    const client = this.requireClient();
+    const run = await client.status(runId);
+    if (!run) {
+      return { nodes: [], edges: [] };
+    }
+    const { buildGraphData } = await import("../../core/workflow-graph.js");
+    const registered = await this.findRegistered(run.workflowId);
+    if (!registered) {
+      return { nodes: [], edges: [] };
+    }
+    return buildGraphData(registered.definition, run.steps ?? []);
+  }
+
+  async getSignalTrace(runId: string, limit?: number): Promise<SignalEvent[]> {
+    // Signal events are not yet emitted by the daemon; return empty for now.
+    // When the daemon emits signal events, they will be buffered here.
+    return [];
+  }
+
+  async listWorkflows(): Promise<RegisteredWorkflow[]> {
+    const registry = await this.ensureRegistry();
+    return registry.list();
   }
 
   listSteps(): StepInfo[] {
@@ -155,21 +242,67 @@ export class DaemonBridge {
     const existing = await this.tryConnect(projectDir, 1500);
     if (existing) return existing;
 
-    // No daemon â€” spawn the block, then wait for its control pipe.
+    // No daemon — spawn the block, then wait for its control pipe. Child
+    // output is ring-buffered from the very first byte: the renderer is not
+    // listening yet during boot, so anything only forwarded to the log
+    // channel here would be lost exactly when it matters (a boot crash).
     const child = this.spawnDaemon(projectDir);
     this.daemonChild = child;
     this.daemonPid = child.pid ?? null;
-    child.stdout?.on("data", (d) => this.send(IPC.MainToRenderer.log, { text: String(d).trimEnd() }));
-    child.stderr?.on("data", (d) => this.send(IPC.MainToRenderer.log, { text: String(d).trimEnd() }));
-    child.once("exit", () => {
-      this.daemonPid = null;
-      this.send(IPC.MainToRenderer.log, { text: "daemon exited" });
+    child.stdout?.on("data", (d) => {
+      const text = String(d).trimEnd();
+      if (text) this.pushBootLine(text);
+      this.send(IPC.MainToRenderer.log, { text });
+    });
+    child.stderr?.on("data", (d) => {
+      const text = String(d).trimEnd();
+      if (text) this.pushBootLine(text);
+      this.send(IPC.MainToRenderer.log, { text });
     });
 
-    const client = await this.tryConnect(projectDir, 10_000);
+    // Fail fast when the child dies or cannot even spawn: retrying a pipe
+    // that will never exist just burns the timeout and hides the cause.
+    const spawnFailure = new Promise<never>((_, reject) => {
+      child.once("error", (err) =>
+        reject(new Error(`failed to spawn daemon process: ${err.message}\n${this.bootTail()}`)),
+      );
+      child.once("exit", (code) => {
+        if (this.client) return; // exited after a successful attach — not a boot failure
+        reject(new Error(`daemon exited during startup (code ${code})\n${this.bootTail()}`));
+      });
+    });
+
+    let client: PipeClient | null;
+    try {
+      client = await Promise.race([this.tryConnect(projectDir, 10_000), spawnFailure]);
+    } catch (err) {
+      try { child.kill(); } catch { /* already dead */ }
+      throw err;
+    }
     if (client) return client;
     try { child.kill(); } catch { /* ignore */ }
-    throw new Error("daemon did not come up within 10s");
+    throw new Error(`daemon did not come up within 10s\n${this.bootTail()}`);
+  }
+
+  /** Ring buffer of everything the spawned daemon printed since spawn. */
+  private bootLog: string[] = [];
+  private readonly bootLogMax = 50;
+
+  private pushBootLine(line: string): void {
+    this.bootLog.push(line);
+    if (this.bootLog.length > this.bootLogMax) {
+      this.bootLog.splice(0, this.bootLog.length - this.bootLogMax);
+    }
+  }
+
+  /** Last few boot lines for failure surfaces (dialog / renderer log). */
+  private bootTail(lines = 15): string {
+    return this.bootLog.slice(-lines).join("\n");
+  }
+
+  /** Boot output pulled by the renderer once it is actually listening. */
+  getBootLog(): string[] {
+    return [...this.bootLog];
   }
 
   private tryConnect(projectDir: string, timeoutMs: number): Promise<PipeClient | null> {
@@ -354,23 +487,144 @@ export class DaemonBridge {
     if (event.runId) {
       this.trackRun(event.runId);
       // Runs started outside the GUI (e.g. via MCP on :3100) still get live
-      // terminal frames â€” attach the run the moment progress announces it.
+      // terminal frames — attach the run the moment progress announces it.
       if (!this.attachedRuns.has(event.runId)) void this.attachRunTerminal(event.runId);
+      // Adopted runs have no cached definition yet; resolve asynchronously so
+      // subsequent events can derive signal context.
+      if (!this.activeWorkflow) void this.adoptRunDefinition(event.runId, event.runId === this.latestRunId);
     }
     if (event.type === "step_start" && event.stepId) {
       if (!this.stepBuffers.has(event.stepId)) this.stepBuffers.set(event.stepId, "");
       if (event.runId === this.latestRunId) this.switchToStep(event.stepId);
+      this.deriveStepStart(event);
+    } else if (event.type === "step_complete" && event.stepId) {
+      this.deriveStepComplete(event);
     }
-    this.send(IPC.MainToRenderer["stream-event"], event);
+  }
+
+  /** Resolve and cache the definition for a run adopted mid-flight (no start call). */
+  private async adoptRunDefinition(_runId: string, isActive: boolean): Promise<void> {
+    try {
+      const client = this.requireClient();
+      const run = await client.status(_runId);
+      const registered = await this.findRegistered(run.workflowId);
+      if (registered && isActive) {
+        this.activeWorkflow = registered.definition;
+        this.send(IPC.MainToRenderer["workflow-started"], {
+          runId: _runId,
+          workflowId: run.workflowId,
+          workflow: registered.definition,
+        });
+      }
+    } catch {
+      // Run may have finished between attach and status; nothing to derive.
+    }
+  }
+
+  /**
+   * Derive renderer-facing workflow events from a step_start ProgressEvent:
+   * step-context always; loop-detected when the step restarts within its run.
+   */
+  private deriveStepStart(event: ProgressEvent): void {
+    const stepId = event.stepId!;
+    const def = this.activeWorkflow?.workflow.steps.find(s => s.id === stepId);
+    this.send(IPC.MainToRenderer["step-context"], {
+      stepId,
+      agent: event.agent ?? def?.agent ?? "",
+      context: def?.context ?? [],
+      emits: def?.emits.map(e => e.name) ?? [],
+    });
+
+    if (!event.runId) return;
+    const key = `${event.runId}:${stepId}`;
+    const iteration = (this.stepStartCounts.get(key) ?? 0) + 1;
+    this.stepStartCounts.set(key, iteration);
+    if (iteration > 1) {
+      this.send(IPC.MainToRenderer["loop-detected"], {
+        stepId,
+        iteration,
+        reason: "step restarted via redo edge",
+        fromSignal: this.lastInboundSignal.get(key) ?? "",
+      });
+    }
+  }
+
+  /**
+   * Derive renderer-facing workflow events from a step_complete ProgressEvent.
+   * Script steps are fully derivable (positional pass/fail emits + gate result).
+   * Agent steps emit only when unambiguous (single declared signal); the
+   * ProgressEvent does not carry OrcReturnResult.signal yet.
+   */
+  private deriveStepComplete(event: ProgressEvent): void {
+    const wf = this.activeWorkflow;
+    const stepId = event.stepId!;
+    const ok = event.status !== "failed";
+    const def = wf?.workflow.steps.find(s => s.id === stepId);
+    if (!def || !wf || !event.runId) return;
+
+    let signalName: string | undefined;
+    if (def.type === "script") {
+      signalName = def.emits[ok ? 0 : 1]?.name;
+      this.send(IPC.MainToRenderer["gate-result"], {
+        stepId,
+        gate: def.run ?? stepId,
+        exitCode: ok ? 0 : 1,
+        output: event.error ?? "",
+      });
+    } else if (def.emits.length === 1) {
+      signalName = def.emits[0].name;
+    }
+
+    if (!signalName) return;
+
+    this.send(IPC.MainToRenderer["signal-emitted"], {
+      stepId,
+      signal: signalName,
+      timestamp: Date.now(),
+    });
+
+    for (const consumer of wf.workflow.steps) {
+      const refs = [
+        ...(consumer.on ?? []),
+        ...(consumer.any ?? []),
+      ];
+      if (!refs.includes(`${stepId}.${signalName}`)) continue;
+      this.send(IPC.MainToRenderer["edge-matched"], {
+        fromStep: stepId,
+        signal: signalName,
+        toStep: consumer.id,
+        timestamp: Date.now(),
+      });
+      this.lastInboundSignal.set(`${event.runId}:${consumer.id}`, signalName);
+    }
+  }
+
+  /** Drop per-run derivation state when a workflow finishes. */
+  private forgetRunState(runId: string): void {
+    for (const key of this.stepStartCounts.keys()) {
+      if (key.startsWith(`${runId}:`)) this.stepStartCounts.delete(key);
+    }
+    for (const key of this.lastInboundSignal.keys()) {
+      if (key.startsWith(`${runId}:`)) this.lastInboundSignal.delete(key);
+    }
   }
 
   private onWorkflowComplete(info: WorkflowCompleteInfo): void {
     if (info.runId) {
       this.send(IPC.MainToRenderer.log, { text: `[run ${info.runId}] workflow complete (${info.status ?? "?"})` });
+      this.send(IPC.MainToRenderer["workflow-complete"], {
+        runId: info.runId,
+        status: info.status === "completed" ? "completed" : "failed",
+        finalSignal: undefined,
+      });
+      this.forgetRunState(info.runId);
       // Do NOT clear stepBuffers here: the combined `__screen__` replay and per-step
       // buffers keep the finished run viewable after completion (Phase E). Clearing
       // would wipe the history a toasted run is about to show.
-      if (this.latestRunId === info.runId) this.switchToStep(MAIN_STEP_ID);
+      if (this.latestRunId === info.runId) {
+        this.switchToStep(MAIN_STEP_ID);
+        this.activeWorkflow = null;
+      }
     }
   }
 

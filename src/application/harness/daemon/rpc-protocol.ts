@@ -39,6 +39,10 @@ export interface StartParams {
   task: string;
   workflowId: string;
   resume?: boolean;
+  /** Optional structured inputs for workflows declaring an `inputs` schema.
+   * Additive (Option A): forwarded on the wire; daemon-side application is
+   * pending a daemon PR and is currently ignored by the run host. */
+  params?: Record<string, unknown>;
 }
 
 /** Result of the `start` request. */
