@@ -5,6 +5,43 @@ import { log } from "../../../core/log.js";
 // Re-export the type so consumers can reference the CodeGraph class.
 type CGModule = typeof import("@colbymchenry/codegraph");
 
+/** Minimal types matching the @colbymchenry/codegraph API subset actually used. */
+interface CGNode {
+  id: string;
+  name: string;
+  kind: string;
+  filePath?: string;
+}
+interface CGEdge {
+  source: string;
+  target: string;
+  kind: string;
+}
+interface CGSearchResult {
+  node: CGNode;
+}
+interface CGCallerResult {
+  node: CGNode;
+  edge: CGEdge;
+}
+interface CGImpactResult {
+  nodes: Map<string, CGNode>;
+  edges: CGEdge[];
+  roots: string[];
+}
+
+/** Minimal interface matching the @colbymchenry/codegraph methods actually used. */
+interface CodeGraphInstance {
+  searchNodes(query: string): CGSearchResult[];
+  getCallers(target: string, depth: number): CGCallerResult[];
+  getCallees(target: string, depth: number): CGCallerResult[];
+  getImpactRadius(target: string, depth: number): CGImpactResult;
+  getOutgoingEdges(nodeId: string): CGEdge[];
+  sync(): Promise<unknown>;
+  watch(): void;
+  close(): void;
+}
+
 export type QueryType = "dependencies" | "callers" | "callees" | "blast_radius";
 
 export interface CodeGraphQueryOptions {
@@ -56,10 +93,10 @@ function nodeTypeFromKind(kind: string): NodeInfo["type"] {
  * Structural code graph queries via @colbymchenry/codegraph (ADR-027).
  *
  * Attempt 1: library API — CodeGraph.open → query methods.
- * Attempt 2: static regex fallback (unchanged from ADR-002).
+ * Attempt 2: static regex fallback (unchanged from ADR-027).
  */
 export class CodeGraphService {
-  private static instances = new Map<string, { close(): void }>();
+  private static instances = new Map<string, CodeGraphInstance>();
 
   /**
    * Obtain (or create) a cached CodeGraph instance for the given root.
@@ -122,7 +159,7 @@ export class CodeGraphService {
     try {
       const cg = await CodeGraphService.getInstance(root);
       if (cg) {
-        const libResult = CodeGraphService.queryViaLibrary(cg as unknown as CGModule["CodeGraph"], opts, depth);
+        const libResult = CodeGraphService.queryViaLibrary(cg, opts, depth);
         if (libResult) return libResult;
       }
     } catch (err: unknown) {
@@ -135,7 +172,7 @@ export class CodeGraphService {
   }
 
   private static queryViaLibrary(
-    cg: any,
+    cg: CodeGraphInstance,
     opts: CodeGraphQueryOptions,
     _depth: number,
   ): CodeGraphQueryResult | null {
@@ -147,16 +184,19 @@ export class CodeGraphService {
         if (!results.length) return null;
         const nodes: NodeInfo[] = [];
         const edges: EdgeInfo[] = [];
+        const seenEdges = new Set<string>();
         for (const r of results) {
           const n = r.node;
           nodes.push({ id: n.id, name: n.name, type: nodeTypeFromKind(n.kind) });
-        }
-        // Derive dependency edges from the first result's file
-        if (results.length > 0 && results[0].node.filePath) {
-          const outgoing = cg.getOutgoingEdges(results[0].node.id);
+          // Derive dependency edges from each result's outgoing imports
+          const outgoing = cg.getOutgoingEdges(n.id);
           for (const e of outgoing) {
             if (e.kind === "imports") {
-              edges.push({ source: e.source, target: e.target, relationship: "imports" });
+              const key = `${e.source}→${e.target}`;
+              if (!seenEdges.has(key)) {
+                seenEdges.add(key);
+                edges.push({ source: e.source, target: e.target, relationship: "imports" });
+              }
             }
           }
         }
@@ -213,7 +253,7 @@ export class CodeGraphService {
         for (const [, n] of sub.nodes) {
           nodes.push({ id: n.id, name: n.name, type: nodeTypeFromKind(n.kind) });
         }
-        const edges: EdgeInfo[] = sub.edges.map((e: any) => ({
+        const edges: EdgeInfo[] = sub.edges.map(e => ({
           source: e.source,
           target: e.target,
           relationship: mapEdgeKind(e.kind),
@@ -233,7 +273,7 @@ export class CodeGraphService {
   }
 
   /* ------------------------------------------------------------------ */
-  /*  Attempt 2 — static regex fallback (unchanged from ADR-002)        */
+  /*  Attempt 2 — static regex fallback (unchanged from ADR-027)        */
   /* ------------------------------------------------------------------ */
 
   private static parseStaticGraph(
@@ -269,7 +309,7 @@ export class CodeGraphService {
         target,
         nodes,
         edges,
-        summary: `Static blast-radius analysis found ${nodes.length - 1} files referencing symbol '${target}'.`,
+        summary: `Static ${queryType} for '${target}': ${nodes.length - 1} files referencing symbol.`,
       };
     }
 
@@ -297,7 +337,7 @@ export class CodeGraphService {
       target: start,
       nodes,
       edges,
-      summary: `Structural code graph for '${start}': ${nodes.length} nodes, ${edges.length} edges (depth ${depth}).`,
+      summary: `Static ${queryType} for '${start}': ${nodes.length} nodes, ${edges.length} edges.`,
     };
   }
 
