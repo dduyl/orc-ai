@@ -20,6 +20,17 @@ vi.mock("../../../delivery/gui/terminal.js", () => ({
   }),
 }));
 
+vi.mock("../../../delivery/gui/graph-canvas.js", () => ({
+  GraphCanvas: class {
+    mount() {}
+    unmount() {}
+    fitToView() {}
+    updateNodeStatus() {}
+    highlightEdge() {}
+    getData() { return { nodes: [], edges: [] }; }
+  },
+}));
+
 /** Minimal index.html shape — every id the renderer's `getDomRefs()` requires. */
 const DOM = `
 <div id="app">
