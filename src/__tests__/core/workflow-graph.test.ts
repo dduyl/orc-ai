@@ -161,6 +161,19 @@ describe("buildGraphData", () => {
     expect(validateNode?.isGate).toBe(true);
     expect(validateNode?.type).toBe("script");
   });
+
+  it("propagates needs_human status to graph nodes without error", () => {
+    const wf = makeWorkflow();
+    const status = makeStatus([
+      { stepId: "spec", status: "needs_human" },
+      { stepId: "code", status: "running" },
+      { stepId: "validate", status: "pending" },
+    ]);
+    const graph = buildGraphData(wf, status);
+
+    const specNode = graph.nodes.find(n => n.id === "spec");
+    expect(specNode?.status).toBe("needs_human");
+  });
 });
 
 describe("WorkflowGraphData types", () => {
