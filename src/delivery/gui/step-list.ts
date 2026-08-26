@@ -8,7 +8,7 @@ export interface StepListCallbacks {
 export interface StepRowData {
   stepId: string;
   agent?: string;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "needs_human";
   duration?: number | null;
   signals?: string[];
   isGate: boolean;
