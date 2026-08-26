@@ -7,7 +7,7 @@ export interface GraphNode {
   agent?: string;
   type: "agent" | "script";
   emits: string[];
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "needs_human";
   duration?: number;
   error?: string;
   isGate: boolean;

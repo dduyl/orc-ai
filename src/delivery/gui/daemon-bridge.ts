@@ -488,10 +488,10 @@ export class DaemonBridge {
       this.trackRun(event.runId);
       // Runs started outside the GUI (e.g. via MCP on :3100) still get live
       // terminal frames — attach the run the moment progress announces it.
-      if (!this.attachedRuns.has(event.runId)) void this.attachRunTerminal(event.runId);
+      if (!this.attachedRuns.has(event.runId) && this.client) void this.attachRunTerminal(event.runId);
       // Adopted runs have no cached definition yet; resolve asynchronously so
       // subsequent events can derive signal context.
-      if (!this.activeWorkflow) void this.adoptRunDefinition(event.runId, event.runId === this.latestRunId);
+      if (!this.activeWorkflow && this.client) void this.adoptRunDefinition(event.runId, event.runId === this.latestRunId);
     }
     if (event.type === "step_start" && event.stepId) {
       if (!this.stepBuffers.has(event.stepId)) this.stepBuffers.set(event.stepId, "");
