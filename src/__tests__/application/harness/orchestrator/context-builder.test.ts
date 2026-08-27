@@ -31,7 +31,7 @@ describe("harness/orchestrator/context-builder (ADR-024)", () => {
     };
 
     const context = buildStepContext(step, new Map());
-    expect(context).toContain("=== Structural Code Graph (ADR-002) ===");
+    expect(context).toContain("=== Structural Code Graph (ADR-027) ===");
     expect(context).toContain("=== Bounded Research Budget (ADR-008) ===");
     expect(context).toContain("=== Human Escalation (ADR-016) ===");
     expect(context).toContain("ADR-024");

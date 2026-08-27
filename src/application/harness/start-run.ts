@@ -231,14 +231,23 @@ export function resolvePausedRunId(host: RunHost, task: string, workflowId: stri
  * auto-resume. Runs that already have a live background job (or a fresh timer)
  * are left untouched. Called once when the server starts, right after
  * `reconcileStaleRuns`.
+ *
+ * `optsFactory` is called per reconciled run to produce per-run `signal`/`onEvent`
+ * bindings so each run participates in the daemon's abort/registration fan-out:
+ * a cancel during the pause window aborts the resume, and the eventual
+ * workflow_complete still reaches the daemon's cleanup path.
  */
-export function reconcilePausedRuns(host: RunHost): void {
+export function reconcilePausedRuns(
+  host: RunHost,
+  optsFactory?: (runId: string) => { signal?: AbortSignal; onEvent?: (event: ProgressEvent) => void },
+): void {
   for (const run of host.tracker.listRuns()) {
     if (run.status === "paused" && !host.bgRuns.has(run.runId)) {
       log.warn(`[run ${run.runId}] Paused run found at startup — re-arming its quota wake`);
       // A resetAtMs that has already passed schedules an immediate wake
       // (delay clamps to 0) — the run resumes as soon as the daemon is up.
-      host.schedulePausedRunResume(run.runId, run.task, run.workflowId, run.resetAtMs ?? undefined);
+      const opts = optsFactory?.(run.runId);
+      host.schedulePausedRunResume(run.runId, run.task, run.workflowId, run.resetAtMs ?? undefined, opts);
     }
   }
 }

@@ -17,7 +17,7 @@ vi.mock("../../../../application/harness/start-run.js", async (importOriginal) =
     reconcileStaleRuns: vi.fn(),
     // Real implementation so the startup-reconcile tests exercise the actual
     // re-arming logic; only the fired startRun is mocked.
-    reconcilePausedRuns: (host: any) => actual.reconcilePausedRuns(host),
+    reconcilePausedRuns: (host: any, optsFactory?: any) => actual.reconcilePausedRuns(host, optsFactory),
   };
 });
 
@@ -220,6 +220,51 @@ describe("RunHost paused-run wake timer (ADR-022)", () => {
     vi.advanceTimersByTime(60_000);
     expect(mockedStartRun).not.toHaveBeenCalled();
     expect(tracker.getRun("w10")!.status).toBe("paused");
+    tracker.close();
+  });
+
+  it("reconcilePausedRuns calls optsFactory per run and forwards signal/onEvent to startRun", () => {
+    const { host, tracker } = makeHost();
+    const onEvent1 = vi.fn();
+    const onEvent2 = vi.fn();
+    const controller1 = new AbortController();
+    const controller2 = new AbortController();
+    const factory = vi.fn((runId: string) => {
+      if (runId === "w11") return { signal: controller1.signal, onEvent: onEvent1 };
+      if (runId === "w12") return { signal: controller2.signal, onEvent: onEvent2 };
+      return {};
+    });
+
+    tracker.createRun("w11", "wf", "WF", "task1", "test", [{ stepId: "s1", agent: null, task: null, signals: [] }]);
+    tracker.createRun("w12", "wf", "WF", "task2", "test", [{ stepId: "s2", agent: null, task: null, signals: [] }]);
+    tracker.pauseRun("w11", Date.now() + 10_000);
+    tracker.pauseRun("w12", Date.now() + 20_000);
+
+    reconcilePausedRuns(host, factory);
+
+    // Factory called once per reconciled run
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(factory).toHaveBeenCalledWith("w11");
+    expect(factory).toHaveBeenCalledWith("w12");
+
+    // Advance past first wake — only w11 fires
+    vi.advanceTimersByTime(10_000);
+    expect(mockedStartRun).toHaveBeenCalledTimes(1);
+    expect(mockedStartRun).toHaveBeenCalledWith(host, "task1", "wf", true, {
+      runId: "w11",
+      signal: controller1.signal,
+      onEvent: onEvent1,
+    });
+
+    // Advance past second wake — w12 fires
+    vi.advanceTimersByTime(10_000);
+    expect(mockedStartRun).toHaveBeenCalledTimes(2);
+    expect(mockedStartRun).toHaveBeenCalledWith(host, "task2", "wf", true, {
+      runId: "w12",
+      signal: controller2.signal,
+      onEvent: onEvent2,
+    });
+
     tracker.close();
   });
 });
