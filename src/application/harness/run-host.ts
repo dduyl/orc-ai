@@ -161,4 +161,37 @@ export class RunHost {
     for (const timer of this.wakeTimers.values()) clearTimeout(timer);
     this.wakeTimers.clear();
   }
+
+  /**
+   * ADR-022: reload pending quota-resume wake timers from the Tracker
+   * database on daemon startup. For each paused run with a reset_at_ms,
+   * re-schedules the timer (or fires immediately if the window already passed).
+   */
+  reloadWakeTimers(): void {
+    const paused = this.tracker.listPausedRunWithResetTime();
+    for (const run of paused) {
+      const resetAtMs = run.resetAtMs;
+      if (resetAtMs === undefined) continue;
+      const now = Date.now();
+      if (resetAtMs <= now) {
+        // Window already passed — fire immediately.
+        log.warn(`[run ${run.runId}] Quota window already passed on startup — resuming "${run.workflowId}"`);
+        void startRun(this, run.task, run.workflowId, true, { runId: run.runId }).catch((err: any) => {
+          log.warn(`[run ${run.runId}] Quota resume attempt failed: ${err?.message ?? err}`);
+        });
+        continue;
+      }
+      const delayMs = resetAtMs - now;
+      log.info(`[run ${run.runId}] Re-scheduling quota wake in ${delayMs}ms for "${run.workflowId}"`);
+      const timer = setTimeout(() => {
+        this.wakeTimers.delete(run.runId);
+        log.warn(`[run ${run.runId}] Quota window reset — resuming workflow "${run.workflowId}"`);
+        void startRun(this, run.task, run.workflowId, true, { runId: run.runId }).catch((err: any) => {
+          log.warn(`[run ${run.runId}] Quota resume attempt failed: ${err?.message ?? err}`);
+        });
+      }, delayMs);
+      timer.unref?.();
+      this.wakeTimers.set(run.runId, timer);
+    }
+  }
 }

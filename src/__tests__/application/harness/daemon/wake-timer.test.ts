@@ -267,4 +267,65 @@ describe("RunHost paused-run wake timer (ADR-022)", () => {
 
     tracker.close();
   });
+
+  it("reloadWakeTimers re-schedules timers from Tracker on daemon restart", () => {
+    const { host, tracker } = makeHost();
+    const resetAtMs = Date.now() + 60_000;
+    tracker.createRun("w13", "wf", "WF", "task", "test", [{ stepId: "s1", agent: null, task: null, signals: [] }]);
+    tracker.pauseRun("w13", resetAtMs);
+
+    // Simulate daemon restart: create a new RunHost that loads from the same DB
+    const host2 = new RunHost(ADAPTER, {
+      projectDir: host.projectDir,
+      tracker,
+      registry: host.registry,
+    });
+    host2.reloadWakeTimers();
+
+    vi.advanceTimersByTime(59_999);
+    expect(mockedStartRun).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(mockedStartRun).toHaveBeenCalledTimes(1);
+    expect(mockedStartRun).toHaveBeenCalledWith(host2, "task", "wf", true, { runId: "w13" });
+    host2.stopWakeTimers();
+    tracker.close();
+  });
+
+  it("reloadWakeTimers fires immediately when the reset window already passed", () => {
+    const { host, tracker } = makeHost();
+    const resetAtMs = Date.now() - 5_000;
+    tracker.createRun("w14", "wf", "WF", "task", "test", [{ stepId: "s1", agent: null, task: null, signals: [] }]);
+    tracker.pauseRun("w14", resetAtMs);
+
+    const host2 = new RunHost(ADAPTER, {
+      projectDir: host.projectDir,
+      tracker,
+      registry: host.registry,
+    });
+    host2.reloadWakeTimers();
+
+    vi.advanceTimersByTime(0);
+    expect(mockedStartRun).toHaveBeenCalledTimes(1);
+    expect(mockedStartRun).toHaveBeenCalledWith(host2, "task", "wf", true, { runId: "w14" });
+    host2.stopWakeTimers();
+    tracker.close();
+  });
+
+  it("reloadWakeTimers ignores paused runs without reset_at_ms", () => {
+    const { host, tracker } = makeHost();
+    tracker.createRun("w15", "wf", "WF", "task", "test", [{ stepId: "s1", agent: null, task: null, signals: [] }]);
+    tracker.pauseRun("w15"); // no resetAtMs
+
+    const host2 = new RunHost(ADAPTER, {
+      projectDir: host.projectDir,
+      tracker,
+      registry: host.registry,
+    });
+    host2.reloadWakeTimers();
+
+    vi.advanceTimersByTime(10 * 60 * 1000);
+    expect(mockedStartRun).not.toHaveBeenCalled();
+    host2.stopWakeTimers();
+    tracker.close();
+  });
 });

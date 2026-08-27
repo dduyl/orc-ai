@@ -220,6 +220,17 @@ export class Tracker {
     this.db.close();
   }
 
+  /**
+   * ADR-022: list paused runs that have a reset time, used to re-schedule
+   * wake timers on daemon startup.
+   */
+  listPausedRunWithResetTime(): RunRecord[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM runs WHERE status = 'paused' AND reset_at_ms IS NOT NULL ORDER BY reset_at_ms ASC",
+    ).all() as any[];
+    return rows.map(r => this.rowToRecord(r));
+  }
+
   private rowToRecord(row: any): RunRecord {
     return {
       runId: row.run_id,
