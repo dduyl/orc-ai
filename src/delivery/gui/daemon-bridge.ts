@@ -508,6 +508,10 @@ export class DaemonBridge {
         ...(event.duration ? { duration: event.duration } : {}),
         ...(event.toolCalls ? { toolCalls: event.toolCalls } : {}),
         ...(event.error ? { error: event.error } : {}),
+        ...(event.errorKind ? { errorKind: event.errorKind } : {}),
+        ...(event.resetAtMs ? { resetAtMs: event.resetAtMs } : {}),
+        ...(event.retryAfterMs ? { retryAfterMs: event.retryAfterMs } : {}),
+        ...(event.providerCode ? { providerCode: event.providerCode } : {}),
       });
     }
   }

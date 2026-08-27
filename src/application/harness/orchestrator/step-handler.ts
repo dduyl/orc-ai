@@ -457,6 +457,10 @@ export function createStepHandler(options: {
             stepId: step.id,
             status: "failed",
             error: agentErr.message,
+            errorKind: agentErr.kind,
+            ...(agentErr.retryAfterMs ? { retryAfterMs: agentErr.retryAfterMs } : {}),
+            ...(agentErr.resetAtMs ? { resetAtMs: agentErr.resetAtMs } : {}),
+            ...(agentErr.providerCode ? { providerCode: agentErr.providerCode } : {}),
             ...(quota ? { quota } : {}),
           });
           emitter.stepFinish(step.id, quota ? "quota" : "error", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0, quota);

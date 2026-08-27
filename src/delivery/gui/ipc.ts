@@ -89,7 +89,7 @@ export type ChatFrame = MainFrame | { kind: "user"; text: string };
 
 /**
  * Structured step metadata broadcast when a step completes.
- * Carries agent usage, model, duration, and tool calls for the step.
+ * Carries agent usage, model, duration, tool calls, and structured error info.
  */
 export interface StepFrame {
   stepId: string;
@@ -100,6 +100,10 @@ export interface StepFrame {
   duration?: number;
   toolCalls?: ToolCall[];
   error?: string;
+  errorKind?: string;
+  resetAtMs?: number;
+  retryAfterMs?: number;
+  providerCode?: string;
 }
 
 // ── Payload contracts (keyed by wire channel name) ─────────────────────────

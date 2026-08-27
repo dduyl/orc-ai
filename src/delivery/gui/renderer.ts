@@ -2,6 +2,7 @@ import { createTerminal } from "./terminal.js";
 import { getDomRefs } from "./dom-refs.js";
 import { api } from "./api.js";
 import { ChatView } from "./chat-view.js";
+import { StepChatView } from "./step-chat-view.js";
 import { ActivityBox } from "./activity-box.js";
 import { MentionBox, type SuggestionItem } from "./mention-box.js";
 import { GraphView } from "./views/graph-view.js";
@@ -16,7 +17,7 @@ import { GUIDE_TEXT } from "../../adapters/mcp/handlers/content.js";
 import type { AgentCommand, AgentConfigOption } from "../../application/harness/daemon/main-frame-codec.js";
 import type { WorkflowDefinition } from "../../core/schemas.js";
 import type { RunRecord } from "../../application/harness/persistence/Tracker.js";
-import type { ChatFrame, CustomMode, PromptMention, SignalEvent } from "./ipc.js";
+import type { ChatFrame, CustomMode, PromptMention, SignalEvent, StepFrame } from "./ipc.js";
 
 const MAIN_STEP_ID = "__main__";
 
@@ -381,7 +382,38 @@ refs.btnNewRun.addEventListener("click", () => workflowLauncher.open());
 graphView.mount(refs.graphViewContainer);
 
 // Mount StepsView
-stepsView.mount(refs.stepsView);
+stepsView.mount(refs.stepsTableContainer);
+
+// Step chat views — one per step, keyed by stepId
+const stepChatViews = new Map<string, StepChatView>();
+const stepFrameBuffers = new Map<string, StepFrame[]>();
+let activeStepChatId: string | null = null;
+
+function getOrCreateStepChatView(stepId: string): StepChatView {
+  let view = stepChatViews.get(stepId);
+  if (!view) {
+    view = new StepChatView(refs.stepChatList);
+    stepChatViews.set(stepId, view);
+  }
+  return view;
+}
+
+function selectStepChat(stepId: string): void {
+  activeStepChatId = stepId;
+  // Clear existing view
+  refs.stepChatList.innerHTML = "";
+  // Get or create view for this step
+  const view = getOrCreateStepChatView(stepId);
+  // Mount the view's elements into the shared list
+  // Replay buffered frames
+  const buffered = stepFrameBuffers.get(stepId) ?? [];
+  for (const frame of buffered) {
+    applyStepFrame(view, frame);
+  }
+  // Update header
+  refs.stepChatTitle.textContent = stepId;
+  refs.stepChatStatus.textContent = "";
+}
 
 // Mount TerminalView
 terminalView.mount(refs.terminalView);
@@ -673,6 +705,32 @@ api.onChatFrame((data) => {
       break;
   }
 });
+
+// ── Step chat panel (per-step agent frames) ──────────────────────────────
+api.onStepFrame((data: StepFrame) => {
+  const { stepId } = data;
+  // Buffer all frames
+  const buf = stepFrameBuffers.get(stepId) ?? [];
+  buf.push(data);
+  stepFrameBuffers.set(stepId, buf);
+  // If this is the active step, render immediately
+  if (activeStepChatId === stepId) {
+    const view = getOrCreateStepChatView(stepId);
+    applyStepFrame(view, data);
+  }
+});
+
+function applyStepFrame(view: StepChatView, frame: StepFrame): void {
+  if (frame.toolCalls) {
+    for (const tc of frame.toolCalls) view.addToolCall(tc);
+  }
+  if (frame.usage) view.addUsage(frame.usage);
+  if (frame.error && frame.errorKind) {
+    view.addErrorFrame(frame);
+  } else if (frame.error) {
+    view.addError(frame.error);
+  }
+}
 
 function syncComposer(): void {
   refs.chatSend.disabled = !(connected && mainMode === "acp") || busy;

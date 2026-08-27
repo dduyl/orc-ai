@@ -332,6 +332,18 @@ body::before {
 /* ══ Steps view ══ */
 #steps-view { flex: 1; display: none; flex-direction: column; min-height: 0; overflow: hidden; }
 #steps-view.active { display: flex; }
+#steps-split { display: flex; flex: 1; min-height: 0; }
+#steps-table-container { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+#step-chat-panel { width: 400px; border-left: 1px solid var(--border-subtle); overflow: hidden; display: flex; flex-direction: column; background: var(--bg-surface); }
+#step-chat-header { display: flex; align-items: center; gap: 8px; height: 32px; min-height: 32px; padding: 0 var(--space-3); background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); }
+.msg-error { color: #ef4444; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; padding: var(--space-2) var(--space-3); background: rgba(239,68,68,0.06); border-radius: var(--radius-sm); }
+.msg-error .error-header { display: flex; align-items: center; gap: 6px; }
+.msg-error .error-kind { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: rgba(239,68,68,0.15); color: #fca5a5; }
+.msg-error .error-detail { margin-top: 4px; font-size: 11px; color: var(--text-faint); }
+#step-chat-title { font-weight: 600; font-size: 12px; color: var(--text-primary); }
+#step-chat-status { font-size: 11px; color: var(--text-faint); }
+#step-chat-scroll { flex: 1; overflow-y: auto; padding: var(--space-3); }
+#step-chat-list { display: flex; flex-direction: column; gap: 4px; }
 .step-list-header {
   display: flex; align-items: center; justify-content: space-between;
   height: 32px; min-height: 32px; padding: 0 var(--space-3);
@@ -648,7 +660,20 @@ body::before {
 
       <!-- Steps view -->
       <section id="steps-view">
-        <div class="muted-empty">› No active run</div>
+        <div id="steps-split">
+          <div id="steps-table-container">
+            <div class="muted-empty">› No active run</div>
+          </div>
+          <div id="step-chat-panel">
+            <div id="step-chat-header">
+              <span id="step-chat-title">Select a step</span>
+              <span id="step-chat-status"></span>
+            </div>
+            <div id="step-chat-scroll">
+              <div id="step-chat-list"></div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- Chat view -->

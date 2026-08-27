@@ -51,7 +51,20 @@ const DOM = `
       <div id="graph-view-container"></div>
     </section>
     <section id="steps-view">
-      <div class="muted-empty">› No active run</div>
+      <div id="steps-split">
+        <div id="steps-table-container">
+          <div class="muted-empty">› No active run</div>
+        </div>
+        <div id="step-chat-panel">
+          <div id="step-chat-header">
+            <span id="step-chat-title">Select a step</span>
+            <span id="step-chat-status"></span>
+          </div>
+          <div id="step-chat-scroll">
+            <div id="step-chat-list"></div>
+          </div>
+        </div>
+      </div>
     </section>
     <section id="chat-view">
       <div id="chat-scroll"><div id="chat-list"></div></div>
@@ -148,6 +161,7 @@ function createApiStub(): {
     onStepContext: on("stepContext"),
     onGateResult: on("gateResult"),
     onLoopDetected: on("loopDetected"),
+    onStepFrame: on("stepFrame"),
     write: (...a: unknown[]) => (calls.write ??= []).push(a),
     prompt: vi.fn(async () => {}),
     cancelMain: (...a: unknown[]) => (calls.cancelMain ??= []).push(a),

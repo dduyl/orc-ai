@@ -29,6 +29,7 @@ export interface DomRefs {
   // views + navigation
   graphView: HTMLElement;
   stepsView: HTMLElement;
+  stepsTableContainer: HTMLElement;
   chatView: HTMLElement;
   terminalView: HTMLElement;
   tabGraph: HTMLButtonElement;
@@ -46,6 +47,12 @@ export interface DomRefs {
   chatBusyText: HTMLElement;
   chatCancel: HTMLButtonElement;
   chatSuggestions: HTMLElement;
+  // step chat panel
+  stepChatPanel: HTMLElement;
+  stepChatTitle: HTMLElement;
+  stepChatStatus: HTMLElement;
+  stepChatScroll: HTMLElement;
+  stepChatList: HTMLElement;
   // activity box (permissions + tools)
   activityBox: HTMLElement;
   permissionSection: HTMLElement;
@@ -98,6 +105,7 @@ export function getDomRefs(): DomRefs {
     rightPanel: req("right-panel"),
     graphView: req("graph-view"),
     stepsView: req("steps-view"),
+    stepsTableContainer: req("steps-table-container"),
     chatView: req("chat-view"),
     terminalView: req("terminal-view"),
     tabGraph: req("tab-graph") as HTMLButtonElement,
@@ -128,5 +136,10 @@ export function getDomRefs(): DomRefs {
     brandAdapter: req("brand-adapter"),
     graphViewContainer: req("graph-view-container"),
     btnNewRun: req("btn-new-run") as HTMLButtonElement,
+    stepChatPanel: req("step-chat-panel"),
+    stepChatTitle: req("step-chat-title"),
+    stepChatStatus: req("step-chat-status"),
+    stepChatScroll: req("step-chat-scroll"),
+    stepChatList: req("step-chat-list"),
   };
 }
