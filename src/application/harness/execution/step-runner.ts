@@ -94,6 +94,13 @@ export async function runWorkflow(
   // consumed[consumerId][ref] -> emissions the consumer has already consumed.
   const emitted = new Map<string, number>();
   emitted.set(START_SIGNAL, 1);
+  // ADR-022 resume: re-seed emitted signals from completed steps so downstream
+  // gates fire immediately on resume instead of requiring a re-run.
+  for (const [sid, o] of ctx.stepResults) {
+    if (o.status === "completed" && o.signal) {
+      emitted.set(`${sid}.${o.signal}`, (emitted.get(`${sid}.${o.signal}`) ?? 0) + 1);
+    }
+  }
   const consumed = new Map<string, Map<string, number>>();
   for (const s of steps) {
     const m = new Map<string, number>();
@@ -116,6 +123,12 @@ export async function runWorkflow(
   const MAX_TOTAL_RUNS = 50;
   const stepRunCounts = new Map<string, number>();
   const terminal = new Set<string>();
+  // ADR-022 resume: mark restored steps as terminal so they are not re-dispatched.
+  for (const [sid, o] of ctx.stepResults) {
+    if (o.status === "completed" || o.status === "failed") {
+      terminal.add(sid);
+    }
+  }
   let totalRuns = 0;
 
   function emittedRefCount(ref: string): number {

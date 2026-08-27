@@ -9,6 +9,8 @@ export interface StepResumeSnapshot {
   error?: string;
   retries: number;
   hooks?: HookEvent[];
+  /** The signal name the step emitted on completion (needed to re-seed the signal graph on resume). */
+  signal?: string;
 }
 
 export interface ResumeState {

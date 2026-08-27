@@ -25,7 +25,7 @@ export function restoreSession(
       sessionId = existing.sessionId;
       for (const [stepId, r] of Object.entries(existing.stepResults)) {
         if (r.status !== "failed") {
-          restoredStepResults.set(stepId, { stepId, status: r.status, output: r.output, error: r.error, retries: r.retries, hooks: r.hooks });
+          restoredStepResults.set(stepId, { stepId, status: r.status, output: r.output, error: r.error, retries: r.retries, hooks: r.hooks, signal: r.signal });
         }
       }
       log.info(`[resume] Restored ${restoredStepResults.size}/${Object.keys(existing.stepResults).length} completed steps (session=${sessionId})`);

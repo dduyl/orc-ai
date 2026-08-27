@@ -92,7 +92,7 @@ export async function orchestrate(
         // ADR-022: a paused step maps to a failed snapshot so the
         // resume path re-runs it (restoreSession drops non-... failed rows).
         const status = o.status === "completed" ? "completed" : "failed";
-        out[stepId] = { status, output: o.output, error: o.error, retries: o.retries, hooks: o.hooks };
+        out[stepId] = { status, output: o.output, error: o.error, retries: o.retries, hooks: o.hooks, signal: o.signal };
       }
       return out;
     }

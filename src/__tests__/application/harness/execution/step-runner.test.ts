@@ -350,4 +350,45 @@ describe("step-runner", () => {
     expect(outcomes.map(o => o.stepId)).toEqual(["a"]);
     expect(outcomes[0].status).toBe("paused");
   });
+
+  it("resume: signals from completed steps are re-seeded so downstream gates fire immediately", async () => {
+    // Simulate a resumed run where spec completed and emitted "done".
+    // The downstream gate (on: ["spec.done"]) should fire immediately.
+    const steps: WorkflowStep[] = [
+      { type: "agent", id: "spec", agent: "a", emits: [sig("done")], on: ["__start__"], context: [] },
+      { type: "agent", id: "gate", agent: "b", emits: [sig("pass")], on: ["spec.done"], context: [] },
+    ];
+    const ctx = mkCtx();
+    // Pre-populate restored completed step with signal
+    ctx.stepResults.set("spec", { stepId: "spec", status: "completed", signal: "done", retries: 0 });
+
+    let gateCalls = 0;
+    const handler: StepHandler = async (step) => {
+      if (step.id === "gate") gateCalls++;
+      return { stepId: step.id, status: "completed", signal: step.emits[0].name, retries: 0 };
+    };
+    await runWorkflow(steps, handler, ctx);
+    // gate should have been dispatched (spec.done was re-seeded from the restored signal)
+    expect(gateCalls).toBe(1);
+    expect(ctx.stepResults.get("gate")?.status).toBe("completed");
+  });
+
+  it("resume: completed steps without a signal are skipped in emission seeding", async () => {
+    const steps: WorkflowStep[] = [
+      { type: "agent", id: "spec", agent: "a", emits: [sig("done")], on: ["__start__"], context: [] },
+      { type: "agent", id: "gate", agent: "b", emits: [sig("pass")], on: ["spec.done"], context: [] },
+    ];
+    const ctx = mkCtx();
+    // Restored step has no signal (e.g., legacy checkpoint)
+    ctx.stepResults.set("spec", { stepId: "spec", status: "completed", retries: 0 });
+
+    let gateCalls = 0;
+    const handler: StepHandler = async (step) => {
+      if (step.id === "gate") gateCalls++;
+      return { stepId: step.id, status: "completed", signal: step.emits[0].name, retries: 0 };
+    };
+    await runWorkflow(steps, handler, ctx);
+    // gate should NOT fire — spec.done was never emitted
+    expect(gateCalls).toBe(0);
+  });
 });
