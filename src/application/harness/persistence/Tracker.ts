@@ -221,6 +221,14 @@ export class Tracker {
   }
 
   /**
+   * Delete a run record and its steps. Called on successful completion to
+   * prevent orphaned rows from accumulating.
+   */
+  pruneRun(runId: string): void {
+    this.db.prepare("DELETE FROM runs WHERE run_id = ?").run(runId);
+  }
+
+  /**
    * ADR-022: list paused runs that have a reset time, used to re-schedule
    * wake timers on daemon startup.
    */
