@@ -1,8 +1,9 @@
 import type { IDisposable, IPty } from "node-pty";
+import type { ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
 import type { AdapterDef, AgentCallResult } from "./adapter.js";
 import type { Tier, ProviderConfig } from "./config.js";
 import { HOOK_FILE_ENV, type StepQuotaInfo } from "../../core/hooks.js";
-import type { AcpSpawnSpec, OnProviderQuota, TokenPaidRequest } from "./acp/types.js";
+import type { AcpSpawnSpec, AgentUsage, OnProviderQuota, TokenPaidRequest } from "./acp/types.js";
 import { gateFromEnv } from "./acp/permission.js";
 import { runAcpTurn } from "./acp/client.js";
 import { getAcpStrategy } from "./strategy.js";
@@ -184,6 +185,10 @@ export function callAcpAgentStream(
     });
   };
 
+  const toolCalls: ToolCall[] = [];
+  const toolCallUpdates: ToolCallUpdate[] = [];
+  let liveUsage: AgentUsage | undefined;
+
   const start = Date.now();
   const promise = runAcpTurn({
     spawn: spec,
@@ -202,6 +207,7 @@ export function callAcpAgentStream(
     events: {
       onText: text => facade.feed(text),
       onToolCall: call => {
+        toolCalls.push(call);
         try {
           feedLines(renderToolCall(call));
           appendHookEvent(hookFile, {
@@ -216,14 +222,15 @@ export function callAcpAgentStream(
         }
       },
       onToolCallUpdate: update => {
+        toolCallUpdates.push(update);
         try {
           feedLines(renderToolCallUpdate(update));
         } catch (err) {
           log.warn(`acp: failed to render tool_call_update: ${(err as Error).message}`);
         }
       },
-      onUsage: () => {
-        /* Phase 2: surface usage to the GUI live */
+      onUsage: usage => {
+        liveUsage = usage;
       },
     },
   })
@@ -246,7 +253,9 @@ export function callAcpAgentStream(
         model: adapter.id,
         tokensUsed: turn.usage.totalTokens,
         duration: turn.duration,
-        usage: turn.usage,
+        usage: liveUsage ?? turn.usage,
+        ...(toolCalls.length > 0 ? { toolCalls } : {}),
+        ...(toolCallUpdates.length > 0 ? { toolCallUpdates } : {}),
         ...(turn.downgraded && downgradeTo ? { downgradedTo: downgradeTo } : {}),
         ...(turn.providerFailover ? { providerFailover: turn.providerFailover } : {}),
       };

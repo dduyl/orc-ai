@@ -415,6 +415,10 @@ export function createStepHandler(options: {
           signal: orcResult?.signal,
           ...(result.downgradedTo ? { downgradedTo: result.downgradedTo } : {}),
           ...(result.providerFailover ? { providerFailover: result.providerFailover } : {}),
+          ...(result.usage ? { usage: result.usage } : {}),
+          ...(result.model ? { model: result.model } : {}),
+          ...(result.duration ? { duration: result.duration } : {}),
+          ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}),
         };
         if (result.downgradedTo) {
           log.info(`step '${step.id}' quota — completed on downgraded model '${result.downgradedTo}'`);
@@ -426,8 +430,15 @@ export function createStepHandler(options: {
           log.info(`step '${step.id}' completed on token-paid fallback (method '${tokenPaid?.methodId}')`);
         }
         tracker?.tracker.setStepCompleted(tracker.runId, step.id, "completed");
-        onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "completed", duration: result.duration });
-        emitter.stepFinish(step.id, "stop", "", { total: 0, input: 0, output: output.length, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
+        onProgress?.({
+          type: "step_complete", runId, stepId: step.id, status: "completed", duration: result.duration,
+          ...(result.usage ? { usage: result.usage } : {}),
+          ...(result.model ? { model: result.model } : {}),
+          ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}),
+        });
+        emitter.stepFinish(step.id, "stop", "", result.usage
+          ? { total: result.usage.totalTokens, input: result.usage.inputTokens, output: result.usage.outputTokens, reasoning: result.usage.thoughtTokens ?? 0, cache: { write: result.usage.cachedWriteTokens ?? 0, read: result.usage.cachedReadTokens ?? 0 } }
+          : { total: 0, input: 0, output: output.length, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
         return o;
       } catch (err: any) {
         if (ctx.signal?.aborted) {

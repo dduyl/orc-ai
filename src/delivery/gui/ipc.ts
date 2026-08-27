@@ -19,6 +19,8 @@ import type { PermissionAnswerKind } from "../../application/agents/acp/types.js
 import type { WorkflowDefinition } from "../../core/schemas.js";
 import type { RegisteredWorkflow } from "../../application/planner/registry.js";
 import type { WorkflowGraphData, SignalEvent } from "../../core/workflow-graph.js";
+import type { AgentUsage } from "../../application/agents/acp/types.js";
+import type { ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
 export type {
   PermissionRequest,
   PermissionAnswerKind,
@@ -85,6 +87,21 @@ export interface StepInfo {
  */
 export type ChatFrame = MainFrame | { kind: "user"; text: string };
 
+/**
+ * Structured step metadata broadcast when a step completes.
+ * Carries agent usage, model, duration, and tool calls for the step.
+ */
+export interface StepFrame {
+  stepId: string;
+  runId: string;
+  status: string;
+  usage?: AgentUsage;
+  model?: string;
+  duration?: number;
+  toolCalls?: ToolCall[];
+  error?: string;
+}
+
 // ── Payload contracts (keyed by wire channel name) ─────────────────────────
 
 /** Main → renderer event channels: name → payload type. */
@@ -106,6 +123,7 @@ export interface MainToRendererEvents {
   "gate-result": { stepId: string; gate: string; exitCode: number; output: string };
   "loop-detected": { stepId: string; iteration: number; reason: string; fromSignal: string };
   "step-context": { stepId: string; agent: string; context: string[]; emits: string[] };
+  "step-frame": StepFrame;
 }
 
 /** The main process's channel → payload send function consumed by the bridge. */
@@ -181,6 +199,7 @@ export const IPC = {
     "gate-result": "gate-result",
     "loop-detected": "loop-detected",
     "step-context": "step-context",
+    "step-frame": "step-frame",
   },
 } as const satisfies {
   RendererToMain: Record<keyof RendererToMainSend, string>;
@@ -208,6 +227,7 @@ export interface GuiApi {
   onGateResult(cb: (data: { stepId: string; gate: string; exitCode: number; output: string }) => void): void;
   onLoopDetected(cb: (data: { stepId: string; iteration: number; reason: string; fromSignal: string }) => void): void;
   onStepContext(cb: (data: { stepId: string; agent: string; context: string[]; emits: string[] }) => void): void;
+  onStepFrame(cb: (data: StepFrame) => void): void;
   write(data: string): void;
   prompt(text: string, mentions?: PromptMention[]): Promise<void>;
   cancelMain(): void;

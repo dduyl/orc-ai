@@ -2,6 +2,8 @@ import { type IPty } from "node-pty";
 import type { StepOutcome } from "../execution/step-runner.js";
 import type { Tracker } from "../persistence/Tracker.js";
 import type { QuotaInfo } from "../../agents/errors.js";
+import type { AgentUsage } from "../../agents/acp/types.js";
+import type { ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
 
 export interface RunReport {
   workflowId: string;
@@ -26,6 +28,12 @@ export interface ProgressEvent {
   quota?: QuotaInfo;
   pty?: IPty;
   report?: RunReport;
+  /** Agent token usage from the step (ACP). */
+  usage?: AgentUsage;
+  /** Agent model identifier from the step. */
+  model?: string;
+  /** Structured tool calls from the step (ACP). */
+  toolCalls?: ToolCall[];
 }
 
 export interface RunTracker {

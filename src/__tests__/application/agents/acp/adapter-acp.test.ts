@@ -48,6 +48,7 @@ rl.on('line', (line) => {
     send({ jsonrpc:'2.0', id, result:{ sessionId:'sess-1' } });
     send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'agent_message_chunk', content:{ type:'text', text:'mock reply' } } } });
     send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'tool_call', toolCallId:'tc-1', title:'Mock Write', name:'write_file', kind:'edit', status:'in_progress', locations:[{ path:'/tmp/mock.txt', line:1 }], rawInput:{ path:'/tmp/mock.txt' } } } });
+    send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'tool_call_update', toolCallId:'tc-1', status:'completed' } } });
   } else if (method === 'session/prompt') {
     send({ jsonrpc:'2.0', id, result:{ stopReason:'end_turn', usage:{ totalTokens:7, inputTokens:2, outputTokens:5 } } });
   }
@@ -305,6 +306,36 @@ describe("callAcpAgentStream", () => {
     const fed = chunks.join("");
     expect(fed).toContain("→ Mock Write [in_progress]");
     expect(fed).toContain("    at /tmp/mock.txt:1");
+  });
+
+  it("captures structured ToolCall objects from the ACP turn", async () => {
+    registerAcpStrategy(fakeAcpStrategyWithTool("acp-test-agent"));
+    const handle = callAcpAgentStream(ADAPTER, "hello");
+    const result = await handle.promise;
+
+    expect(result.toolCalls).toBeDefined();
+    expect(result.toolCalls!.length).toBeGreaterThanOrEqual(1);
+    expect(result.toolCalls![0].name).toBe("write_file");
+    expect(result.toolCalls![0].rawInput).toBeDefined();
+  });
+
+  it("captures structured ToolCallUpdate objects from the ACP turn", async () => {
+    registerAcpStrategy(fakeAcpStrategyWithTool("acp-test-agent"));
+    const handle = callAcpAgentStream(ADAPTER, "hello");
+    const result = await handle.promise;
+
+    expect(result.toolCallUpdates).toBeDefined();
+    expect(result.toolCallUpdates!.length).toBeGreaterThanOrEqual(1);
+    expect(result.toolCallUpdates![0].toolCallId).toBeDefined();
+  });
+
+  it("returns empty toolCalls array for a text-only turn (no tool calls)", async () => {
+    registerAcpStrategy(fakeAcpStrategy("acp-test-agent"));
+    const handle = callAcpAgentStream(ADAPTER, "hello");
+    const result = await handle.promise;
+
+    expect(result.toolCalls).toBeUndefined();
+    expect(result.toolCallUpdates).toBeUndefined();
   });
 
   it("writes tool_call and step_finish events to the hook file (Tracker observability)", async () => {

@@ -497,8 +497,18 @@ export class DaemonBridge {
       if (!this.stepBuffers.has(event.stepId)) this.stepBuffers.set(event.stepId, "");
       if (event.runId === this.latestRunId) this.switchToStep(event.stepId);
       this.deriveStepStart(event);
-    } else if (event.type === "step_complete" && event.stepId) {
+    } else if (event.type === "step_complete" && event.stepId && event.runId) {
       this.deriveStepComplete(event);
+      this.send(IPC.MainToRenderer["step-frame"], {
+        stepId: event.stepId,
+        runId: event.runId,
+        status: event.status ?? "unknown",
+        ...(event.usage ? { usage: event.usage } : {}),
+        ...(event.model ? { model: event.model } : {}),
+        ...(event.duration ? { duration: event.duration } : {}),
+        ...(event.toolCalls ? { toolCalls: event.toolCalls } : {}),
+        ...(event.error ? { error: event.error } : {}),
+      });
     }
   }
 
