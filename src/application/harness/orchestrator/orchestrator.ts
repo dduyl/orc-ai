@@ -193,10 +193,17 @@ export async function orchestrate(
 
     return report;
   } finally {
-    if (report && report.failed === 0 && report.paused === 0) {
-      // Owner-scoped: only removes this run's own checkpoint, so a concurrent
-      // same-task run's live row survives.
-      cp.prune(task, runId);
+    // Prune the checkpoint when there's nothing useful to preserve:
+    // - No failures at all (clean success)
+    // - All failures are user-cancelled (no real work to resume from)
+    // A cancelled run's checkpoint holds no recovery value.
+    if (report) {
+      const hasCancelledFailure = report.outcomes
+        .filter(o => o.status === "failed")
+        .some(o => o.error === "cancelled");
+      if ((report.failed === 0 || hasCancelledFailure) && report.paused === 0) {
+        cp.prune(task, runId);
+      }
     }
     cp.close();
   }
