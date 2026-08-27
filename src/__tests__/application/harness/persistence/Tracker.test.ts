@@ -178,3 +178,80 @@ describe("Tracker run status", () => {
     }
   });
 });
+
+describe("Tracker.tryResumeRun (atomic resume)", () => {
+  it("returns true and transitions paused → running, clearing pause metadata", () => {
+    const { dir, path: db } = tmpDb();
+    try {
+      const t = new Tracker(db);
+      t.createRun("tr1", "wf", "WF", "t", "a", [{ stepId: "s1", agent: "a", task: null, signals: [] }]);
+      t.pauseRun("tr1", 1755600000000, "quota_exhausted");
+
+      expect(t.tryResumeRun("tr1")).toBe(true);
+      const got = t.getRun("tr1")!;
+      expect(got.status).toBe("running");
+      expect(got.resetAtMs).toBeUndefined();
+      expect(got.pauseReason).toBeUndefined();
+      expect(got.completedAt).toBeNull();
+      t.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns false when the run is already running (another worker claimed it)", () => {
+    const { dir, path: db } = tmpDb();
+    try {
+      const t = new Tracker(db);
+      t.createRun("tr2", "wf", "WF", "t", "a", [{ stepId: "s1", agent: "a", task: null, signals: [] }]);
+      // run is already "running" from createRun — tryResumeRun should fail
+      expect(t.tryResumeRun("tr2")).toBe(false);
+      expect(t.getRun("tr2")!.status).toBe("running");
+      t.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns false for a completed run (cannot resurrect a dead run)", () => {
+    const { dir, path: db } = tmpDb();
+    try {
+      const t = new Tracker(db);
+      t.createRun("tr3", "wf", "WF", "t", "a", [{ stepId: "s1", agent: "a", task: null, signals: [] }]);
+      t.updateRunStatus("tr3", "completed");
+      expect(t.tryResumeRun("tr3")).toBe(false);
+      expect(t.getRun("tr3")!.status).toBe("completed");
+      t.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("only the first of two concurrent tryResumeRun calls wins", () => {
+    const { dir, path: db } = tmpDb();
+    try {
+      const t = new Tracker(db);
+      t.createRun("tr4", "wf", "WF", "t", "a", [{ stepId: "s1", agent: "a", task: null, signals: [] }]);
+      t.pauseRun("tr4");
+
+      // Simulate two workers racing: both call tryResumeRun on the same paused run.
+      expect(t.tryResumeRun("tr4")).toBe(true);   // first wins
+      expect(t.tryResumeRun("tr4")).toBe(false);  // second loses
+      expect(t.getRun("tr4")!.status).toBe("running");
+      t.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns false for a non-existent run", () => {
+    const { dir, path: db } = tmpDb();
+    try {
+      const t = new Tracker(db);
+      expect(t.tryResumeRun("nonexistent")).toBe(false);
+      t.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

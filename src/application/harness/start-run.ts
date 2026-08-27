@@ -86,13 +86,20 @@ export async function startRun(
   // metadata) so run history and steps_json survive instead of a PK conflict.
   const existing = resume ? host.tracker.getRun(runId) : null;
   if (existing) {
+    // Atomically claim the paused run.  If another daemon worker already
+    // claimed it (tryResumeRun returns false), bail out to avoid a double
+    // resume / duplicate orchestrate() loop.
+    if (!host.tracker.tryResumeRun(runId)) {
+      // Another daemon worker already claimed this run — return early
+      // without launching a duplicate orchestration loop.
+      return { runId, workflowId, workflowName, status: "running", message: "already resumed by another worker" };
+    }
     // Disarm any pending wake timer for this runId: the run is being resumed
     // NOW (either by the wake firing, or by a manual resume that just claimed
     // this paused run). Without this, a manual resume of a paused run would
     // leave its scheduled auto-resume armed, firing a duplicate orchestrate()
     // on the same runId after the quota window elapsed.
     host.clearPausedRunResume(runId);
-    host.tracker.updateRunStatus(runId, "running");
   } else {
     host.tracker.createRun(runId, plan.workflow.workflow.id, workflowName, task, host.adapter.id, stepEntries);
   }

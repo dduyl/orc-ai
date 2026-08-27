@@ -117,6 +117,22 @@ export class Tracker {
     return rows.map(r => this.rowToRecord(r));
   }
 
+  /**
+   * Atomically attempt to resume a paused run: `UPDATE ... WHERE status = 'paused'`.
+   * Returns `true` if this call won the race (1 row affected), `false` if
+   * another caller already claimed the run (0 rows affected).  This prevents
+   * the TOCTOU race where two daemon workers both read "paused" and both
+   * transition to "running", causing a double resume.
+   */
+  tryResumeRun(runId: string): boolean {
+    const now = Date.now();
+    const info = this.db.prepare(`
+      UPDATE runs SET status = 'running', reset_at_ms = NULL, pause_reason = NULL, updated_at = ?, completed_at = NULL
+      WHERE run_id = ? AND status = 'paused'
+    `).run(now, runId);
+    return info.changes > 0;
+  }
+
   updateRunStatus(runId: string, status: RunStatus): void {
     const now = Date.now();
     const completedAt = status === "completed" || status === "failed" || status === "cancelled" ? now : null;
