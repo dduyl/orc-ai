@@ -41,7 +41,7 @@ export async function orchestrate(
   try {
     const activeAdapter = adapter;
 
-    const { sessionId, restoredStepResults } = restoreSession(task, resume, cp, tracker, onProgress);
+    const { sessionId, restoredStepResults } = restoreSession(task, resume, cp, plan.workflow.workflow.id, tracker, onProgress);
 
     const agentPrompts = loadAgentSystemPrompts();
     const allOutcomes: import("../execution/step-runner.js").StepOutcome[] = [];
@@ -51,7 +51,7 @@ export async function orchestrate(
     // ADR-021/ADR-022: the model-routing block and the providers the user has
     // credentials for, read once per run and shared by the quota-ladder
     // defaults below (the downgrade resolver and the failover seam).
-    const routingConfig = loadModelRoutingConfig();
+    const routingConfig = loadModelRoutingConfig(undefined, root);
     const configuredProviders = readConfiguredProviders(routingConfig);
 
     const handler = createStepHandler({
@@ -92,7 +92,22 @@ export async function orchestrate(
         // ADR-022: a paused step maps to a failed snapshot so the
         // resume path re-runs it (restoreSession drops non-... failed rows).
         const status = o.status === "completed" ? "completed" : "failed";
-        out[stepId] = { status, output: o.output, error: o.error, retries: o.retries, hooks: o.hooks };
+        out[stepId] = {
+          status,
+          output: o.output,
+          error: o.error,
+          retries: o.retries,
+          hooks: o.hooks,
+          signal: o.signal,
+          summary: o.summary,
+          artifact: o.artifact,
+          affectedFiles: o.affectedFiles,
+          failureReason: o.failureReason,
+          quota: o.quota,
+          downgradedTo: o.downgradedTo,
+          providerFailover: o.providerFailover,
+          needsHuman: o.needsHuman,
+        };
       }
       return out;
     }
@@ -178,10 +193,30 @@ export async function orchestrate(
 
     return report;
   } finally {
-    if (report && report.failed === 0 && report.paused === 0) {
-      // Owner-scoped: only removes this run's own checkpoint, so a concurrent
-      // same-task run's live row survives.
-      cp.prune(task, runId);
+    // Prune the checkpoint when there's nothing useful to preserve:
+    // - No failures at all (clean success)
+    // - All failures are user-cancelled (no real work to resume from)
+    // A cancelled run's checkpoint holds no recovery value.
+    if (report) {
+      // Collect step IDs that were directly cancelled by the user.
+      const cancelledIds = new Set(
+        report.outcomes
+          .filter(o => o.status === "failed" && o.error === "cancelled")
+          .map(o => o.stepId),
+      );
+      // Prune when every failure is either directly cancelled or a propagated
+      // upstream failure from a cancelled step.  Mixed failures (at least one
+      // real error) must preserve the checkpoint for debugging/resume.
+      const allFailuresCancelled = report.outcomes
+        .filter(o => o.status === "failed")
+        .every(o => {
+          if (o.error === "cancelled") return true;
+          const m = o.error?.match(/^upstream step '(.+)' failed$/);
+          return m ? cancelledIds.has(m[1]) : false;
+        });
+      if (allFailuresCancelled && report.paused === 0) {
+        cp.prune(task, runId);
+      }
     }
     cp.close();
   }

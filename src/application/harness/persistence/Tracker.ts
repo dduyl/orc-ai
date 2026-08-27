@@ -117,6 +117,27 @@ export class Tracker {
     return rows.map(r => this.rowToRecord(r));
   }
 
+  listActiveRuns(): RunRecord[] {
+    const rows = this.db.prepare("SELECT * FROM runs WHERE status IN ('running', 'paused') ORDER BY created_at DESC").all() as any[];
+    return rows.map(r => this.rowToRecord(r));
+  }
+
+  /**
+   * Atomically attempt to resume a paused run: `UPDATE ... WHERE status = 'paused'`.
+   * Returns `true` if this call won the race (1 row affected), `false` if
+   * another caller already claimed the run (0 rows affected).  This prevents
+   * the TOCTOU race where two daemon workers both read "paused" and both
+   * transition to "running", causing a double resume.
+   */
+  tryResumeRun(runId: string): boolean {
+    const now = Date.now();
+    const info = this.db.prepare(`
+      UPDATE runs SET status = 'running', reset_at_ms = NULL, pause_reason = NULL, updated_at = ?, completed_at = NULL
+      WHERE run_id = ? AND status = 'paused'
+    `).run(now, runId);
+    return info.changes > 0;
+  }
+
   updateRunStatus(runId: string, status: RunStatus): void {
     const now = Date.now();
     const completedAt = status === "completed" || status === "failed" || status === "cancelled" ? now : null;
@@ -202,6 +223,25 @@ export class Tracker {
 
   close(): void {
     this.db.close();
+  }
+
+  /**
+   * Delete a run record and its steps. Called on successful completion to
+   * prevent orphaned rows from accumulating.
+   */
+  pruneRun(runId: string): void {
+    this.db.prepare("DELETE FROM runs WHERE run_id = ?").run(runId);
+  }
+
+  /**
+   * ADR-022: list paused runs that have a reset time, used to re-schedule
+   * wake timers on daemon startup.
+   */
+  listPausedRunWithResetTime(): RunRecord[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM runs WHERE status = 'paused' AND reset_at_ms IS NOT NULL ORDER BY reset_at_ms ASC",
+    ).all() as any[];
+    return rows.map(r => this.rowToRecord(r));
   }
 
   private rowToRecord(row: any): RunRecord {

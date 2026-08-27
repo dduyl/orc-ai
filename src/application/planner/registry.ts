@@ -37,10 +37,12 @@ export class WorkflowRegistry {
   private workflows: Map<string, RegisteredWorkflow> = new Map();
   private dir: string;
   private builtinDir: string;
+  private projectDir?: string;
 
-  constructor(opts?: { userDir?: string; builtinDir?: string }) {
+  constructor(opts?: { userDir?: string; builtinDir?: string; projectDir?: string }) {
     this.dir = opts?.userDir || join(homedir(), ".orc", "workflows");
     this.builtinDir = opts?.builtinDir || resolveBuiltinDir();
+    this.projectDir = opts?.projectDir;
   }
 
   loadAll(): RegisteredWorkflow[] {
@@ -68,6 +70,30 @@ export class WorkflowRegistry {
       const entries = readdirSync(this.dir);
       for (const file of entries) {
         const filePath = join(this.dir, file);
+        const ext = extname(file).toLowerCase();
+        let definition: WD | null = null;
+        if (ext === ".yaml" || ext === ".yml") {
+          definition = loadYamlFile(filePath);
+        } else if (ext === ".json") {
+          definition = loadJsonFile(filePath);
+        }
+        if (definition) {
+          this.workflows.set(definition.workflow.id, {
+            id: definition.workflow.id,
+            name: definition.workflow.name,
+            filePath,
+            definition,
+          });
+        }
+      }
+    }
+
+    // Load from project dir (.orc/workflows/) — overrides user/builtin with same ID
+    const projectWorkflowsDir = this.projectDir ? join(this.projectDir, ".orc", "workflows") : undefined;
+    if (projectWorkflowsDir && existsSync(projectWorkflowsDir)) {
+      const entries = readdirSync(projectWorkflowsDir);
+      for (const file of entries) {
+        const filePath = join(projectWorkflowsDir, file);
         const ext = extname(file).toLowerCase();
         let definition: WD | null = null;
         if (ext === ".yaml" || ext === ".yml") {

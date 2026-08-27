@@ -203,7 +203,19 @@ export class DaemonServer {
     setupInfrastructure();
     reconcileStaleRuns(this.host);
     // Paused runs survive restarts — re-arm their quota wakes so they resume.
-    reconcilePausedRuns(this.host);
+    // Create an AbortController for each reconciled run so it participates in
+    // the daemon's cancel/registration fan-out: a cancel during the pause
+    // window aborts the resume, and the eventual workflow_complete still
+    // reaches the daemon's cleanup path.
+    reconcilePausedRuns(this.host, (runId) => {
+      const controller = new AbortController();
+      this.controllers.set(runId, controller);
+      this.activeRunIds.add(runId);
+      return {
+        signal: controller.signal,
+        onEvent: (event) => this.onRunEvent(event),
+      };
+    });
     if (this.mcp) {
       this.mcpServer = new McpServer(this.host, () => this.touch());
       await this.mcpServer.startHttp(this.mcp.port);

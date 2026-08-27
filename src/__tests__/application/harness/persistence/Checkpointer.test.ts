@@ -123,4 +123,82 @@ describe("Checkpointer", () => {
     expect("quota" in plain.context).toBe(false);
     cp.close();
   });
+
+  it("returns null for corrupted JSON in step_results (graceful degradation)", () => {
+    const dbPath = tmpDb();
+    const dir = path.dirname(dbPath);
+    fs.mkdirSync(dir, { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    db.exec(`CREATE TABLE checkpoints (
+        task_id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL,
+        session_id TEXT NOT NULL DEFAULT '',
+        agent_id TEXT NOT NULL DEFAULT '',
+        run_id TEXT NOT NULL DEFAULT '',
+        step_results TEXT NOT NULL DEFAULT '{}',
+        context TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`);
+    db.prepare(
+      "INSERT INTO checkpoints (task_id, workflow_id, session_id, agent_id, run_id, step_results, context) VALUES (?,?,?,?,?,?,?)",
+    ).run("corrupt", "wf-1", "sess-1", "opencode", "", "{bad json!!!", "{}");
+    db.close();
+
+    const cp = new Checkpointer(dbPath);
+    const loaded = cp.load("corrupt");
+    // Corrupted JSON → treated as empty checkpoint (null)
+    expect(loaded).toBeNull();
+    cp.close();
+  });
+
+  it("preserves full StepOutcome fields (signal, summary, artifact, failureReason, quota) across save/load", () => {
+    const cp = new Checkpointer(tmpDb());
+    const quotaPayload = { kind: "quota" as const, resetAtMs: 1755600000000, message: "rate limit", downgradedTo: "claude-haiku" };
+    cp.save("full-task", {
+      workflowId: "wf-full",
+      sessionId: "sess-full",
+      agentId: "opencode",
+      stepResults: {
+        stepA: {
+          status: "completed",
+          output: "result text",
+          retries: 0,
+          signal: "sig_passed",
+          summary: "All tests passed",
+          artifact: '{"type":"code","language":"ts"}',
+          affectedFiles: ["src/foo.ts", "src/bar.ts"],
+        },
+        stepB: {
+          status: "failed",
+          error: "timeout after 30s",
+          retries: 2,
+          failureReason: "timeout",
+          quota: quotaPayload,
+          downgradedTo: "gpt-4o-mini",
+          providerFailover: "anthropic",
+          needsHuman: true,
+        },
+      },
+      context: { task: "full-task" },
+    });
+
+    const loaded = cp.load("full-task")!;
+    expect(loaded).not.toBeNull();
+
+    const a = loaded.stepResults.stepA;
+    expect(a.signal).toBe("sig_passed");
+    expect(a.summary).toBe("All tests passed");
+    expect(a.artifact).toBe('{"type":"code","language":"ts"}');
+    expect(a.affectedFiles).toEqual(["src/foo.ts", "src/bar.ts"]);
+
+    const b = loaded.stepResults.stepB;
+    expect(b.failureReason).toBe("timeout");
+    expect(b.quota).toEqual(quotaPayload);
+    expect(b.downgradedTo).toBe("gpt-4o-mini");
+    expect(b.providerFailover).toBe("anthropic");
+    expect(b.needsHuman).toBe(true);
+    expect(b.error).toBe("timeout after 30s");
+
+    cp.close();
+  });
 });

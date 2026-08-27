@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import type { HookEvent } from "../../../core/hooks.js";
+import type { QuotaInfo } from "../../agents/errors.js";
 
 export interface StepResumeSnapshot {
   status: "completed" | "failed";
@@ -9,6 +10,16 @@ export interface StepResumeSnapshot {
   error?: string;
   retries: number;
   hooks?: HookEvent[];
+  /** The signal name the step emitted on completion (needed to re-seed the signal graph on resume). */
+  signal?: string;
+  summary?: string;
+  artifact?: string;
+  affectedFiles?: string[];
+  failureReason?: string;
+  quota?: QuotaInfo;
+  downgradedTo?: string;
+  providerFailover?: string;
+  needsHuman?: boolean;
 }
 
 export interface ResumeState {
@@ -86,15 +97,20 @@ export class Checkpointer {
   load(taskKey: string): ResumeState | null {
     const row = this.db.prepare("SELECT * FROM checkpoints WHERE task_id = ?").get(taskKey) as any;
     if (!row) return null;
-    return {
-      taskId: row.task_id,
-      workflowId: row.workflow_id,
-      sessionId: row.session_id,
-      agentId: row.agent_id || "",
-      runId: row.run_id || "",
-      stepResults: JSON.parse(row.step_results),
-      context: JSON.parse(row.context),
-    };
+    try {
+      return {
+        taskId: row.task_id,
+        workflowId: row.workflow_id,
+        sessionId: row.session_id,
+        agentId: row.agent_id || "",
+        runId: row.run_id || "",
+        stepResults: JSON.parse(row.step_results),
+        context: JSON.parse(row.context),
+      };
+    } catch {
+      // Corrupted JSON — treat as empty checkpoint so the run restarts cleanly.
+      return null;
+    }
   }
 
   /**

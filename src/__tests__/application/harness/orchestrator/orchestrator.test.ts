@@ -62,4 +62,173 @@ describe("Orchestrator", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("prunes checkpoint when all failures are cancelled (user cancel)", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "orc-orch-cancel-"));
+    const cp = fakeCheckpointer();
+    const ctrl = new AbortController();
+    try {
+      // Mock step handler to produce cancelled outcomes
+      vi.mocked(
+        (await import("../../../../application/harness/orchestrator/step-handler.js")).createStepHandler,
+      ).mockImplementationOnce(() => async (step: { id: string }) => ({
+        stepId: step.id, status: "failed" as const, error: "cancelled", retries: 0,
+      }));
+
+      const report = await orchestrate("cancel-task", {
+        adapter: { id: "test", command: "test", label: "test" } as AdapterDef,
+        plan: {
+          ...plan,
+          workflow: {
+            ...plan.workflow,
+            workflow: {
+              id: "w", name: "w", description: "d",
+              steps: [
+                { id: "s1", agent: "a", task: "t", emits: [{ name: "done", description: "d" }], on: ["__start__"] },
+              ],
+              completion: "done",
+            },
+          },
+        },
+        checkpointer: cp,
+        projectRoot: root,
+        signal: ctrl.signal,
+      });
+
+      // All steps should be failed with "cancelled" error
+      expect(report.outcomes.every(o => o.status === "failed" && o.error === "cancelled")).toBe(true);
+      // Checkpoint should be pruned — no useful recovery state
+      expect(cp.prune).toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does NOT prune checkpoint when failures are real errors (not cancelled)", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "orc-orch-fail-"));
+    const cp = fakeCheckpointer();
+    try {
+      vi.mocked(
+        (await import("../../../../application/harness/orchestrator/step-handler.js")).createStepHandler,
+      ).mockImplementationOnce(() => async (step: { id: string }) => ({
+        stepId: step.id, status: "failed" as const, error: "agent crashed", retries: 0,
+      }));
+
+      const report = await orchestrate("fail-task", {
+        adapter: { id: "test", command: "test", label: "test" } as AdapterDef,
+        plan: {
+          ...plan,
+          workflow: {
+            ...plan.workflow,
+            workflow: {
+              id: "w", name: "w", description: "d",
+              steps: [{ id: "s1", agent: "a", task: "t", emits: [{ name: "done", description: "d" }], on: ["__start__"] }],
+              completion: "done",
+            },
+          },
+        },
+        checkpointer: cp,
+        projectRoot: root,
+      });
+
+      expect(report.outcomes[0].error).toBe("agent crashed");
+      // Real failure → checkpoint preserved for debugging
+      expect(cp.prune).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("prunes checkpoint when all failures are cancelled or propagated-from-cancelled", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "orc-orch-mix1-"));
+    const cp = fakeCheckpointer();
+    try {
+      // Mock handler: s1 returns cancelled, everything else returns completed.
+      // s1 on __start__, s2 depends on s1.done.
+      // s1 returns cancelled → propagateFailure marks s2 with
+      // "upstream step 's1' failed". Both are semantically cancelled → prune.
+      vi.mocked(
+        (await import("../../../../application/harness/orchestrator/step-handler.js")).createStepHandler,
+      ).mockImplementation(() => async (step: { id: string }) => {
+        if (step.id === "s1") return { stepId: "s1", status: "failed" as const, error: "cancelled", retries: 0 };
+        return { stepId: step.id, status: "completed" as const, retries: 0 };
+      });
+
+      const report = await orchestrate("task", {
+        adapter: { id: "test", command: "test", label: "test" } as AdapterDef,
+        plan: {
+          ...plan,
+          workflow: {
+            ...plan.workflow,
+            workflow: {
+              id: "w", name: "w", description: "d",
+              steps: [
+                { id: "s1", agent: "a", task: "t", emits: [{ name: "done", description: "d" }], on: ["__start__"] },
+                { id: "s2", agent: "a", task: "t", emits: [{ name: "done", description: "d" }], on: ["s1.done"] },
+              ],
+              completion: "done",
+            },
+          },
+        },
+        checkpointer: cp,
+        projectRoot: root,
+      });
+
+      // s1 should be cancelled, s2 should be propagated failure
+      const s1 = report.outcomes.find(o => o.stepId === "s1");
+      const s2 = report.outcomes.find(o => o.stepId === "s2");
+      expect(s1?.error).toBe("cancelled");
+      expect(s2?.error).toBe("upstream step 's1' failed");
+      // All failures semantically cancelled → prune
+      expect(cp.prune).toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves checkpoint when mixed failures include real errors", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "orc-orch-mix2-"));
+    const cp = fakeCheckpointer();
+    try {
+      // Two independent steps (both on __start__), s2 first in array.
+      // Mock returns different results per step: s2 = "agent crashed", s1 = "cancelled".
+      // Both run through the handler (independent steps).
+      vi.mocked(
+        (await import("../../../../application/harness/orchestrator/step-handler.js")).createStepHandler,
+      ).mockImplementation(() => async (step: { id: string }) => {
+        if (step.id === "s1") return { stepId: "s1", status: "failed" as const, error: "cancelled", retries: 0 };
+        if (step.id === "s2") return { stepId: "s2", status: "failed" as const, error: "agent crashed", retries: 0 };
+        return { stepId: step.id, status: "completed" as const, retries: 0 };
+      });
+
+      const report = await orchestrate("task", {
+        adapter: { id: "test", command: "test", label: "test" } as AdapterDef,
+        plan: {
+          ...plan,
+          workflow: {
+            ...plan.workflow,
+            workflow: {
+              id: "w", name: "w", description: "d",
+              steps: [
+                { id: "s2", agent: "a", task: "t", emits: [{ name: "done", description: "d" }], on: ["__start__"] },
+                { id: "s1", agent: "a", task: "t", emits: [{ name: "done", description: "d" }], on: ["__start__"] },
+              ],
+              completion: "done",
+            },
+          },
+        },
+        checkpointer: cp,
+        projectRoot: root,
+      });
+
+      const s1 = report.outcomes.find(o => o.stepId === "s1");
+      const s2 = report.outcomes.find(o => o.stepId === "s2");
+      expect(s1?.error).toBe("cancelled");
+      expect(s2?.error).toBe("agent crashed");
+      // Mixed failure — real error present → preserve checkpoint
+      expect(cp.prune).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

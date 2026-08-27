@@ -829,6 +829,11 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     setActiveView("chat");
   }
+  if (e.key === "Escape" && busy) {
+    e.preventDefault();
+    api.cancelMain();
+    setBusy(true, "Cancelling…");
+  }
 });
 
 window.addEventListener("resize", fitTerm);

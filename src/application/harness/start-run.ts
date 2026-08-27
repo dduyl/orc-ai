@@ -86,13 +86,20 @@ export async function startRun(
   // metadata) so run history and steps_json survive instead of a PK conflict.
   const existing = resume ? host.tracker.getRun(runId) : null;
   if (existing) {
+    // Atomically claim the paused run.  If another daemon worker already
+    // claimed it (tryResumeRun returns false), bail out to avoid a double
+    // resume / duplicate orchestrate() loop.
+    if (!host.tracker.tryResumeRun(runId)) {
+      // Another daemon worker already claimed this run — return early
+      // without launching a duplicate orchestration loop.
+      return { runId, workflowId, workflowName, status: "running", message: "already resumed by another worker" };
+    }
     // Disarm any pending wake timer for this runId: the run is being resumed
     // NOW (either by the wake firing, or by a manual resume that just claimed
     // this paused run). Without this, a manual resume of a paused run would
     // leave its scheduled auto-resume armed, firing a duplicate orchestrate()
     // on the same runId after the quota window elapsed.
     host.clearPausedRunResume(runId);
-    host.tracker.updateRunStatus(runId, "running");
   } else {
     host.tracker.createRun(runId, plan.workflow.workflow.id, workflowName, task, host.adapter.id, stepEntries);
   }
@@ -231,14 +238,23 @@ export function resolvePausedRunId(host: RunHost, task: string, workflowId: stri
  * auto-resume. Runs that already have a live background job (or a fresh timer)
  * are left untouched. Called once when the server starts, right after
  * `reconcileStaleRuns`.
+ *
+ * `optsFactory` is called per reconciled run to produce per-run `signal`/`onEvent`
+ * bindings so each run participates in the daemon's abort/registration fan-out:
+ * a cancel during the pause window aborts the resume, and the eventual
+ * workflow_complete still reaches the daemon's cleanup path.
  */
-export function reconcilePausedRuns(host: RunHost): void {
+export function reconcilePausedRuns(
+  host: RunHost,
+  optsFactory?: (runId: string) => { signal?: AbortSignal; onEvent?: (event: ProgressEvent) => void },
+): void {
   for (const run of host.tracker.listRuns()) {
     if (run.status === "paused" && !host.bgRuns.has(run.runId)) {
       log.warn(`[run ${run.runId}] Paused run found at startup — re-arming its quota wake`);
       // A resetAtMs that has already passed schedules an immediate wake
       // (delay clamps to 0) — the run resumes as soon as the daemon is up.
-      host.schedulePausedRunResume(run.runId, run.task, run.workflowId, run.resetAtMs ?? undefined);
+      const opts = optsFactory?.(run.runId);
+      host.schedulePausedRunResume(run.runId, run.task, run.workflowId, run.resetAtMs ?? undefined, opts);
     }
   }
 }

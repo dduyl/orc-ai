@@ -9,6 +9,11 @@ export function resolvePipeOverride(optPipe?: string): string | undefined {
   return optPipe || process.env["ORC_PIPE"];
 }
 
+/** Resolve the project directory from CLI option or cwd. */
+export function resolveProjectDir(optProjectDir?: string): string | undefined {
+  return optProjectDir || process.env["ORC_PROJECT_DIR"];
+}
+
 const DEFAULT_MCP_PORT = 3100;
 
 /**
@@ -40,12 +45,14 @@ export async function daemonStart(
   pipe?: string,
   mcp: { port: number } | false = { port: DEFAULT_MCP_PORT },
   mainMode: MainMode = "pty",
+  projectDir?: string,
 ): Promise<void> {
   // setupInfrastructure + reconcileStaleRuns run once inside DaemonServer.start().
   const mcpPort = mcp ? mcp.port : undefined;
   const daemon = new DaemonServer({
     pipeOverride: pipe,
     mcp,
+    projectDir,
     // `--main acp` (Phase 3) hosts the persistent ACP main session instead of
     // the interactive PTY; the GUI demuxes `MainFrame`s off the main pipe and
     // drives it over `prompt`/`cancelMain`/`answerPermission`.
@@ -133,12 +140,14 @@ export function registerDaemonCommands(parent: Command): void {
     .option("--mcp-port <port>", "port for the hosted MCP HTTP server (default 3100)")
     .option("--no-mcp", "run pipes-only, without hosting MCP HTTP")
     .option("--main <mode>", "main terminal mode: pty (default) or acp")
+    .option("--project-dir <path>", "project directory for per-project isolation")
     .description("Start the daemon in the foreground (control pipe + optional MCP :3100)")
-    .action((opts: { pipe?: string; mcpPort?: string; mcp?: boolean; main?: string }) =>
+    .action((opts: { pipe?: string; mcpPort?: string; mcp?: boolean; main?: string; projectDir?: string }) =>
       daemonStart(
         resolvePipeOverride(opts.pipe),
         resolveMcpOption(opts.mcp === false, opts.mcpPort),
         resolveMainMode(opts.main),
+        resolveProjectDir(opts.projectDir),
       ));
   daemon
     .command("attach")
