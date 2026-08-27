@@ -9,7 +9,7 @@ export function buildResponseInstructions(
   const instructions: string[] = [
     `=== Response Instructions ===`,
     `When you are done, call the \`return_result\` tool with:`,
-    `- summary: what you accomplished`,
+    `- summary: concise 1-2 sentence summary of what was accomplished (ADR-024: sufficient for routing and review, not a verbose narrative)`,
     `- artifact: path to the generated artifact (or "" if none)`,
     `- affectedFiles: array of files created or modified`,
   ];
