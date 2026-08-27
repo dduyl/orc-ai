@@ -123,4 +123,31 @@ describe("Checkpointer", () => {
     expect("quota" in plain.context).toBe(false);
     cp.close();
   });
+
+  it("returns null for corrupted JSON in step_results (graceful degradation)", () => {
+    const dbPath = tmpDb();
+    const dir = path.dirname(dbPath);
+    fs.mkdirSync(dir, { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    db.exec(`CREATE TABLE checkpoints (
+        task_id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL,
+        session_id TEXT NOT NULL DEFAULT '',
+        agent_id TEXT NOT NULL DEFAULT '',
+        run_id TEXT NOT NULL DEFAULT '',
+        step_results TEXT NOT NULL DEFAULT '{}',
+        context TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`);
+    db.prepare(
+      "INSERT INTO checkpoints (task_id, workflow_id, session_id, agent_id, run_id, step_results, context) VALUES (?,?,?,?,?,?,?)",
+    ).run("corrupt", "wf-1", "sess-1", "opencode", "", "{bad json!!!", "{}");
+    db.close();
+
+    const cp = new Checkpointer(dbPath);
+    const loaded = cp.load("corrupt");
+    // Corrupted JSON → treated as empty checkpoint (null)
+    expect(loaded).toBeNull();
+    cp.close();
+  });
 });

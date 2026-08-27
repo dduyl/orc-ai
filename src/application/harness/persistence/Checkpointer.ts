@@ -88,15 +88,20 @@ export class Checkpointer {
   load(taskKey: string): ResumeState | null {
     const row = this.db.prepare("SELECT * FROM checkpoints WHERE task_id = ?").get(taskKey) as any;
     if (!row) return null;
-    return {
-      taskId: row.task_id,
-      workflowId: row.workflow_id,
-      sessionId: row.session_id,
-      agentId: row.agent_id || "",
-      runId: row.run_id || "",
-      stepResults: JSON.parse(row.step_results),
-      context: JSON.parse(row.context),
-    };
+    try {
+      return {
+        taskId: row.task_id,
+        workflowId: row.workflow_id,
+        sessionId: row.session_id,
+        agentId: row.agent_id || "",
+        runId: row.run_id || "",
+        stepResults: JSON.parse(row.step_results),
+        context: JSON.parse(row.context),
+      };
+    } catch {
+      // Corrupted JSON — treat as empty checkpoint so the run restarts cleanly.
+      return null;
+    }
   }
 
   /**
