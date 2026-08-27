@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import * as crypto from "node:crypto";
 import { log } from "../../../core/log.js";
 
 export interface WorktreeInfo {
@@ -28,6 +29,42 @@ export const DEFAULT_OWNERSHIP_RULES: Record<string, string[]> = {
   test_generation_frontend: ["src/__tests__/delivery", "src/workflows"],
 };
 
+/**
+ * Load ownership rules from `<projectDir>/.orc/worktrees.json`. Falls back to
+ * `DEFAULT_OWNERSHIP_RULES` when the config file is missing or unparseable.
+ */
+export function loadOwnershipRules(projectDir: string): Record<string, string[]> {
+  const configPath = join(projectDir, ".orc", "worktrees.json");
+  try {
+    if (existsSync(configPath)) {
+      const raw = readFileSync(configPath, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, string[]>;
+      }
+    }
+  } catch {
+    // Corrupted or unreadable config → fall back to defaults.
+  }
+  return DEFAULT_OWNERSHIP_RULES;
+}
+
+/**
+ * Derive a short, deterministic project hash from the project directory path.
+ * Used to namespace branches per-project and avoid collisions across projects.
+ */
+function projectHash(projectDir: string): string {
+  return crypto.createHash("sha256").update(projectDir).digest("hex").slice(0, 8);
+}
+
+/**
+ * Derive a project-namespaced branch name for a worktree step.
+ * Format: `orc/<projectHash>/<stepId>-<timestamp>`
+ */
+export function deriveBranchName(projectDir: string, stepId: string): string {
+  return `orc/${projectHash(projectDir)}/${stepId}-${Date.now()}`;
+}
+
 export class WorktreeManager {
   /**
    * Create an isolated Git worktree for parallel step execution (ADR-015).
@@ -42,7 +79,7 @@ export class WorktreeManager {
       mkdirSync(worktreesDir, { recursive: true });
     }
 
-    const branch = `orc-worktree-${stepId}-${Date.now()}`;
+    const branch = deriveBranchName(projectDir, stepId);
     const worktreePath = join(worktreesDir, stepId);
 
     // Clean up existing worktree path if present
