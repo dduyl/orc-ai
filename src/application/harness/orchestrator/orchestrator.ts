@@ -198,10 +198,23 @@ export async function orchestrate(
     // - All failures are user-cancelled (no real work to resume from)
     // A cancelled run's checkpoint holds no recovery value.
     if (report) {
-      const hasCancelledFailure = report.outcomes
+      // Collect step IDs that were directly cancelled by the user.
+      const cancelledIds = new Set(
+        report.outcomes
+          .filter(o => o.status === "failed" && o.error === "cancelled")
+          .map(o => o.stepId),
+      );
+      // Prune when every failure is either directly cancelled or a propagated
+      // upstream failure from a cancelled step.  Mixed failures (at least one
+      // real error) must preserve the checkpoint for debugging/resume.
+      const allFailuresCancelled = report.outcomes
         .filter(o => o.status === "failed")
-        .some(o => o.error === "cancelled");
-      if ((report.failed === 0 || hasCancelledFailure) && report.paused === 0) {
+        .every(o => {
+          if (o.error === "cancelled") return true;
+          const m = o.error?.match(/^upstream step '(.+)' failed$/);
+          return m ? cancelledIds.has(m[1]) : false;
+        });
+      if (allFailuresCancelled && report.paused === 0) {
         cp.prune(task, runId);
       }
     }
