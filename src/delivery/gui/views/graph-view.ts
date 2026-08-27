@@ -5,13 +5,19 @@ import type { WorkflowDefinition } from "../../../core/schemas.js";
 import type { StepStatusRecord } from "../../../application/harness/persistence/Tracker.js";
 import { api } from "../api.js";
 
+export interface GraphViewCallbacks {
+  onStepClick?: (stepId: string) => void;
+}
+
 export class GraphView {
   public canvas: GraphCanvas;
   private container: HTMLElement | null = null;
   private workflow: WorkflowDefinition | null = null;
   private stepStatus: StepStatusRecord[] = [];
+  private callbacks: GraphViewCallbacks;
 
-  constructor() {
+  constructor(callbacks: GraphViewCallbacks = {}) {
+    this.callbacks = callbacks;
     this.canvas = new GraphCanvas({
       onNodeClick: (stepId) => this.onNodeClick(stepId),
     });
@@ -96,5 +102,6 @@ export class GraphView {
 
   private onNodeClick(stepId: string): void {
     api.switchStep(stepId).catch(() => {});
+    this.callbacks.onStepClick?.(stepId);
   }
 }

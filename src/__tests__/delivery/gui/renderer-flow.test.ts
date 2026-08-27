@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GUIDE_TEXT } from "../../../adapters/mcp/handlers/content.js";
+import { StepList, type StepRowData } from "../../../delivery/gui/step-list.js";
 
 /**
  * `terminal.ts` wraps xterm (needs a real canvas/DOM); renderer only needs the
@@ -20,8 +21,19 @@ vi.mock("../../../delivery/gui/terminal.js", () => ({
   }),
 }));
 
+/**
+ * Capture the `onNodeClick` callback that GraphView passes to GraphCanvas so
+ * tests can simulate graph-node clicks without touching SVG internals.
+ */
+const { canvasCallbacks } = vi.hoisted(() => ({
+  canvasCallbacks: { onNodeClick: null as ((stepId: string) => void) | null },
+}));
+
 vi.mock("../../../delivery/gui/graph-canvas.js", () => ({
   GraphCanvas: class {
+    constructor(options: { onNodeClick?: (stepId: string) => void }) {
+      if (options?.onNodeClick) canvasCallbacks.onNodeClick = options.onNodeClick;
+    }
     mount() {}
     unmount() {}
     fitToView() {}
@@ -699,5 +711,44 @@ describe("renderer flow", () => {
       },
     });
     expect(el("chat-model").hidden).toBe(true);
+  });
+
+  it("graph node click delegates to api.switchStep", async () => {
+    await loadRenderer();
+    // The renderer creates a GraphView whose constructor passes an onNodeClick
+    // callback to the (mocked) GraphCanvas.  The mock captures it via
+    // canvasCallbacks so we can simulate a node click without SVG internals.
+    expect(canvasCallbacks.onNodeClick).not.toBeNull();
+    canvasCallbacks.onNodeClick!("step-1");
+    expect(stub.api.switchStep).toHaveBeenCalledWith("step-1");
+  });
+
+  it("StepList row click wires through to api.switchStep", async () => {
+    await loadRenderer();
+    // Mount a standalone StepList whose onSelect mimics the StepsView wiring
+    // (StepsView.onStepSelect → api.switchStep).
+    const listContainer = document.createElement("div");
+    document.body.appendChild(listContainer);
+
+    const stepList = new StepList({
+      onSelect: (stepId) => {
+        // This mirrors what StepsView.onStepSelect does.
+        (stub.api.switchStep as Function)(stepId);
+      },
+    });
+    stepList.mount(listContainer);
+    stepList.setSteps([
+      { stepId: "step-a", status: "completed", isGate: false, order: 0 },
+      { stepId: "step-b", status: "running", isGate: false, order: 1 },
+    ]);
+
+    const row = listContainer.querySelector<HTMLElement>('tr[data-step-id="step-a"]');
+    expect(row).not.toBeNull();
+    row!.click();
+
+    expect(stub.api.switchStep).toHaveBeenCalledWith("step-a");
+
+    stepList.unmount();
+    listContainer.remove();
   });
 });

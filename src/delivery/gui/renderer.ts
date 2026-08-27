@@ -24,7 +24,12 @@ const MAIN_STEP_ID = "__main__";
 const refs = getDomRefs();
 const { term, fit: fitTermBase } = createTerminal(refs.termContainer);
 const chat = new ChatView(refs.chatList);
-const graphView = new GraphView();
+const graphView = new GraphView({
+  onStepClick: (stepId) => {
+    setActiveView("steps");
+    stepsView.selectStep(stepId);
+  },
+});
 const stepsView = new StepsView();
 const terminalView = new TerminalView();
 const signalTrace = new SignalTrace();

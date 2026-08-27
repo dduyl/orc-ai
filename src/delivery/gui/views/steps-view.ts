@@ -42,6 +42,11 @@ export class StepsView {
     this.stepList.setSteps(rows);
   }
 
+  /** Programmatically select a step — highlights the row and fires onSelect. */
+  selectStep(stepId: string): void {
+    this.stepList.selectStep(stepId);
+  }
+
   private onStepSelect(stepId: string): void {
     api.switchStep(stepId).catch(() => {});
   }
