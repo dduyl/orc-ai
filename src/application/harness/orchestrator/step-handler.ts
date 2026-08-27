@@ -142,7 +142,7 @@ export function createStepHandler(options: {
   const { adapter, agentPrompts, completedSummaries, emitter, task, tracker, onProgress, commandExecutor, resolveDowngradeModel, projectRoot, modelRoutingConfig, resolveVariantTier: resolveTier, onProviderQuota } = options;
   const activeAdapter = adapter;
   const root = projectRoot ?? process.cwd();
-  const routingConfig = modelRoutingConfig ?? loadModelRoutingConfig();
+  const routingConfig = modelRoutingConfig ?? loadModelRoutingConfig(undefined, root);
   const tierResolver = resolveTier ?? ((role: string, complexity: Complexity) => resolveVariantTier(role, complexity, routingConfig));
   // A role is tiered if the user configured a variants entry for it or it is a
   // builtin tiered role. Only tiered roles pay the git-read cost of the

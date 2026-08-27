@@ -27,7 +27,7 @@ function pipeBase(projectDir?: string, override?: string): string {
     // terminal name derives cleanly from the same base.
     return override.replace(/\.sock$/, "");
   }
-  const key = hashKey(projectDir ?? process.cwd());
+  const key = hashKey(path.resolve(projectDir ?? process.cwd()));
   return process.platform === "win32"
     ? `\\\\.\\pipe\\orc-agent-${key}`
     : path.join(os.tmpdir(), `orc-agent-${key}`);
@@ -48,4 +48,16 @@ export function terminalPipePath(projectDir: string | undefined, runId: string, 
 export function mainPipePath(projectDir: string | undefined, override?: string): string {
   const base = pipeBase(projectDir, override);
   return process.platform === "win32" ? `${base}-main` : `${base}-main.sock`;
+}
+
+/**
+ * Derive a per-project MCP port from the pipe name hash.
+ * Uses the lower 16 bits of the hash mapped to the 1024–65535 range.
+ */
+export function deriveMcpPort(projectDir?: string, override?: string): number {
+  const base = pipeBase(projectDir, override);
+  const hash = crypto.createHash("sha256").update(base).digest();
+  // Use lower 2 bytes for port, mapped to 1024–65535 range
+  const raw = hash.readUInt16LE(0);
+  return 1024 + (raw % (65535 - 1024 + 1));
 }

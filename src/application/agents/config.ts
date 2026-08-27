@@ -57,8 +57,22 @@ export function defaultConfigPath(): string {
  * (`variants`, `providers`, `tokenPaidApiKey`) is parsed
  * independently: a malformed block is dropped and logged, but never
  * disables the other blocks (ADR-021 M5).
+ *
+ * When `projectDir` is provided, `<projectDir>/.orc/config.json` is checked
+ * first and merged with the global config (project wins on conflict).
  */
-export function loadModelRoutingConfig(configPath: string = defaultConfigPath()): ModelRoutingConfig {
+export function loadModelRoutingConfig(configPath: string = defaultConfigPath(), projectDir?: string): ModelRoutingConfig {
+  // Load global config first
+  const globalConfig = loadConfigFromFile(configPath);
+  if (!projectDir) return globalConfig;
+
+  // Load project-level config and merge (project wins)
+  const projectConfigPath = path.join(projectDir, ".orc", "config.json");
+  const projectConfig = loadConfigFromFile(projectConfigPath);
+  return mergeConfigs(globalConfig, projectConfig);
+}
+
+function loadConfigFromFile(configPath: string): ModelRoutingConfig {
   const result: ModelRoutingConfig = {};
   try {
     const raw = fs.readFileSync(configPath, "utf8");
@@ -84,4 +98,12 @@ export function loadModelRoutingConfig(configPath: string = defaultConfigPath())
     // absent file / invalid JSON / unreadable path -> {}
   }
   return result;
+}
+
+function mergeConfigs(base: ModelRoutingConfig, override: ModelRoutingConfig): ModelRoutingConfig {
+  const merged: ModelRoutingConfig = { ...base };
+  if (override.variants) merged.variants = { ...base.variants, ...override.variants };
+  if (override.providers) merged.providers = { ...base.providers, ...override.providers };
+  if (override.tokenPaidApiKey) merged.tokenPaidApiKey = override.tokenPaidApiKey;
+  return merged;
 }

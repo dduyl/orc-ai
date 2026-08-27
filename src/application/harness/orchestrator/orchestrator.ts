@@ -51,7 +51,7 @@ export async function orchestrate(
     // ADR-021/ADR-022: the model-routing block and the providers the user has
     // credentials for, read once per run and shared by the quota-ladder
     // defaults below (the downgrade resolver and the failover seam).
-    const routingConfig = loadModelRoutingConfig();
+    const routingConfig = loadModelRoutingConfig(undefined, root);
     const configuredProviders = readConfiguredProviders(routingConfig);
 
     const handler = createStepHandler({
