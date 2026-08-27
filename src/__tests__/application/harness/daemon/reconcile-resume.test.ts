@@ -136,7 +136,7 @@ describe("E3 lifecycle verify-only", () => {
       ]);
       const runTracker: RunTracker = { runId: "resume-run", tracker };
       const events: { type: string; stepId?: string }[] = [];
-      const res = restoreSession("demo", true, cp, runTracker, e => events.push(e as any));
+      const res = restoreSession("demo", true, cp, "smoke", runTracker, e => events.push(e as any));
 
       expect(res.sessionId).toBe("seed-session");
       expect([...res.restoredStepResults.keys()].sort()).toEqual(["gate"]);
@@ -150,7 +150,7 @@ describe("E3 lifecycle verify-only", () => {
     it("starts fresh when resume:true but no checkpoint exists", () => {
       const dir = tmpDir("cp2");
       const cp = new Checkpointer(path.join(dir, "checkpoints.sqlite"));
-      const res = restoreSession("nope", true, cp);
+      const res = restoreSession("nope", true, cp, "smoke");
       expect(res.sessionId.length).toBe(36); // a new UUID
       expect(res.restoredStepResults.size).toBe(0);
       cp.close();
@@ -178,11 +178,75 @@ describe("E3 lifecycle verify-only", () => {
         { stepId: "gate", agent: null, task: null, signals: [] },
       ]);
       const runTracker: RunTracker = { runId: "quota-run", tracker };
-      const res = restoreSession("quota-task", true, cp, runTracker, () => {});
+      const res = restoreSession("quota-task", true, cp, "smoke", runTracker, () => {});
 
       expect(res.sessionId).toBe("seed-session");
       expect(res.restoredStepResults.size).toBe(0);
       expect(tracker.getRun("quota-run")!.steps.find(s => s.stepId === "gate")!.status).toBe("pending");
+      cp.close();
+      tracker.close();
+    });
+
+    it("matching workflowId: restores step results normally", () => {
+      const dir = tmpDir("cp-match");
+      const cp = new Checkpointer(path.join(dir, "checkpoints.sqlite"));
+      cp.save("match-task", {
+        workflowId: "feat-impl",
+        sessionId: "seed-session",
+        agentId: "test",
+        stepResults: {
+          spec: { status: "completed", retries: 0 },
+          code: { status: "completed", retries: 1 },
+        },
+        context: { task: "match-task" },
+      });
+
+      const tracker = new Tracker(path.join(dir, "runs.sqlite"));
+      tracker.createRun("match-run", "feat-impl", "feat-impl", "match-task", "test", [
+        { stepId: "spec", agent: null, task: null, signals: [] },
+        { stepId: "code", agent: null, task: null, signals: [] },
+      ]);
+      const runTracker: RunTracker = { runId: "match-run", tracker };
+      const res = restoreSession("match-task", true, cp, "feat-impl", runTracker, () => {});
+
+      expect(res.sessionId).toBe("seed-session");
+      expect([...res.restoredStepResults.keys()].sort()).toEqual(["code", "spec"]);
+      expect(tracker.getRun("match-run")!.steps.find(s => s.stepId === "spec")!.status).toBe("completed");
+      expect(tracker.getRun("match-run")!.steps.find(s => s.stepId === "code")!.status).toBe("completed");
+      cp.close();
+      tracker.close();
+    });
+
+    it("mismatched workflowId: treats as no checkpoint (fresh start)", () => {
+      const dir = tmpDir("cp-mismatch");
+      const cp = new Checkpointer(path.join(dir, "checkpoints.sqlite"));
+      cp.save("mismatch-task", {
+        workflowId: "feat-impl",
+        sessionId: "seed-session",
+        agentId: "test",
+        stepResults: {
+          spec: { status: "completed", retries: 0 },
+          code: { status: "completed", retries: 1 },
+        },
+        context: { task: "mismatch-task" },
+      });
+
+      const tracker = new Tracker(path.join(dir, "runs.sqlite"));
+      tracker.createRun("mismatch-run", "bug-fix", "bug-fix", "mismatch-task", "test", [
+        { stepId: "spec", agent: null, task: null, signals: [] },
+        { stepId: "code", agent: null, task: null, signals: [] },
+      ]);
+      const runTracker: RunTracker = { runId: "mismatch-run", tracker };
+      const res = restoreSession("mismatch-task", true, cp, "bug-fix", runTracker, () => {});
+
+      // New session ID generated (not the checkpoint's seed-session)
+      expect(res.sessionId).not.toBe("seed-session");
+      expect(res.sessionId.length).toBe(36);
+      // No step results restored
+      expect(res.restoredStepResults.size).toBe(0);
+      // Tracker steps remain pending
+      expect(tracker.getRun("mismatch-run")!.steps.find(s => s.stepId === "spec")!.status).toBe("pending");
+      expect(tracker.getRun("mismatch-run")!.steps.find(s => s.stepId === "code")!.status).toBe("pending");
       cp.close();
       tracker.close();
     });

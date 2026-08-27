@@ -41,7 +41,7 @@ export async function orchestrate(
   try {
     const activeAdapter = adapter;
 
-    const { sessionId, restoredStepResults } = restoreSession(task, resume, cp, tracker, onProgress);
+    const { sessionId, restoredStepResults } = restoreSession(task, resume, cp, plan.workflow.workflow.id, tracker, onProgress);
 
     const agentPrompts = loadAgentSystemPrompts();
     const allOutcomes: import("../execution/step-runner.js").StepOutcome[] = [];

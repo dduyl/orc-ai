@@ -13,6 +13,7 @@ export function restoreSession(
   task: string,
   resume: boolean | undefined,
   cp: Checkpointer,
+  workflowId: string,
   tracker?: RunTracker,
   onProgress?: (event: ProgressEvent) => void,
 ): ResumeResult {
@@ -22,39 +23,44 @@ export function restoreSession(
   if (resume) {
     const existing = cp.load(task);
     if (existing) {
-      sessionId = existing.sessionId;
-      for (const [stepId, r] of Object.entries(existing.stepResults)) {
-        if (r.status !== "failed") {
-          restoredStepResults.set(stepId, {
-            stepId,
-            status: r.status,
-            output: r.output,
-            error: r.error,
-            retries: r.retries,
-            hooks: r.hooks,
-            signal: r.signal,
-            summary: r.summary,
-            artifact: r.artifact,
-            affectedFiles: r.affectedFiles,
-            failureReason: r.failureReason,
-            quota: r.quota,
-            downgradedTo: r.downgradedTo,
-            providerFailover: r.providerFailover,
-            needsHuman: r.needsHuman,
-          });
+      // Guard: if the checkpoint's workflowId doesn't match the current workflow,
+      // treat as no checkpoint (fresh start). Prevents stale step results from
+      // being restored when the user switches workflows (e.g., feat-impl -> bug-fix).
+      if (existing.workflowId !== workflowId) {
+        log.warn(`[resume] Checkpoint workflowId "${existing.workflowId}" does not match current "${workflowId}" — starting fresh`);
+        sessionId = crypto.randomUUID();
+      } else {
+        sessionId = existing.sessionId;
+        for (const [stepId, r] of Object.entries(existing.stepResults)) {
+          if (r.status !== "failed") {
+            restoredStepResults.set(stepId, {
+              stepId,
+              status: r.status,
+              output: r.output,
+              error: r.error,
+              retries: r.retries,
+              hooks: r.hooks,
+              signal: r.signal,
+              summary: r.summary,
+              artifact: r.artifact,
+              affectedFiles: r.affectedFiles,
+              failureReason: r.failureReason,
+              quota: r.quota,
+              downgradedTo: r.downgradedTo,
+              providerFailover: r.providerFailover,
+              needsHuman: r.needsHuman,
+            });
+          }
         }
-      }
-      log.info(`[resume] Restored ${restoredStepResults.size}/${Object.keys(existing.stepResults).length} completed steps (session=${sessionId})`);
-      if (tracker) {
-        const run = tracker.tracker.getRun(tracker.runId);
-        if (run) {
-          for (const [stepId, r] of restoredStepResults) {
-            // Only non-failed steps are restored, and StepResumeSnapshot.status
-            // is "completed" | "failed" — so every restored row is "completed".
-            // Narrow explicitly: StepOutcome.status also carries "paused".
-            if (r.status === "completed") {
-              tracker.tracker.setStepCompleted(tracker.runId, stepId, "completed", r.error);
-              onProgress?.({ type: "step_complete", runId: tracker.runId, stepId, status: "completed", error: r.error });
+        log.info(`[resume] Restored ${restoredStepResults.size}/${Object.keys(existing.stepResults).length} completed steps (session=${sessionId})`);
+        if (tracker) {
+          const run = tracker.tracker.getRun(tracker.runId);
+          if (run) {
+            for (const [stepId, r] of restoredStepResults) {
+              if (r.status === "completed") {
+                tracker.tracker.setStepCompleted(tracker.runId, stepId, "completed", r.error);
+                onProgress?.({ type: "step_complete", runId: tracker.runId, stepId, status: "completed", error: r.error });
+              }
             }
           }
         }
