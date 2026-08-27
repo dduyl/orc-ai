@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import type { HookEvent } from "../../../core/hooks.js";
+import type { QuotaInfo } from "../../agents/errors.js";
 
 export interface StepResumeSnapshot {
   status: "completed" | "failed";
@@ -11,6 +12,14 @@ export interface StepResumeSnapshot {
   hooks?: HookEvent[];
   /** The signal name the step emitted on completion (needed to re-seed the signal graph on resume). */
   signal?: string;
+  summary?: string;
+  artifact?: string;
+  affectedFiles?: string[];
+  failureReason?: string;
+  quota?: QuotaInfo;
+  downgradedTo?: string;
+  providerFailover?: string;
+  needsHuman?: boolean;
 }
 
 export interface ResumeState {

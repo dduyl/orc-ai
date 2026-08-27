@@ -25,7 +25,23 @@ export function restoreSession(
       sessionId = existing.sessionId;
       for (const [stepId, r] of Object.entries(existing.stepResults)) {
         if (r.status !== "failed") {
-          restoredStepResults.set(stepId, { stepId, status: r.status, output: r.output, error: r.error, retries: r.retries, hooks: r.hooks, signal: r.signal });
+          restoredStepResults.set(stepId, {
+            stepId,
+            status: r.status,
+            output: r.output,
+            error: r.error,
+            retries: r.retries,
+            hooks: r.hooks,
+            signal: r.signal,
+            summary: r.summary,
+            artifact: r.artifact,
+            affectedFiles: r.affectedFiles,
+            failureReason: r.failureReason,
+            quota: r.quota,
+            downgradedTo: r.downgradedTo,
+            providerFailover: r.providerFailover,
+            needsHuman: r.needsHuman,
+          });
         }
       }
       log.info(`[resume] Restored ${restoredStepResults.size}/${Object.keys(existing.stepResults).length} completed steps (session=${sessionId})`);
