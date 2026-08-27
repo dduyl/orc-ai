@@ -117,6 +117,11 @@ export class Tracker {
     return rows.map(r => this.rowToRecord(r));
   }
 
+  listActiveRuns(): RunRecord[] {
+    const rows = this.db.prepare("SELECT * FROM runs WHERE status IN ('running', 'paused') ORDER BY created_at DESC").all() as any[];
+    return rows.map(r => this.rowToRecord(r));
+  }
+
   /**
    * Atomically attempt to resume a paused run: `UPDATE ... WHERE status = 'paused'`.
    * Returns `true` if this call won the race (1 row affected), `false` if
