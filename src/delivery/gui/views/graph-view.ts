@@ -15,6 +15,8 @@ export class GraphView {
   private workflow: WorkflowDefinition | null = null;
   private stepStatus: StepStatusRecord[] = [];
   private callbacks: GraphViewCallbacks;
+  private zoomLabel: HTMLElement | null = null;
+  private hint: HTMLElement | null = null;
 
   constructor(callbacks: GraphViewCallbacks = {}) {
     this.callbacks = callbacks;
@@ -28,16 +30,47 @@ export class GraphView {
     container.innerHTML = `
       <div class="graph-header">
         <h3 class="section-title">Signal Graph</h3>
-        <button id="graph-fit" class="btn" title="Fit to view">⟲ Fit</button>
+        <div class="graph-zoom-controls">
+          <button id="graph-zoom-out" class="btn btn-icon" title="Zoom out (−)">−</button>
+          <span id="graph-zoom-level" class="graph-zoom-level">100%</span>
+          <button id="graph-zoom-in" class="btn btn-icon" title="Zoom in (+)">+</button>
+          <button id="graph-fit" class="btn" title="Fit to view (Esc)">⟲ Fit</button>
+        </div>
       </div>
-      <div id="graph-canvas" class="graph-canvas"></div>
+      <div id="graph-canvas" class="graph-canvas">
+        <div class="graph-hint" id="graph-hint">Scroll to zoom · Drag to pan · Double-click to fit</div>
+      </div>
     `;
 
     const canvasContainer = container.querySelector("#graph-canvas") as HTMLElement;
+    const zoomInBtn = container.querySelector("#graph-zoom-in") as HTMLButtonElement;
+    const zoomOutBtn = container.querySelector("#graph-zoom-out") as HTMLButtonElement;
     const fitBtn = container.querySelector("#graph-fit") as HTMLButtonElement;
-    fitBtn?.addEventListener("click", () => this.canvas.fitToView());
+    this.zoomLabel = container.querySelector("#graph-zoom-level") as HTMLElement;
+    this.hint = container.querySelector("#graph-hint") as HTMLElement;
+
+    zoomInBtn?.addEventListener("click", () => { this.canvas.zoomIn(); this.updateZoomLabel(); });
+    zoomOutBtn?.addEventListener("click", () => { this.canvas.zoomOut(); this.updateZoomLabel(); });
+    fitBtn?.addEventListener("click", () => { this.canvas.fitToView(); this.updateZoomLabel(); });
 
     this.canvas.mount(canvasContainer);
+
+    // Fade hint on first interaction
+    const fadeHint = () => {
+      this.hint?.classList.add("fading");
+      canvasContainer.removeEventListener("wheel", fadeHint);
+      canvasContainer.removeEventListener("mousedown", fadeHint);
+    };
+    canvasContainer.addEventListener("wheel", fadeHint, { once: true });
+    canvasContainer.addEventListener("mousedown", fadeHint, { once: true });
+    // Auto-fade after 4s
+    setTimeout(() => this.hint?.classList.add("fading"), 4000);
+  }
+
+  private updateZoomLabel(): void {
+    if (this.zoomLabel) {
+      this.zoomLabel.textContent = `${Math.round(this.canvas.getZoom() * 100)}%`;
+    }
   }
 
   unmount(): void {
@@ -98,6 +131,7 @@ export class GraphView {
 
   fitToView(): void {
     this.canvas.fitToView();
+    this.updateZoomLabel();
   }
 
   private onNodeClick(stepId: string): void {

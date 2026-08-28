@@ -110,6 +110,7 @@ export async function startRun(
 
   const notify = (event: ProgressEvent): void => {
     opts?.onEvent?.(event);
+    host.onEvent?.(event);
     host.onProgress(event);
   };
 

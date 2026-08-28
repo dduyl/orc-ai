@@ -117,10 +117,34 @@ body::before {
 /* ══ Chat view ══ */
 #chat-view { flex: 1; display: none; flex-direction: column; min-height: 0; }
 #chat-view.active { display: flex; }
+#chat-tabs {
+  display: flex; gap: 0; min-height: 32px; max-height: 32px;
+  overflow-x: auto; overflow-y: hidden;
+  background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle);
+}
+#chat-tabs:empty { display: none; }
+.chat-tab {
+  border: 0; background: transparent; color: var(--text-secondary);
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.3px;
+  padding: 7px 10px; cursor: pointer; white-space: nowrap;
+  position: relative; transition: color var(--dur-fast) var(--ease-out);
+  border-right: 1px solid var(--border-subtle);
+  display: flex; align-items: center; gap: 6px;
+}
+.chat-tab:hover { color: var(--text-primary); background: var(--bg-raised); }
+.chat-tab.active { color: var(--accent); }
+.chat-tab.active::after {
+  content: ""; position: absolute; left: 6px; right: 6px; bottom: 0;
+  height: 2px; background: var(--accent);
+}
+.chat-tab-close {
+  border: 0; background: transparent; color: var(--text-faint);
+  font-size: 13px; line-height: 1; padding: 0 2px; cursor: pointer;
+  border-radius: 2px; transition: all var(--dur-fast);
+}
+.chat-tab-close:hover { color: var(--err); background: rgba(255,107,107,0.12); }
 #chat-scroll { flex: 1; overflow-y: auto; padding: var(--space-5) var(--space-6); }
 #chat-scroll::-webkit-scrollbar { width: 8px; }
-
-#chat-list { display: flex; flex-direction: column; gap: var(--space-4); max-width: 860px; margin: 0 auto; }
 
 .msg { animation: reveal var(--dur-med) var(--ease-out); }
 @keyframes reveal { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
@@ -328,22 +352,36 @@ body::before {
 .gate-indicator.running { fill: var(--accent); }
 .gate-indicator.failed { fill: var(--err); }
 .gate-indicator.pending { fill: var(--text-faint); }
+.graph-zoom-controls { display: flex; align-items: center; gap: 4px; }
+.graph-zoom-controls .btn-icon {
+  width: 24px; height: 24px; padding: 0; font-size: 14px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-inset); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+  color: var(--text-secondary); cursor: pointer; transition: all var(--dur-fast);
+}
+.graph-zoom-controls .btn-icon:hover { background: var(--bg-raised); color: var(--text-primary); border-color: var(--border-strong); }
+.graph-zoom-level {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-faint);
+  min-width: 36px; text-align: center; user-select: none;
+}
+.graph-hint {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; color: var(--text-faint); background: var(--bg-surface);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+  padding: 4px 12px; pointer-events: none; z-index: 10;
+  opacity: 1; transition: opacity 0.6s ease;
+}
+.graph-hint.fading { opacity: 0; }
 
 /* ══ Steps view ══ */
 #steps-view { flex: 1; display: none; flex-direction: column; min-height: 0; overflow: hidden; }
 #steps-view.active { display: flex; }
-#steps-split { display: flex; flex: 1; min-height: 0; }
 #steps-table-container { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-#step-chat-panel { width: 400px; border-left: 1px solid var(--border-subtle); overflow: hidden; display: flex; flex-direction: column; background: var(--bg-surface); }
-#step-chat-header { display: flex; align-items: center; gap: 8px; height: 32px; min-height: 32px; padding: 0 var(--space-3); background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); }
 .msg-error { color: #ef4444; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; padding: var(--space-2) var(--space-3); background: rgba(239,68,68,0.06); border-radius: var(--radius-sm); }
 .msg-error .error-header { display: flex; align-items: center; gap: 6px; }
 .msg-error .error-kind { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: rgba(239,68,68,0.15); color: #fca5a5; }
 .msg-error .error-detail { margin-top: 4px; font-size: 11px; color: var(--text-faint); }
-#step-chat-title { font-weight: 600; font-size: 12px; color: var(--text-primary); }
-#step-chat-status { font-size: 11px; color: var(--text-faint); }
-#step-chat-scroll { flex: 1; overflow-y: auto; padding: var(--space-3); }
-#step-chat-list { display: flex; flex-direction: column; gap: 4px; }
+.msg-agent-streaming { white-space: pre-wrap; }
 .step-list-header {
   display: flex; align-items: center; justify-content: space-between;
   height: 32px; min-height: 32px; padding: 0 var(--space-3);
@@ -661,32 +699,15 @@ body::before {
 
       <!-- Steps view -->
       <section id="steps-view">
-        <div id="steps-split">
-          <div id="steps-table-container">
-            <div class="muted-empty">› No active run</div>
-          </div>
-          <div id="step-chat-panel">
-            <div id="step-chat-header">
-              <span id="step-chat-title">Select a step</span>
-              <span id="step-chat-status"></span>
-            </div>
-            <div id="step-chat-scroll">
-              <div id="step-chat-list"></div>
-            </div>
-          </div>
+        <div id="steps-table-container">
+          <div class="muted-empty">› No active run</div>
         </div>
       </section>
 
       <!-- Chat view -->
       <section id="chat-view">
-        <div id="chat-scroll">
-          <div id="chat-list">
-            <div class="chat-empty">
-              <div>Waiting for a message…</div>
-              <div class="kbd">Chat runs over ACP · Synced with the ORC daemon</div>
-            </div>
-          </div>
-        </div>
+        <div id="chat-tabs"></div>
+        <div id="chat-scroll"></div>
         <div id="chat-inputbar">
           <div id="chat-busy" hidden>
             <span class="pip"></span>

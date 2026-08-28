@@ -4,7 +4,7 @@ import type { Tier, ProviderConfig } from "./config.js";
 import { classifyAgentError } from "./errors.js";
 import { HOOK_FILE_ENV } from "../../core/hooks.js";
 import { getStrategy } from "./strategy.js";
-import { acpEnabledFor, callAcpAgentStream } from "./adapter-acp.js";
+import { acpEnabledFor, callAcpAgentStream, type AcpChatFrame } from "./adapter-acp.js";
 import { getAgentCwd } from "./agent-cwd.js";
 import { createHookFile, readHookEvents, removeHookFile } from "../../adapters/hooks/endpoint.js";
 import { log } from "../../core/log.js";
@@ -37,6 +37,7 @@ export function callAgentStream(
   onProviderQuota?: OnProviderQuota,
   tokenPaid?: TokenPaidRequest,
   providerConfig?: ProviderConfig,
+  onStepChat?: (stepId: string, event: { textChunk?: string; chatFrame?: AcpChatFrame }) => void,
 ): AgentPTYStreamHandle {
   if (acpEnabledFor(adapter.id)) {
     return callAcpAgentStream(
@@ -50,6 +51,7 @@ export function callAgentStream(
       onProviderQuota,
       tokenPaid,
       providerConfig,
+      onStepChat,
     );
   }
 

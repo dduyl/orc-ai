@@ -72,6 +72,13 @@ export class RunHost {
    */
   readonly bgRuns = new Map<string, Promise<RunReport>>();
   private readonly ptySink?: PtySink;
+  /**
+   * Optional event observer wired by the daemon. When set, every progress
+   * event from `startRun` is forwarded here — this is how MCP-initiated
+   * runs participate in the daemon's event fan-out (broadcast to GUI
+   * clients, terminal store management, active-run tracking).
+   */
+  onEvent?: (event: ProgressEvent) => void;
   /** ADR-022: pending quota-resume wake timers, keyed by runId. */
   private readonly wakeTimers = new Map<string, NodeJS.Timeout>();
   /** ADR-022: override for the config-driven auto-resume delay. */

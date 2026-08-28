@@ -202,6 +202,10 @@ export class DaemonServer {
     // transport and must not re-run these.
     setupInfrastructure();
     reconcileStaleRuns(this.host);
+    // Wire the daemon's event fan-out into the host so MCP-initiated runs
+    // (which call startRun via the MCP handler) also broadcast progress to
+    // GUI clients, manage the terminal store, and track active runs.
+    this.host.onEvent = (event) => this.onRunEvent(event);
     // Paused runs survive restarts — re-arm their quota wakes so they resume.
     // Create an AbortController for each reconciled run so it participates in
     // the daemon's cancel/registration fan-out: a cancel during the pause

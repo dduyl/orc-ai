@@ -3,7 +3,8 @@ import type { ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
 import type { AdapterDef, AgentCallResult } from "./adapter.js";
 import type { Tier, ProviderConfig } from "./config.js";
 import { HOOK_FILE_ENV, type StepQuotaInfo } from "../../core/hooks.js";
-import type { AcpSpawnSpec, AgentUsage, OnProviderQuota, TokenPaidRequest } from "./acp/types.js";
+import type { AcpChatFrame, AcpSpawnSpec, AgentUsage, OnProviderQuota, TokenPaidRequest } from "./acp/types.js";
+export type { AcpChatFrame } from "./acp/types.js";
 import { gateFromEnv } from "./acp/permission.js";
 import { runAcpTurn } from "./acp/client.js";
 import { getAcpStrategy } from "./strategy.js";
@@ -125,6 +126,7 @@ export class AcpPtyFacade {
   }
 }
 
+/** ACP step-chat frame: structured event forwarded to the per-step chat tab. */
 export interface AgentACPStreamHandle {
   pty: IPty;
   promise: Promise<AgentCallResult>;
@@ -156,6 +158,7 @@ export function callAcpAgentStream(
   onProviderQuota?: OnProviderQuota,
   tokenPaid?: TokenPaidRequest,
   providerConfig?: ProviderConfig,
+  onStepChat?: (stepId: string, event: { textChunk?: string; chatFrame?: AcpChatFrame }) => void,
 ): AgentACPStreamHandle {
   const strat = getAcpStrategy(adapter.id);
   if (!strat || !strat.available) {
@@ -206,7 +209,10 @@ export function callAcpAgentStream(
     ...(tokenPaid ? { tokenPaid } : {}),
     ...(providerConfig ? { providerConfig } : {}),
     events: {
-      onText: text => facade.feed(text),
+      onText: text => {
+        facade.feed(text);
+        onStepChat?.(stepId, { textChunk: text });
+      },
       onToolCall: call => {
         toolCalls.push(call);
         try {
@@ -221,6 +227,7 @@ export function callAcpAgentStream(
         } catch (err) {
           log.warn(`acp: failed to render tool_call: ${(err as Error).message}`);
         }
+        onStepChat?.(stepId, { chatFrame: { type: "tool_call", call } });
       },
       onToolCallUpdate: update => {
         toolCallUpdates.push(update);
@@ -229,14 +236,17 @@ export function callAcpAgentStream(
         } catch (err) {
           log.warn(`acp: failed to render tool_call_update: ${(err as Error).message}`);
         }
+        onStepChat?.(stepId, { chatFrame: { type: "tool_update", update } });
       },
       onUsage: usage => {
         liveUsage = usage;
+        onStepChat?.(stepId, { chatFrame: { type: "usage", usage } });
       },
     },
   })
     .then(turn => {
       facade.finish(turn.stopReason === "cancelled" ? 1 : 0);
+      onStepChat?.(stepId, { chatFrame: { type: "turn_end", stopReason: turn.stopReason } });
       appendStepFinish(turn.stopReason, {
         total: turn.usage.totalTokens,
         input: turn.usage.inputTokens,
@@ -264,6 +274,7 @@ export function callAcpAgentStream(
     .catch((err: unknown) => {
       facade.finish(1);
       const agentErr = err instanceof AgentCallError ? err : classifyAgentError(err);
+      onStepChat?.(stepId, { chatFrame: { type: "error", message: agentErr.message ?? String(err) } });
       appendStepFinish(agentErr.kind === "quota" ? "quota" : "error", undefined, agentErr.kind === "quota" ? toQuotaInfo(agentErr) : undefined);
       if (!hookFilePath) removeHookFile(hookFile);
       throw err;

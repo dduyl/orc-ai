@@ -20,8 +20,14 @@ export class ChatView {
 
   private openText: { msg: HTMLElement; body: HTMLElement } | null = null;
   private turnSeq = 0;
+  private list: HTMLElement;
+  private scrollEl: HTMLElement;
 
-  constructor(private readonly list: HTMLElement) {}
+  constructor(list: HTMLElement, scrollEl?: HTMLElement) {
+    this.list = list;
+    this.scrollEl = scrollEl ?? list.parentElement as HTMLElement;
+    this.clear();
+  }
 
   clear(): void {
     this.list.innerHTML = "";
@@ -97,7 +103,7 @@ export class ChatView {
   }
 
   scrollBottom(): void {
-    const scroll = this.list.parentElement;
+    const scroll = this.scrollEl;
     if (!scroll) return;
     const nearBottom =
       scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < ChatView.SCROLL_THRESHOLD;

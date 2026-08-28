@@ -37,6 +37,7 @@ vi.mock("../../../delivery/gui/graph-canvas.js", () => ({
     mount() {}
     unmount() {}
     fitToView() {}
+    getZoom() { return 1; }
     updateNodeStatus() {}
     highlightEdge() {}
     getData() { return { nodes: [], edges: [] }; }
@@ -66,23 +67,13 @@ const DOM = `
       <div id="graph-view-container"></div>
     </section>
     <section id="steps-view">
-      <div id="steps-split">
-        <div id="steps-table-container">
-          <div class="muted-empty">› No active run</div>
-        </div>
-        <div id="step-chat-panel">
-          <div id="step-chat-header">
-            <span id="step-chat-title">Select a step</span>
-            <span id="step-chat-status"></span>
-          </div>
-          <div id="step-chat-scroll">
-            <div id="step-chat-list"></div>
-          </div>
-        </div>
+      <div id="steps-table-container">
+        <div class="muted-empty">› No active run</div>
       </div>
     </section>
     <section id="chat-view">
-      <div id="chat-scroll"><div id="chat-list"></div></div>
+      <div id="chat-tabs"></div>
+      <div id="chat-scroll"></div>
       <div id="chat-inputbar"><div id="chat-busy" hidden><span id="chat-busy-text">Agent is working.</span><button id="chat-cancel">Cancel</button></div></div>
       <div id="chat-suggestions"></div>
       <div id="chat-promptrow"><span id="chat-mode" class="chat-mode">normal</span><span id="chat-model" hidden></span><input id="chat-input"><button id="chat-send">Send</button><div id="chat-model-menu"></div></div>
@@ -177,6 +168,7 @@ function createApiStub(): {
     onGateResult: on("gateResult"),
     onLoopDetected: on("loopDetected"),
     onStepFrame: on("stepFrame"),
+    onStepChat: on("stepChat"),
     write: (...a: unknown[]) => (calls.write ??= []).push(a),
     prompt: vi.fn(async () => {}),
     cancelMain: (...a: unknown[]) => (calls.cancelMain ??= []).push(a),
@@ -234,6 +226,13 @@ function el(id: string): HTMLElement {
   return node;
 }
 
+/** Get the main tab's chat list (dynamically created in #chat-scroll-main). */
+function chatList(): HTMLElement {
+  const list = document.querySelector("#chat-scroll-main .chat-tab-list") as HTMLElement | null;
+  if (!list) throw new Error("missing main tab chat list");
+  return list;
+}
+
 describe("renderer flow", () => {
   let stub: Stub;
 
@@ -267,7 +266,7 @@ describe("renderer flow", () => {
     expect(el("info-mode").textContent).toBe("acp");
 
     fire("chatReset", {});
-    expect(el("chat-list").querySelector(".chat-empty")).not.toBeNull();
+    expect(chatList().querySelector(".chat-empty")).not.toBeNull();
   });
 
   it("routes chat frames into the panel and hugs the composer", async () => {
@@ -276,15 +275,15 @@ describe("renderer flow", () => {
 
     fire("chatFrame", { frame: { kind: "text", text: "one " } });
     fire("chatFrame", { frame: { kind: "text", text: "two" } });
-    expect(el("chat-list").querySelectorAll(".msg-agent").length).toBe(1);
-    expect(el("chat-list").querySelector(".msg-agent")?.textContent).toContain("one two");
+    expect(chatList().querySelectorAll(".msg-agent").length).toBe(1);
+    expect(chatList().querySelector(".msg-agent")?.textContent).toContain("one two");
 
     fire("chatFrame", {
       frame: { kind: "tool", call: { toolCallId: "t1", title: "grep", name: "grep" } },
     });
     const toolList = el("tool-list");
     expect(toolList.querySelector(".tool-entry")).not.toBeNull();
-    expect(el("chat-list").querySelector(".msg-tool")).toBeNull();
+    expect(chatList().querySelector(".msg-tool")).toBeNull();
 
     fire("chatFrame", {
       frame: { kind: "tool_update", update: { toolCallId: "t1", title: "grep", status: "completed" } },
@@ -298,16 +297,16 @@ describe("renderer flow", () => {
     expect(entry.classList.contains("expanded")).toBe(true);
 
     fire("chatFrame", { frame: { kind: "usage", usage: { totalTokens: 9, inputTokens: 4, outputTokens: 5 } } });
-    expect(el("chat-list").querySelector(".msg-usage")?.textContent).toContain("9");
+    expect(chatList().querySelector(".msg-usage")?.textContent).toContain("9");
 
     fire("chatFrame", { frame: { kind: "user", text: "hi" } });
-    expect(el("chat-list").querySelector(".msg-user")?.textContent).toBe("hi");
+    expect(chatList().querySelector(".msg-user")?.textContent).toBe("hi");
 
     fire("chatFrame", { frame: { kind: "error", message: "kaput" } });
-    expect(el("chat-list").querySelector(".msg-error")?.textContent).toContain("kaput");
+    expect(chatList().querySelector(".msg-error")?.textContent).toContain("kaput");
 
     fire("chatFrame", { frame: { kind: "turn", stopReason: "end_turn" } });
-    expect(el("chat-list").querySelector(".turn-end")).not.toBeNull();
+    expect(chatList().querySelector(".turn-end")).not.toBeNull();
   });
 
   it("submit sends the trimmed prompt and blocks input until a turn frame", async () => {
@@ -319,7 +318,7 @@ describe("renderer flow", () => {
     (el("chat-send") as HTMLButtonElement).click();
 
     expect(stub.api.prompt).toHaveBeenCalledWith("next step", []);
-    expect(el("chat-list").querySelector(".msg-user")?.textContent).toBe("next step");
+    expect(chatList().querySelector(".msg-user")?.textContent).toBe("next step");
     expect(el("chat-send").getAttribute("disabled")).not.toBeNull();
 
     fire("chatFrame", { frame: { kind: "turn", stopReason: "end_turn" } });
@@ -413,7 +412,7 @@ describe("renderer flow", () => {
 
     expect(stub.api.prompt).toHaveBeenCalledWith(`${GUIDE_TEXT.trim()}\n\ndo it`, []);
     // The user bubble shows only the typed text, not the injected guide.
-    expect(el("chat-list").querySelector(".msg-user")?.textContent).toBe("do it");
+    expect(chatList().querySelector(".msg-user")?.textContent).toBe("do it");
   });
 
   it("cycles through a custom ~/.orc/modes instruction and prepends it", async () => {
@@ -620,7 +619,7 @@ describe("renderer flow", () => {
     // Non-interactive empty state: Enter still submits the raw line.
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
     expect(stub.api.prompt).toHaveBeenCalledWith("/mod", []);
-    expect(el("chat-list").querySelector(".msg-user")?.textContent).toBe("/mod");
+    expect(chatList().querySelector(".msg-user")?.textContent).toBe("/mod");
   });
 
   it("never prepends the workflow guide to a leading-slash line", async () => {
@@ -755,50 +754,45 @@ describe("renderer flow", () => {
     listContainer.remove();
   });
 
-  it("graph node click updates step-chat-title in ACP mode", async () => {
+  it("graph node click opens a step tab in ACP mode", async () => {
     await loadRenderer();
-    // Enter ACP mode
     fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
-    // Simulate graph node click
     expect(canvasCallbacks.onNodeClick).not.toBeNull();
     canvasCallbacks.onNodeClick!("step-42");
-    // Step chat panel should show the clicked step
-    const title = document.getElementById("step-chat-title");
-    expect(title?.textContent).toBe("step-42");
+    const tabs = document.querySelectorAll(".chat-tab");
+    const labels = Array.from(tabs).map(t => t.querySelector(".chat-tab-label")?.textContent?.trim());
+    expect(labels).toContain("step-42");
   });
 
-  it("graph node click does NOT update step-chat-title in PTY mode", async () => {
+  it("graph node click does NOT open a step tab in PTY mode", async () => {
     await loadRenderer();
-    // Explicitly enter PTY mode
     fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "pty" });
     expect(canvasCallbacks.onNodeClick).not.toBeNull();
     canvasCallbacks.onNodeClick!("step-42");
-    // Step chat title should remain unchanged
-    const title = document.getElementById("step-chat-title");
-    expect(title?.textContent).toBe("Select a step");
+    const tabs = document.querySelectorAll(".chat-tab");
+    const labels = Array.from(tabs).map(t => t.querySelector(".chat-tab-label")?.textContent?.trim());
+    expect(labels).not.toContain("step-42");
   });
 
-  it("onStepActivated updates step-chat-title in ACP mode for non-main steps", async () => {
+  it("onStepActivated opens a tab in ACP mode for non-main steps", async () => {
     await loadRenderer();
-    // Enter ACP mode
     fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
-    // Simulate step activation for a non-main step (async handler awaits getStepOutput)
     fire("step", { stepId: "arch" });
     await vi.waitFor(() => {
-      const title = document.getElementById("step-chat-title");
-      expect(title?.textContent).toBe("arch");
+      const tabs = document.querySelectorAll(".chat-tab");
+      const labels = Array.from(tabs).map(t => t.querySelector(".chat-tab-label")?.textContent?.trim());
+      expect(labels).toContain("arch");
     });
   });
 
-  it("onStepActivated does NOT update step-chat-title for __main__ step", async () => {
+  it("onStepActivated does NOT open a tab for __main__ step", async () => {
     await loadRenderer();
-    // Enter ACP mode
     fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
-    // Simulate step activation for __main__ (async handler awaits getStepOutput)
     fire("step", { stepId: "__main__" });
     await vi.waitFor(() => {
-      const title = document.getElementById("step-chat-title");
-      expect(title?.textContent).toBe("Select a step");
+      const tabs = document.querySelectorAll(".chat-tab");
+      const labels = Array.from(tabs).map(t => t.querySelector(".chat-tab-label")?.textContent?.trim());
+      expect(labels).not.toContain("__main__");
     });
   });
 
@@ -830,7 +824,7 @@ describe("renderer flow", () => {
       },
     });
 
-    const chatText = el("chat-list").textContent;
+    const chatText = chatList().textContent;
     expect(chatText).toContain("Test Workflow");
     expect(chatText).toContain("COMPLETED");
     expect(chatText).toContain("arch");
@@ -879,7 +873,7 @@ describe("renderer flow", () => {
         workflow: { name: "Old WF", steps: [], completion: "Done" },
       },
     });
-    const chatBefore = el("chat-list").innerHTML;
+    const chatBefore = chatList().innerHTML;
 
     fire("workflowComplete", {
       runId: "r1",
@@ -887,7 +881,7 @@ describe("renderer flow", () => {
     });
 
     // No completion summary added — chat unchanged (except for empty state removal)
-    const chatAfter = el("chat-list").innerHTML;
+    const chatAfter = chatList().innerHTML;
     expect(chatAfter).not.toContain("COMPLETED");
     expect(chatAfter).not.toContain("Old WF");
   });
@@ -911,7 +905,7 @@ describe("renderer flow", () => {
       },
     });
 
-    const chatText = el("chat-list").textContent;
+    const chatText = chatList().textContent;
     expect(chatText).toContain("workflow");
   });
 
@@ -961,15 +955,16 @@ describe("renderer flow", () => {
     });
 
     // 5. Verify completion summary in chat
-    const chatText = el("chat-list").textContent;
+    const chatText = chatList().textContent;
     expect(chatText).toContain("E2E Workflow");
     expect(chatText).toContain("completed");
     expect(chatText).toContain("1/1");
 
-    // 6. Graph click on "arch" → step chat panel shows buffered frames
+    // 6. Graph click on "arch" → step tab opens with buffered frames
     canvasCallbacks.onNodeClick!("arch");
-    const title = document.getElementById("step-chat-title");
-    expect(title?.textContent).toBe("arch");
+    const tabs = document.querySelectorAll(".chat-tab");
+    const labels = Array.from(tabs).map(t => t.querySelector(".chat-tab-label")?.textContent?.trim());
+    expect(labels).toContain("arch");
   });
 
   it("old daemon (no report) → event logged but no completion message in chat", async () => {
@@ -989,7 +984,7 @@ describe("renderer flow", () => {
       status: "completed",
     });
     // Old daemon: no report → no completion message in chat
-    const chatText = el("chat-list").textContent;
+    const chatText = chatList().textContent;
     expect(chatText).not.toContain("completed");
     // But the event log should show the workflow completed
     const eventText = el("event-list").textContent;

@@ -513,6 +513,21 @@ export class DaemonBridge {
         ...(event.retryAfterMs ? { retryAfterMs: event.retryAfterMs } : {}),
         ...(event.providerCode ? { providerCode: event.providerCode } : {}),
       });
+    } else if (event.type === "step_chat" && event.stepId && event.runId) {
+      if (event.textChunk) {
+        this.send(IPC.MainToRenderer["step-chat"], {
+          stepId: event.stepId,
+          runId: event.runId,
+          textChunk: event.textChunk,
+        });
+      }
+      if (event.chatFrame) {
+        this.send(IPC.MainToRenderer["step-chat"], {
+          stepId: event.stepId,
+          runId: event.runId,
+          chatFrame: event.chatFrame,
+        });
+      }
     }
   }
 

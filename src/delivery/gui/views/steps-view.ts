@@ -3,7 +3,7 @@ import type { StepStatusRecord } from "../../../application/harness/persistence/
 import { api } from "../api.js";
 
 export interface StepsViewCallbacks {
-  onStepChat?: (stepId: string) => void;
+  onStepSelect?: (stepId: string) => void;
 }
 
 export class StepsView {
@@ -55,6 +55,6 @@ export class StepsView {
 
   private onStepSelect(stepId: string): void {
     api.switchStep(stepId).catch(() => {});
-    this.callbacks.onStepChat?.(stepId);
+    this.callbacks.onStepSelect?.(stepId);
   }
 }

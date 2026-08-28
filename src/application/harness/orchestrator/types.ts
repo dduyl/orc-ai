@@ -17,7 +17,7 @@ export interface RunReport {
 }
 
 export interface ProgressEvent {
-  type: "step_start" | "step_complete" | "workflow_complete" | "error" | "step_pty";
+  type: "step_start" | "step_complete" | "workflow_complete" | "error" | "step_pty" | "step_chat";
   runId?: string;
   stepId?: string;
   agent?: string;
@@ -42,6 +42,10 @@ export interface ProgressEvent {
   retryAfterMs?: number;
   /** ADR-022: provider error code when one is surfaced. */
   providerCode?: string;
+  /** ACP step-chat: streaming text chunk from the agent. */
+  textChunk?: string;
+  /** ACP step-chat: structured chat frame (tool call, usage, turn end, etc.). */
+  chatFrame?: import("../../agents/acp/types.js").AcpChatFrame;
 }
 
 export interface RunTracker {

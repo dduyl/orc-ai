@@ -37,7 +37,7 @@ export interface DomRefs {
   tabChat: HTMLButtonElement;
   tabTerminal: HTMLButtonElement;
   // chat panel
-  chatList: HTMLElement;
+  chatScroll: HTMLElement;
   chatInput: HTMLInputElement;
   chatSend: HTMLButtonElement;
   chatMode: HTMLElement;
@@ -47,12 +47,7 @@ export interface DomRefs {
   chatBusyText: HTMLElement;
   chatCancel: HTMLButtonElement;
   chatSuggestions: HTMLElement;
-  // step chat panel
-  stepChatPanel: HTMLElement;
-  stepChatTitle: HTMLElement;
-  stepChatStatus: HTMLElement;
-  stepChatScroll: HTMLElement;
-  stepChatList: HTMLElement;
+  chatTabs: HTMLElement;
   // activity box (permissions + tools)
   activityBox: HTMLElement;
   permissionSection: HTMLElement;
@@ -112,7 +107,7 @@ export function getDomRefs(): DomRefs {
     tabSteps: req("tab-steps") as HTMLButtonElement,
     tabChat: req("tab-chat") as HTMLButtonElement,
     tabTerminal: req("tab-terminal") as HTMLButtonElement,
-    chatList: req("chat-list"),
+    chatScroll: req("chat-scroll"),
     chatInput: req("chat-input") as HTMLInputElement,
     chatSend: req("chat-send") as HTMLButtonElement,
     chatMode: req("chat-mode"),
@@ -122,6 +117,7 @@ export function getDomRefs(): DomRefs {
     chatBusyText: req("chat-busy-text"),
     chatCancel: req("chat-cancel") as HTMLButtonElement,
     chatSuggestions: req("chat-suggestions"),
+    chatTabs: req("chat-tabs"),
     activityBox: req("activity-box"),
     permissionSection: req("activity-permission"),
     permissionText: req("permission-text"),
@@ -136,10 +132,5 @@ export function getDomRefs(): DomRefs {
     brandAdapter: req("brand-adapter"),
     graphViewContainer: req("graph-view-container"),
     btnNewRun: req("btn-new-run") as HTMLButtonElement,
-    stepChatPanel: req("step-chat-panel"),
-    stepChatTitle: req("step-chat-title"),
-    stepChatStatus: req("step-chat-status"),
-    stepChatScroll: req("step-chat-scroll"),
-    stepChatList: req("step-chat-list"),
   };
 }

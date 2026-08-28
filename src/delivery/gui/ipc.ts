@@ -15,7 +15,7 @@ import type { PromptMention } from "../../application/harness/daemon/rpc-protoco
 import type { ProgressEvent, RunReport } from "../../application/harness/orchestrator/index.js";
 import type { RunRecord } from "../../application/harness/persistence/Tracker.js";
 import type { PermissionRequest } from "../../application/agents/acp/permission.js";
-import type { PermissionAnswerKind } from "../../application/agents/acp/types.js";
+import type { AcpChatFrame, PermissionAnswerKind } from "../../application/agents/acp/types.js";
 import type { WorkflowDefinition } from "../../core/schemas.js";
 import type { RegisteredWorkflow } from "../../application/planner/registry.js";
 import type { WorkflowGraphData, SignalEvent } from "../../core/workflow-graph.js";
@@ -107,6 +107,11 @@ export interface StepFrame {
   providerCode?: string;
 }
 
+/** Per-step chat frame: streaming text or a structured agent event. */
+export type StepChatFrame =
+  | { textChunk: string; chatFrame?: never }
+  | { textChunk?: never; chatFrame: AcpChatFrame };
+
 // ── Payload contracts (keyed by wire channel name) ─────────────────────────
 
 /** Main → renderer event channels: name → payload type. */
@@ -129,6 +134,7 @@ export interface MainToRendererEvents {
   "loop-detected": { stepId: string; iteration: number; reason: string; fromSignal: string };
   "step-context": { stepId: string; agent: string; context: string[]; emits: string[] };
   "step-frame": StepFrame;
+  "step-chat": { stepId: string; runId: string } & StepChatFrame;
 }
 
 /** The main process's channel → payload send function consumed by the bridge. */
@@ -205,6 +211,7 @@ export const IPC = {
     "loop-detected": "loop-detected",
     "step-context": "step-context",
     "step-frame": "step-frame",
+    "step-chat": "step-chat",
   },
 } as const satisfies {
   RendererToMain: Record<keyof RendererToMainSend, string>;
@@ -233,6 +240,7 @@ export interface GuiApi {
   onLoopDetected(cb: (data: { stepId: string; iteration: number; reason: string; fromSignal: string }) => void): void;
   onStepContext(cb: (data: { stepId: string; agent: string; context: string[]; emits: string[] }) => void): void;
   onStepFrame(cb: (data: StepFrame) => void): void;
+  onStepChat(cb: (data: { stepId: string; runId: string } & StepChatFrame) => void): void;
   write(data: string): void;
   prompt(text: string, mentions?: PromptMention[]): Promise<void>;
   cancelMain(): void;

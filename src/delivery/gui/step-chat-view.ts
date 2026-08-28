@@ -12,7 +12,13 @@ import type { StepFrame } from "./ipc.js";
 export class StepChatView {
   static readonly SCROLL_THRESHOLD = 80;
 
-  constructor(private readonly list: HTMLElement) {}
+  private list: HTMLElement;
+  private scrollEl: HTMLElement;
+
+  constructor(list: HTMLElement, scrollEl?: HTMLElement) {
+    this.list = list;
+    this.scrollEl = scrollEl ?? list.parentElement as HTMLElement;
+  }
 
   clear(): void {
     this.list.innerHTML = "";
@@ -68,6 +74,18 @@ export class StepChatView {
     el.className = "msg msg-agent";
     el.textContent = text;
     this.append(el);
+  }
+
+  /** Append a streaming text chunk to the current agent message bubble. */
+  addTextChunk(chunk: string): void {
+    let last = this.list.lastElementChild as HTMLElement | null;
+    if (!last || !last.classList.contains("msg-agent-streaming")) {
+      last = document.createElement("div");
+      last.className = "msg msg-agent msg-agent-streaming";
+      this.list.appendChild(last);
+    }
+    last.textContent += chunk;
+    this.scrollBottom();
   }
 
   addUsage(usage: AgentUsage): void {
@@ -144,7 +162,7 @@ export class StepChatView {
   }
 
   scrollBottom(): void {
-    const scroll = this.list.parentElement;
+    const scroll = this.scrollEl;
     if (!scroll) return;
     const nearBottom =
       scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < StepChatView.SCROLL_THRESHOLD;

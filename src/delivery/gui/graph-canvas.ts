@@ -388,6 +388,20 @@ export class GraphCanvas {
     this.applyTransform();
   }
 
+  zoomIn(): void {
+    this.zoom = Math.min(this.zoom * 1.2, 3);
+    this.applyTransform();
+  }
+
+  zoomOut(): void {
+    this.zoom = Math.max(this.zoom * 0.8, 0.2);
+    this.applyTransform();
+  }
+
+  getZoom(): number {
+    return this.zoom;
+  }
+
   private applyTransform(): void {
     const viewport = this.svg?.querySelector(".viewport");
     if (viewport) {

@@ -27,6 +27,14 @@ export interface AgentUsage {
   cachedWriteTokens?: number;
 }
 
+/** Structured chat frame for step-level agent output (mirrors adapter-acp AcpChatFrame). */
+export type AcpChatFrame =
+  | { type: "tool_call"; call: import("@agentclientprotocol/sdk").ToolCall }
+  | { type: "tool_update"; update: import("@agentclientprotocol/sdk").ToolCallUpdate }
+  | { type: "usage"; usage: AgentUsage }
+  | { type: "turn_end"; stopReason: string }
+  | { type: "error"; message: string };
+
 /** Result of a single ACP prompt turn. */
 export interface AcpTurnResult {
   stopReason: AcpStopReason;

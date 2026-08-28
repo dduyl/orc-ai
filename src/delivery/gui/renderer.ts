@@ -24,17 +24,18 @@ const MAIN_STEP_ID = "__main__";
 
 const refs = getDomRefs();
 const { term, fit: fitTermBase } = createTerminal(refs.termContainer);
-const chat = new ChatView(refs.chatList);
 const graphView = new GraphView({
   onStepClick: (stepId) => {
-    setActiveView("steps");
-    stepsView.selectStep(stepId);
-    if (mainMode === "acp") selectStepChat(stepId);
+    if (mainMode !== "acp") return;
+    setActiveView("chat");
+    openTab(stepId);
   },
 });
 const stepsView = new StepsView({
-  onStepChat: (stepId) => {
-    if (mainMode === "acp") selectStepChat(stepId);
+  onStepSelect: (stepId) => {
+    if (mainMode !== "acp") return;
+    setActiveView("chat");
+    openTab(stepId);
   },
 });
 const terminalView = new TerminalView();
@@ -396,35 +397,139 @@ graphView.mount(refs.graphViewContainer);
 // Mount StepsView
 stepsView.mount(refs.stepsTableContainer);
 
-// Step chat views — one per step, keyed by stepId
-const stepChatViews = new Map<string, StepChatView>();
-const stepFrameBuffers = new Map<string, StepFrame[]>();
-let activeStepChatId: string | null = null;
-
-function getOrCreateStepChatView(stepId: string): StepChatView {
-  let view = stepChatViews.get(stepId);
-  if (!view) {
-    view = new StepChatView(refs.stepChatList);
-    stepChatViews.set(stepId, view);
-  }
-  return view;
+// ── Multi-tab chat system ──────────────────────────────────────────────────
+interface ChatTab {
+  id: string;
+  label: string;
+  stepId?: string;
+  scrollEl: HTMLElement;
+  listEl: HTMLElement;
+  view: StepChatView;
+  mainView?: ChatView;
+  isMain: boolean;
 }
 
-function selectStepChat(stepId: string): void {
-  activeStepChatId = stepId;
-  // Clear existing view
-  refs.stepChatList.innerHTML = "";
-  // Get or create view for this step
-  const view = getOrCreateStepChatView(stepId);
-  // Mount the view's elements into the shared list
-  // Replay buffered frames
-  const buffered = stepFrameBuffers.get(stepId) ?? [];
-  for (const frame of buffered) {
-    applyStepFrame(view, frame);
+const tabs = new Map<string, ChatTab>();
+let activeTabId: string | null = null;
+
+const MAIN_TAB_ID = "main";
+
+/** Create a scroll container for a tab inside #chat-scroll. */
+function createTabContainer(id: string): { scroll: HTMLElement; list: HTMLElement } {
+  const scroll = document.createElement("div");
+  scroll.className = "chat-tab-scroll";
+  scroll.id = `chat-scroll-${id}`;
+  scroll.style.flex = "1";
+  scroll.style.overflowY = "auto";
+  scroll.style.padding = "var(--space-3)";
+  scroll.style.display = "none";
+  const list = document.createElement("div");
+  list.className = "chat-tab-list";
+  list.id = `chat-list-${id}`;
+  list.style.display = "flex";
+  list.style.flexDirection = "column";
+  list.style.gap = "4px";
+  scroll.appendChild(list);
+  refs.chatScroll.appendChild(scroll);
+  return { scroll, list };
+}
+
+function ensureMainTab(): ChatTab {
+  let tab = tabs.get(MAIN_TAB_ID);
+  if (!tab) {
+    const { scroll, list } = createTabContainer(MAIN_TAB_ID);
+    tab = {
+      id: MAIN_TAB_ID,
+      label: "Main",
+      scrollEl: scroll,
+      listEl: list,
+      view: new StepChatView(list, scroll),
+      mainView: new ChatView(list, scroll),
+      isMain: true,
+    };
+    tabs.set(MAIN_TAB_ID, tab);
   }
-  // Update header
-  refs.stepChatTitle.textContent = stepId;
-  refs.stepChatStatus.textContent = "";
+  return tab;
+}
+
+function openTab(stepId: string): void {
+  let tab = tabs.get(stepId);
+  if (!tab) {
+    const { scroll, list } = createTabContainer(stepId);
+    tab = {
+      id: stepId,
+      label: stepId,
+      stepId,
+      scrollEl: scroll,
+      listEl: list,
+      view: new StepChatView(list, scroll),
+      isMain: false,
+    };
+    tabs.set(stepId, tab);
+    // Replay buffered frames
+    replayStepBuffers(stepId, tab);
+  }
+  switchTab(stepId);
+}
+
+function closeTab(tabId: string): void {
+  // Main tab is not closable
+  if (tabId === MAIN_TAB_ID) return;
+  const tab = tabs.get(tabId);
+  if (!tab) return;
+  // Remove DOM elements
+  tab.scrollEl.remove();
+  tabs.delete(tabId);
+  // If this was active, switch to main
+  if (activeTabId === tabId) {
+    switchTab(MAIN_TAB_ID);
+  } else {
+    renderTabs();
+  }
+}
+
+function switchTab(tabId: string): void {
+  const tab = tabs.get(tabId);
+  if (!tab) return;
+  activeTabId = tabId;
+  // Show/hide scroll containers
+  for (const [id, t] of tabs) {
+    t.scrollEl.style.display = id === tabId ? "block" : "none";
+  }
+  renderTabs();
+  // Focus input if on main tab
+  if (tab.isMain) refs.chatInput.focus();
+}
+
+function renderTabs(): void {
+  refs.chatTabs.innerHTML = "";
+  // Render tabs in order: main first, then steps alphabetically
+  const ordered = [...tabs.values()].sort((a, b) => {
+    if (a.isMain) return -1;
+    if (b.isMain) return 1;
+    return a.label.localeCompare(b.label);
+  });
+  for (const tab of ordered) {
+    const btn = document.createElement("button");
+    btn.className = "chat-tab" + (tab.id === activeTabId ? " active" : "");
+    const label = document.createElement("span");
+    label.className = "chat-tab-label";
+    label.textContent = tab.isMain ? "Main" : tab.label;
+    btn.appendChild(label);
+    if (!tab.isMain) {
+      const close = document.createElement("button");
+      close.className = "chat-tab-close";
+      close.textContent = "×";
+      close.title = "Close tab";
+      close.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeTab(tab.id);
+      });
+      btn.appendChild(close);
+    }
+    btn.addEventListener("click", () => switchTab(tab.id));
+    refs.chatTabs.appendChild(btn);
+  }
 }
 
 // Mount TerminalView
@@ -488,7 +593,7 @@ async function refreshPTYTree(): Promise<void> {
     const steps = await api.listSteps();
     renderPTYTree(steps, currentStepId, refs.ptyTree, (stepId) => {
       api.switchStep(stepId).catch(() => {});
-      if (mainMode === "acp") selectStepChat(stepId);
+      openTab(stepId);
     });
   } catch { /* ignore */ }
 }
@@ -583,6 +688,7 @@ api.onStatus((data) => {
     refs.infoMode.textContent = mainMode;
     refs.infoPid.textContent = `${data.pid}`;
     addEvent(`Main terminal attached (${mainMode})`, refs.eventList);
+    if (mainMode === "acp") ensureMainTab();
     syncComposer();
   } else if (data.type === "error") {
     connected = false;
@@ -630,7 +736,8 @@ api.onWorkflowStarted((data: { runId: string; workflowId: string; workflow: Work
 api.onWorkflowComplete((data: { runId: string; status: "completed" | "failed"; finalSignal?: string; report?: import("./ipc.js").RunReport }) => {
   addEvent(`Workflow ${data.status} (${data.finalSignal ?? "—"})`, refs.eventList);
   if (data.report) {
-    chat.addText(buildCompletionPrompt(data.runId, latestWorkflowName, data.report));
+    const mainTab = ensureMainTab();
+    mainTab.mainView?.addText(buildCompletionPrompt(data.runId, latestWorkflowName, data.report));
     if (mainMode === "acp") setActiveView("chat");
   }
   if (data.runId === latestRunId) {
@@ -675,26 +782,40 @@ api.onStepActivated(async (data: { stepId: string }) => {
   term.reset();
   term.write(fullBuf || "");
   setViewLabel(data.stepId, isMain ? "main" : data.stepId, refs.viewLabelText, refs.viewLabelStep);
-  setActiveView(mainMode === "acp" && isMain ? "chat" : "terminal");
+
+  if (mainMode === "acp") {
+    if (isMain) {
+      // Switch to main tab in chat view
+      setActiveView("chat");
+      ensureMainTab();
+      switchTab(MAIN_TAB_ID);
+    } else {
+      setActiveView("chat");
+      openTab(data.stepId);
+    }
+  } else {
+    setActiveView("terminal");
+  }
+
   refreshPTYTree();
   term.focus();
-
-  if (mainMode === "acp" && !isMain) selectStepChat(data.stepId);
-
   graphView.onStepActivated(data.stepId);
 });
 
 // ── Chat panel (ACP main) ──────────────────────────────────────────────────
 api.onChatReset(() => {
-  chat.clear();
+  const mainTab = ensureMainTab();
+  mainTab.mainView?.clear();
   activity.clear();
 });
 
 api.onChatFrame((data) => {
   const frame = data.frame;
+  const mainTab = ensureMainTab();
+  const mv = mainTab.mainView;
   switch (frame.kind) {
     case "text":
-      chat.addText(frame.text);
+      mv?.addText(frame.text);
       break;
     case "tool":
       activity.addTool(frame.call);
@@ -703,18 +824,18 @@ api.onChatFrame((data) => {
       activity.addToolUpdate(frame.update);
       break;
     case "usage":
-      chat.addUsage(frame.usage);
+      mv?.addUsage(frame.usage);
       break;
     case "turn":
-      chat.addTurn(frame.stopReason);
+      mv?.addTurn(frame.stopReason);
       setBusy(false);
       break;
     case "error":
-      chat.addError(frame.message);
+      mv?.addError(frame.message);
       setBusy(false);
       break;
     case "user":
-      chat.addUser(frame.text);
+      mv?.addUser(frame.text);
       break;
     case "commands":
       commandCache = frame.commands;
@@ -726,6 +847,20 @@ api.onChatFrame((data) => {
   }
 });
 
+// ── Step chat buffers (frame + text chunk history per step, replayed on tab open) ──
+const stepFrameBuffers = new Map<string, StepFrame[]>();
+const stepChatBuffers = new Map<string, { stepId: string; runId: string; textChunk?: string }[]>();
+const stepHasData = new Set<string>();
+
+function replayStepBuffers(stepId: string, tab: ChatTab): void {
+  const frames = stepFrameBuffers.get(stepId) ?? [];
+  for (const frame of frames) applyStepFrame(tab.view, frame);
+  const chunks = stepChatBuffers.get(stepId) ?? [];
+  for (const chunk of chunks) {
+    if (chunk.textChunk) tab.view.addTextChunk(chunk.textChunk);
+  }
+}
+
 // ── Step chat panel (per-step agent frames) ──────────────────────────────
 api.onStepFrame((data: StepFrame) => {
   const { stepId } = data;
@@ -733,10 +868,33 @@ api.onStepFrame((data: StepFrame) => {
   const buf = stepFrameBuffers.get(stepId) ?? [];
   buf.push(data);
   stepFrameBuffers.set(stepId, buf);
-  // If this is the active step, render immediately
-  if (activeStepChatId === stepId) {
-    const view = getOrCreateStepChatView(stepId);
-    applyStepFrame(view, data);
+  stepHasData.add(stepId);
+  // If this step has an open tab, render immediately
+  const tab = tabs.get(stepId);
+  if (tab) applyStepFrame(tab.view, data);
+});
+
+// ── Step chat streaming (ACP per-step text chunks) ──────────────────────
+api.onStepChat((data) => {
+  const { stepId, textChunk, chatFrame } = data;
+  stepHasData.add(stepId);
+  const tab = tabs.get(stepId);
+  if (tab) {
+    if (textChunk) tab.view.addTextChunk(textChunk);
+    if (chatFrame) {
+      if (chatFrame.type === "tool_call") tab.view.addToolCall(chatFrame.call);
+      else if (chatFrame.type === "tool_update") tab.view.addToolUpdate(chatFrame.update);
+      else if (chatFrame.type === "usage") tab.view.addUsage(chatFrame.usage);
+      else if (chatFrame.type === "turn_end") { /* turn-end finalized by streaming */ }
+      else if (chatFrame.type === "error") tab.view.addError(chatFrame.message);
+    }
+  } else {
+    // Buffer for later replay when tab is opened
+    if (textChunk) {
+      const buf = stepChatBuffers.get(stepId) ?? [];
+      buf.push({ stepId, runId: data.runId, textChunk });
+      stepChatBuffers.set(stepId, buf);
+    }
   }
 });
 
@@ -798,7 +956,8 @@ function submitChat(): void {
   const final = guide && !text.startsWith("/") ? `${guide.trim()}\n\n${text}` : text;
   commandGroup = null;
   suggestionBox.hide();
-  chat.addUser(text);
+  const mainTab = ensureMainTab();
+  mainTab.mainView?.addUser(text);
   refs.chatInput.value = "";
   setBusy(true);
   api
@@ -809,7 +968,8 @@ function submitChat(): void {
       // composer, so clear busy here and surface the failure in the chat.
       setBusy(false);
       const message = err instanceof Error ? err.message : String(err);
-      chat.addError(message);
+      const mainTab = ensureMainTab();
+      mainTab.mainView?.addError(message);
     })
     .finally(() => refs.chatInput.focus());
 }

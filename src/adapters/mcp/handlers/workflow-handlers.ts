@@ -1,8 +1,7 @@
 import { WorkflowDefinition, validateWorkflowGraph } from "../../../core/schemas.js";
 import { CallToolResult, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types";
 import { startRun, resolvePausedRunId } from "../../../application/harness/start-run.js";
-import { hasPtyWriter } from "../../../application/harness/signalling/pty-notifier.js";
-import { host, registry, tracker, bgRuns } from "./state.js";
+import { host, registry, tracker } from "./state.js";
 import { getValidAgentNames } from "./formatting.js";
 import { validateCreateWorkflowSteps } from "./workflow-validation.js";
 
@@ -22,9 +21,6 @@ export interface RunHandlerExtra {
    */
   signal: AbortSignal;
 }
-
-/** Bounded wait for a headless (no-PTY) get_run_status block. */
-const HEADLESS_STATUS_WAIT_MS = 120_000;
 
 export function handleListWorkflowsTool(): CallToolResult {
   registry.loadAll();
@@ -164,25 +160,6 @@ export async function handleGetRunStatusTool(args: any): Promise<CallToolResult>
 
   let run = tracker.getRun(runId);
   if (!run) throw new McpError(ErrorCode.InvalidParams, `Unknown runId: ${runId}`);
-
-  // Headless fallback: when there is no PTY to push notifications into,
-  // block here until the background run finishes so the caller gets a
-  // definitive answer on the first (and only) status check.
-  if (!hasPtyWriter() && run.status === "running") {
-    const pending = bgRuns.get(runId);
-    if (pending) {
-      try {
-        // Bounded wait so a hung run can't wedge the request forever. On
-        // timeout we return the current snapshot (still "running"); the
-        // caller can poll again.
-        await Promise.race([
-          pending,
-          new Promise((resolve) => setTimeout(resolve, HEADLESS_STATUS_WAIT_MS)),
-        ]);
-      } catch { /* error already logged & stored */ }
-      run = tracker.getRun(runId) ?? run;
-    }
-  }
 
   return {
     content: [{ type: "text", text: JSON.stringify({
