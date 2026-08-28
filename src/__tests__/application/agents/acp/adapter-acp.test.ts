@@ -3,7 +3,7 @@ import {
   AcpPtyFacade,
   acpEnabledFor,
   callAcpAgentStream,
-  ACP_ENABLED_ENV,
+  ACP_DISABLED_ENV,
 } from "../../../../application/agents/adapter-acp.js";
 import { registerAcpStrategy, getAcpStrategy, registerStrategy } from "../../../../application/agents/strategy.js";
 import { callAgentStream } from "../../../../application/agents/adapter-pty.js";
@@ -48,6 +48,7 @@ rl.on('line', (line) => {
     send({ jsonrpc:'2.0', id, result:{ sessionId:'sess-1' } });
     send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'agent_message_chunk', content:{ type:'text', text:'mock reply' } } } });
     send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'tool_call', toolCallId:'tc-1', title:'Mock Write', name:'write_file', kind:'edit', status:'in_progress', locations:[{ path:'/tmp/mock.txt', line:1 }], rawInput:{ path:'/tmp/mock.txt' } } } });
+    send({ jsonrpc:'2.0', method:'session/update', params:{ sessionId:'sess-1', update:{ sessionUpdate:'tool_call_update', toolCallId:'tc-1', status:'completed' } } });
   } else if (method === 'session/prompt') {
     send({ jsonrpc:'2.0', id, result:{ stopReason:'end_turn', usage:{ totalTokens:7, inputTokens:2, outputTokens:5 } } });
   }
@@ -207,26 +208,33 @@ describe("default ACP strategy seeding", () => {
 });
 
 describe("acpEnabledFor", () => {
-  it("is false without ORC_ACP_ENABLED", () => {
-    delete process.env[ACP_ENABLED_ENV];
-    expect(acpEnabledFor("acp-test-agent")).toBe(false);
+  it("is true by default (no env var set)", () => {
+    registerAcpStrategy(fakeAcpStrategy("acp-test-agent"));
+    delete process.env[ACP_DISABLED_ENV];
+    expect(acpEnabledFor("acp-test-agent")).toBe(true);
   });
 
   it("is false when no ACP strategy is registered", () => {
-    process.env[ACP_ENABLED_ENV] = "1";
+    delete process.env[ACP_DISABLED_ENV];
     expect(acpEnabledFor("no-such-agent")).toBe(false);
   });
 
-  it("is true when enabled and the strategy is available", () => {
+  it("is true when the strategy is available (default)", () => {
     registerAcpStrategy(fakeAcpStrategy("acp-test-agent"));
-    process.env[ACP_ENABLED_ENV] = "1";
+    delete process.env[ACP_DISABLED_ENV];
     expect(acpEnabledFor("acp-test-agent")).toBe(true);
   });
 
   it("is false when the strategy probe failed", () => {
     registerAcpStrategy(fakeAcpStrategy("acp-unavailable", false));
-    process.env[ACP_ENABLED_ENV] = "1";
+    delete process.env[ACP_DISABLED_ENV];
     expect(acpEnabledFor("acp-unavailable")).toBe(false);
+  });
+
+  it("is false when ORC_ACP_DISABLED=1 is set", () => {
+    registerAcpStrategy(fakeAcpStrategy("acp-test-agent"));
+    process.env[ACP_DISABLED_ENV] = "1";
+    expect(acpEnabledFor("acp-test-agent")).toBe(false);
   });
 });
 
@@ -307,6 +315,36 @@ describe("callAcpAgentStream", () => {
     expect(fed).toContain("    at /tmp/mock.txt:1");
   });
 
+  it("captures structured ToolCall objects from the ACP turn", async () => {
+    registerAcpStrategy(fakeAcpStrategyWithTool("acp-test-agent"));
+    const handle = callAcpAgentStream(ADAPTER, "hello");
+    const result = await handle.promise;
+
+    expect(result.toolCalls).toBeDefined();
+    expect(result.toolCalls!.length).toBeGreaterThanOrEqual(1);
+    expect(result.toolCalls![0].name).toBe("write_file");
+    expect(result.toolCalls![0].rawInput).toBeDefined();
+  });
+
+  it("captures structured ToolCallUpdate objects from the ACP turn", async () => {
+    registerAcpStrategy(fakeAcpStrategyWithTool("acp-test-agent"));
+    const handle = callAcpAgentStream(ADAPTER, "hello");
+    const result = await handle.promise;
+
+    expect(result.toolCallUpdates).toBeDefined();
+    expect(result.toolCallUpdates!.length).toBeGreaterThanOrEqual(1);
+    expect(result.toolCallUpdates![0].toolCallId).toBeDefined();
+  });
+
+  it("returns empty toolCalls array for a text-only turn (no tool calls)", async () => {
+    registerAcpStrategy(fakeAcpStrategy("acp-test-agent"));
+    const handle = callAcpAgentStream(ADAPTER, "hello");
+    const result = await handle.promise;
+
+    expect(result.toolCalls).toBeUndefined();
+    expect(result.toolCallUpdates).toBeUndefined();
+  });
+
   it("writes tool_call and step_finish events to the hook file (Tracker observability)", async () => {
     registerAcpStrategy(fakeAcpStrategyWithTool("acp-test-agent"));
     const hookFile = createHookFile("step-acp-test");
@@ -378,16 +416,16 @@ describe("stepIdFromHookFile", () => {
 });
 
 describe("dispatch shim", () => {
-  it("routes callAgentStream through ACP when enabled", async () => {
+  it("routes callAgentStream through ACP by default", async () => {
     registerAcpStrategy(fakeAcpStrategy("acp-test-agent"));
-    process.env[ACP_ENABLED_ENV] = "1";
+    delete process.env[ACP_DISABLED_ENV];
     const handle = callAgentStream(ADAPTER, "hello");
     expect(handle.pty).toBeInstanceOf(AcpPtyFacade);
     const result = await handle.promise;
     expect(result.content).toBe("mock reply");
   });
 
-  it("keeps the PTY path when ACP is not enabled", () => {
+  it("keeps the PTY path when ORC_ACP_DISABLED=1", () => {
     registerStrategy({
       id: "mock-pty-agent",
       buildArgs: () => [],
@@ -395,7 +433,7 @@ describe("dispatch shim", () => {
       isComplete: () => false,
       extractOutput: (out: string) => out,
     });
-    delete process.env[ACP_ENABLED_ENV];
+    process.env[ACP_DISABLED_ENV] = "1";
     const handle = callAgentStream(
       {
         id: "mock-pty-agent",

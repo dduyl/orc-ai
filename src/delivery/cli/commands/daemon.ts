@@ -33,7 +33,7 @@ export type MainMode = "pty" | "acp";
 
 /** Resolve the main mode from the CLI option or ORC_MAIN_MODE env. */
 export function resolveMainMode(optMain?: string): MainMode {
-  const mode = optMain || process.env["ORC_MAIN_MODE"] || "pty";
+  const mode = optMain || process.env["ORC_MAIN_MODE"] || "acp";
   if (mode !== "pty" && mode !== "acp") {
     throw new Error(`Invalid main mode: ${mode} (expected "pty" or "acp")`);
   }
@@ -44,7 +44,7 @@ export function resolveMainMode(optMain?: string): MainMode {
 export async function daemonStart(
   pipe?: string,
   mcp: { port: number } | false = { port: DEFAULT_MCP_PORT },
-  mainMode: MainMode = "pty",
+  mainMode: MainMode = "acp",
   projectDir?: string,
 ): Promise<void> {
   // setupInfrastructure + reconcileStaleRuns run once inside DaemonServer.start().
@@ -139,7 +139,7 @@ export function registerDaemonCommands(parent: Command): void {
     .option("--pipe <path>", "override the control pipe path")
     .option("--mcp-port <port>", "port for the hosted MCP HTTP server (default 3100)")
     .option("--no-mcp", "run pipes-only, without hosting MCP HTTP")
-    .option("--main <mode>", "main terminal mode: pty (default) or acp")
+    .option("--main <mode>", "main terminal mode: acp (default) or pty")
     .option("--project-dir <path>", "project directory for per-project isolation")
     .description("Start the daemon in the foreground (control pipe + optional MCP :3100)")
     .action((opts: { pipe?: string; mcpPort?: string; mcp?: boolean; main?: string; projectDir?: string }) =>

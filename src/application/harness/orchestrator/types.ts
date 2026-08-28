@@ -2,6 +2,8 @@ import { type IPty } from "node-pty";
 import type { StepOutcome } from "../execution/step-runner.js";
 import type { Tracker } from "../persistence/Tracker.js";
 import type { QuotaInfo } from "../../agents/errors.js";
+import type { AgentUsage } from "../../agents/acp/types.js";
+import type { ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
 
 export interface RunReport {
   workflowId: string;
@@ -15,7 +17,7 @@ export interface RunReport {
 }
 
 export interface ProgressEvent {
-  type: "step_start" | "step_complete" | "workflow_complete" | "error" | "step_pty";
+  type: "step_start" | "step_complete" | "workflow_complete" | "error" | "step_pty" | "step_chat";
   runId?: string;
   stepId?: string;
   agent?: string;
@@ -26,6 +28,24 @@ export interface ProgressEvent {
   quota?: QuotaInfo;
   pty?: IPty;
   report?: RunReport;
+  /** Agent token usage from the step (ACP). */
+  usage?: AgentUsage;
+  /** Agent model identifier from the step. */
+  model?: string;
+  /** Structured tool calls from the step (ACP). */
+  toolCalls?: ToolCall[];
+  /** ADR-022: classified error kind from step failure. */
+  errorKind?: string;
+  /** ADR-022: provider-announced quota window reset, ms epoch. */
+  resetAtMs?: number;
+  /** ADR-022: provider-announced retry delay for rate limits, in ms. */
+  retryAfterMs?: number;
+  /** ADR-022: provider error code when one is surfaced. */
+  providerCode?: string;
+  /** ACP step-chat: streaming text chunk from the agent. */
+  textChunk?: string;
+  /** ACP step-chat: structured chat frame (tool call, usage, turn end, etc.). */
+  chatFrame?: import("../../agents/acp/types.js").AcpChatFrame;
 }
 
 export interface RunTracker {

@@ -2,13 +2,19 @@ import { StepList, type StepRowData } from "../step-list.js";
 import type { StepStatusRecord } from "../../../application/harness/persistence/Tracker.js";
 import { api } from "../api.js";
 
+export interface StepsViewCallbacks {
+  onStepSelect?: (stepId: string) => void;
+}
+
 export class StepsView {
   private stepList: StepList;
   private container: HTMLElement | null = null;
+  private callbacks: StepsViewCallbacks;
   /** Step ids declared `type: script` in the active run's definition. */
   private gateStepIds = new Set<string>();
 
-  constructor() {
+  constructor(callbacks: StepsViewCallbacks = {}) {
+    this.callbacks = callbacks;
     this.stepList = new StepList({
       onSelect: (stepId) => this.onStepSelect(stepId),
     });
@@ -42,7 +48,13 @@ export class StepsView {
     this.stepList.setSteps(rows);
   }
 
+  /** Programmatically select a step — highlights the row and fires onSelect. */
+  selectStep(stepId: string): void {
+    this.stepList.selectStep(stepId);
+  }
+
   private onStepSelect(stepId: string): void {
     api.switchStep(stepId).catch(() => {});
+    this.callbacks.onStepSelect?.(stepId);
   }
 }

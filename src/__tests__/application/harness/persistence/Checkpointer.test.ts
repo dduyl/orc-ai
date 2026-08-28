@@ -201,4 +201,93 @@ describe("Checkpointer", () => {
 
     cp.close();
   });
+
+  it("round-trips usage, model, duration, and toolCalls fields through save/load", () => {
+    const cp = new Checkpointer(tmpDb());
+    cp.save("structured-task", {
+      workflowId: "wf-s",
+      sessionId: "sess-s",
+      agentId: "opencode",
+      stepResults: {
+        step1: {
+          status: "completed",
+          output: "done",
+          retries: 0,
+          usage: {
+            totalTokens: 200,
+            inputTokens: 100,
+            outputTokens: 80,
+            thoughtTokens: 20,
+            cachedReadTokens: 10,
+            cachedWriteTokens: 5,
+          },
+          model: "gpt-4o",
+          duration: 3500,
+          toolCalls: [{ name: "bash", rawInput: { command: "ls" } } as any],
+        },
+      },
+      context: {},
+    });
+
+    const loaded = cp.load("structured-task")!;
+    expect(loaded).not.toBeNull();
+
+    const s = loaded.stepResults.step1;
+    expect(s.status).toBe("completed");
+    expect(s.output).toBe("done");
+    expect(s.retries).toBe(0);
+    expect(s.usage).toEqual({
+      totalTokens: 200,
+      inputTokens: 100,
+      outputTokens: 80,
+      thoughtTokens: 20,
+      cachedReadTokens: 10,
+      cachedWriteTokens: 5,
+    });
+    expect(s.model).toBe("gpt-4o");
+    expect(s.duration).toBe(3500);
+    expect(s.toolCalls).toEqual([{ name: "bash", rawInput: { command: "ls" } }]);
+
+    cp.close();
+  });
+
+  it("old checkpoints without usage/model/duration/toolCalls load cleanly (backward compat)", () => {
+    const dbPath = tmpDb();
+    const dir = path.dirname(dbPath);
+    fs.mkdirSync(dir, { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    db.exec(`CREATE TABLE checkpoints (
+        task_id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL,
+        session_id TEXT NOT NULL DEFAULT '',
+        agent_id TEXT NOT NULL DEFAULT '',
+        run_id TEXT NOT NULL DEFAULT '',
+        step_results TEXT NOT NULL DEFAULT '{}',
+        context TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`);
+    db.prepare(
+      "INSERT INTO checkpoints (task_id, workflow_id, session_id, agent_id, run_id, step_results, context) VALUES (?,?,?,?,?,?,?)",
+    ).run(
+      "legacy-no-usage",
+      "wf-1",
+      "sess-1",
+      "opencode",
+      "",
+      '{"step1":{"status":"completed","output":"old","retries":0}}',
+      "{}",
+    );
+    db.close();
+
+    const cp = new Checkpointer(dbPath);
+    const loaded = cp.load("legacy-no-usage")!;
+    expect(loaded).not.toBeNull();
+    expect(loaded.stepResults.step1.status).toBe("completed");
+    expect(loaded.stepResults.step1.output).toBe("old");
+    expect(loaded.stepResults.step1.usage).toBeUndefined();
+    expect(loaded.stepResults.step1.model).toBeUndefined();
+    expect(loaded.stepResults.step1.duration).toBeUndefined();
+    expect(loaded.stepResults.step1.toolCalls).toBeUndefined();
+    cp.close();
+  });
 });

@@ -29,6 +29,7 @@ export interface DomRefs {
   // views + navigation
   graphView: HTMLElement;
   stepsView: HTMLElement;
+  stepsTableContainer: HTMLElement;
   chatView: HTMLElement;
   terminalView: HTMLElement;
   tabGraph: HTMLButtonElement;
@@ -36,7 +37,7 @@ export interface DomRefs {
   tabChat: HTMLButtonElement;
   tabTerminal: HTMLButtonElement;
   // chat panel
-  chatList: HTMLElement;
+  chatScroll: HTMLElement;
   chatInput: HTMLInputElement;
   chatSend: HTMLButtonElement;
   chatMode: HTMLElement;
@@ -46,18 +47,7 @@ export interface DomRefs {
   chatBusyText: HTMLElement;
   chatCancel: HTMLButtonElement;
   chatSuggestions: HTMLElement;
-  // activity box (permissions + tools)
-  activityBox: HTMLElement;
-  permissionSection: HTMLElement;
-  permissionText: HTMLElement;
-  permissionHint: HTMLElement;
-  permissionActions: HTMLElement;
-  permissionNav: HTMLElement;
-  permissionPrev: HTMLButtonElement;
-  permissionNext: HTMLButtonElement;
-  permissionCounter: HTMLElement;
-  toolsSection: HTMLElement;
-  toolList: HTMLElement;
+  chatTabs: HTMLElement;
   brandAdapter: HTMLElement;
   // graph view
   graphViewContainer: HTMLElement;
@@ -98,13 +88,14 @@ export function getDomRefs(): DomRefs {
     rightPanel: req("right-panel"),
     graphView: req("graph-view"),
     stepsView: req("steps-view"),
+    stepsTableContainer: req("steps-table-container"),
     chatView: req("chat-view"),
     terminalView: req("terminal-view"),
     tabGraph: req("tab-graph") as HTMLButtonElement,
     tabSteps: req("tab-steps") as HTMLButtonElement,
     tabChat: req("tab-chat") as HTMLButtonElement,
     tabTerminal: req("tab-terminal") as HTMLButtonElement,
-    chatList: req("chat-list"),
+    chatScroll: req("chat-scroll"),
     chatInput: req("chat-input") as HTMLInputElement,
     chatSend: req("chat-send") as HTMLButtonElement,
     chatMode: req("chat-mode"),
@@ -114,17 +105,7 @@ export function getDomRefs(): DomRefs {
     chatBusyText: req("chat-busy-text"),
     chatCancel: req("chat-cancel") as HTMLButtonElement,
     chatSuggestions: req("chat-suggestions"),
-    activityBox: req("activity-box"),
-    permissionSection: req("activity-permission"),
-    permissionText: req("permission-text"),
-    permissionHint: req("permission-hint"),
-    permissionActions: req("permission-actions"),
-    permissionNav: req("permission-nav"),
-    permissionPrev: req("permission-prev") as HTMLButtonElement,
-    permissionNext: req("permission-next") as HTMLButtonElement,
-    permissionCounter: req("permission-counter"),
-    toolsSection: req("activity-tools"),
-    toolList: req("tool-list"),
+    chatTabs: req("chat-tabs"),
     brandAdapter: req("brand-adapter"),
     graphViewContainer: req("graph-view-container"),
     btnNewRun: req("btn-new-run") as HTMLButtonElement,

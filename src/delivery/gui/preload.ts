@@ -129,6 +129,12 @@ const api: GuiApi = {
   onStepContext: (cb) => {
     ipcRenderer.on(IPC.MainToRenderer["step-context"], (_event, data) => cb(data));
   },
+  onStepFrame: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer["step-frame"], (_event, data) => cb(data));
+  },
+  onStepChat: (cb) => {
+    ipcRenderer.on(IPC.MainToRenderer["step-chat"], (_event, data) => cb(data));
+  },
   write: (data) => ipcRenderer.send(IPC.RendererToMain.input, data),
   prompt: (text, mentions) => ipcRenderer.invoke(IPC.RendererToMainInvoke.prompt, text, mentions),
   cancelMain: () => ipcRenderer.send(IPC.RendererToMain["cancel-main"]),

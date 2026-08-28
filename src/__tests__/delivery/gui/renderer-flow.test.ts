@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GUIDE_TEXT } from "../../../adapters/mcp/handlers/content.js";
+import { StepList, type StepRowData } from "../../../delivery/gui/step-list.js";
 
 /**
  * `terminal.ts` wraps xterm (needs a real canvas/DOM); renderer only needs the
@@ -20,14 +21,29 @@ vi.mock("../../../delivery/gui/terminal.js", () => ({
   }),
 }));
 
+/**
+ * Capture the `onNodeClick` callback that GraphView passes to GraphCanvas so
+ * tests can simulate graph-node clicks without touching SVG internals.
+ */
+const { canvasCallbacks } = vi.hoisted(() => ({
+  canvasCallbacks: { onNodeClick: null as ((stepId: string) => void) | null },
+}));
+
 vi.mock("../../../delivery/gui/graph-canvas.js", () => ({
   GraphCanvas: class {
+    constructor(options: { onNodeClick?: (stepId: string) => void }) {
+      if (options?.onNodeClick) canvasCallbacks.onNodeClick = options.onNodeClick;
+    }
     mount() {}
     unmount() {}
     fitToView() {}
+    getZoom() { return 1; }
     updateNodeStatus() {}
     highlightEdge() {}
     getData() { return { nodes: [], edges: [] }; }
+    render() {}
+    setActiveNode() {}
+    setLoopCount() {}
   },
 }));
 
@@ -51,10 +67,13 @@ const DOM = `
       <div id="graph-view-container"></div>
     </section>
     <section id="steps-view">
-      <div class="muted-empty">› No active run</div>
+      <div id="steps-table-container">
+        <div class="muted-empty">› No active run</div>
+      </div>
     </section>
     <section id="chat-view">
-      <div id="chat-scroll"><div id="chat-list"></div></div>
+      <div id="chat-tabs"></div>
+      <div id="chat-scroll"></div>
       <div id="chat-inputbar"><div id="chat-busy" hidden><span id="chat-busy-text">Agent is working.</span><button id="chat-cancel">Cancel</button></div></div>
       <div id="chat-suggestions"></div>
       <div id="chat-promptrow"><span id="chat-mode" class="chat-mode">normal</span><span id="chat-model" hidden></span><input id="chat-input"><button id="chat-send">Send</button><div id="chat-model-menu"></div></div>
@@ -97,25 +116,6 @@ const DOM = `
   <footer id="statusbar">
     <span id="term-size"></span><span id="exit-status"></span>
   </footer>
-  <div id="activity-box" hidden>
-    <div id="activity-permission" class="activity-section" hidden>
-      <div class="activity-section-head">
-        <span class="activity-section-title">Permission</span>
-        <span id="permission-nav" class="permission-nav" hidden>
-          <button id="permission-prev">‹</button>
-          <span id="permission-counter">1/1</span>
-          <button id="permission-next">›</button>
-        </span>
-      </div>
-      <p id="permission-text">Allow tool?</p>
-      <p id="permission-hint">The agent is waiting for your decision.</p>
-      <div id="permission-actions"></div>
-    </div>
-    <div id="activity-tools" class="activity-section" hidden>
-      <div class="activity-section-title">Activity</div>
-      <div id="tool-list"></div>
-    </div>
-  </div>
 </div>
 `;
 
@@ -148,6 +148,8 @@ function createApiStub(): {
     onStepContext: on("stepContext"),
     onGateResult: on("gateResult"),
     onLoopDetected: on("loopDetected"),
+    onStepFrame: on("stepFrame"),
+    onStepChat: on("stepChat"),
     write: (...a: unknown[]) => (calls.write ??= []).push(a),
     prompt: vi.fn(async () => {}),
     cancelMain: (...a: unknown[]) => (calls.cancelMain ??= []).push(a),
@@ -205,6 +207,13 @@ function el(id: string): HTMLElement {
   return node;
 }
 
+/** Get the main tab's chat list (dynamically created in #chat-scroll-main). */
+function chatList(): HTMLElement {
+  const list = document.querySelector("#chat-scroll-main .chat-tab-list") as HTMLElement | null;
+  if (!list) throw new Error("missing main tab chat list");
+  return list;
+}
+
 describe("renderer flow", () => {
   let stub: Stub;
 
@@ -238,7 +247,7 @@ describe("renderer flow", () => {
     expect(el("info-mode").textContent).toBe("acp");
 
     fire("chatReset", {});
-    expect(el("chat-list").querySelector(".chat-empty")).not.toBeNull();
+    expect(chatList().querySelector(".chat-empty")).not.toBeNull();
   });
 
   it("routes chat frames into the panel and hugs the composer", async () => {
@@ -247,38 +256,37 @@ describe("renderer flow", () => {
 
     fire("chatFrame", { frame: { kind: "text", text: "one " } });
     fire("chatFrame", { frame: { kind: "text", text: "two" } });
-    expect(el("chat-list").querySelectorAll(".msg-agent").length).toBe(1);
-    expect(el("chat-list").querySelector(".msg-agent")?.textContent).toContain("one two");
+    expect(chatList().querySelectorAll(".msg-agent").length).toBe(1);
+    expect(chatList().querySelector(".msg-agent")?.textContent).toContain("one two");
 
     fire("chatFrame", {
       frame: { kind: "tool", call: { toolCallId: "t1", title: "grep", name: "grep" } },
     });
-    const toolList = el("tool-list");
-    expect(toolList.querySelector(".tool-entry")).not.toBeNull();
-    expect(el("chat-list").querySelector(".msg-tool")).toBeNull();
+    expect(chatList().querySelector(".tool-entry")).not.toBeNull();
+    expect(chatList().querySelector(".tool-entry .tool-title")?.textContent).toBe("grep");
 
     fire("chatFrame", {
       frame: { kind: "tool_update", update: { toolCallId: "t1", title: "grep", status: "completed" } },
     });
-    expect(toolList.querySelector(".tool-entry")?.classList.contains("done")).toBe(true);
+    expect(chatList().querySelector(".tool-entry")?.classList.contains("done")).toBe(true);
 
-    const head = toolList.querySelector(".tool-head") as HTMLElement | null;
+    const head = chatList().querySelector(".tool-head") as HTMLElement | null;
     expect(head).not.toBeNull();
     head!.click();
-    const entry = toolList.querySelector(".tool-entry") as HTMLElement;
+    const entry = chatList().querySelector(".tool-entry") as HTMLElement;
     expect(entry.classList.contains("expanded")).toBe(true);
 
     fire("chatFrame", { frame: { kind: "usage", usage: { totalTokens: 9, inputTokens: 4, outputTokens: 5 } } });
-    expect(el("chat-list").querySelector(".msg-usage")?.textContent).toContain("9");
+    expect(chatList().querySelector(".msg-usage")?.textContent).toContain("9");
 
     fire("chatFrame", { frame: { kind: "user", text: "hi" } });
-    expect(el("chat-list").querySelector(".msg-user")?.textContent).toBe("hi");
+    expect(chatList().querySelector(".msg-user")?.textContent).toBe("hi");
 
     fire("chatFrame", { frame: { kind: "error", message: "kaput" } });
-    expect(el("chat-list").querySelector(".msg-error")?.textContent).toContain("kaput");
+    expect(chatList().querySelector(".msg-error")?.textContent).toContain("kaput");
 
     fire("chatFrame", { frame: { kind: "turn", stopReason: "end_turn" } });
-    expect(el("chat-list").querySelector(".turn-end")).not.toBeNull();
+    expect(chatList().querySelector(".turn-end")).not.toBeNull();
   });
 
   it("submit sends the trimmed prompt and blocks input until a turn frame", async () => {
@@ -290,14 +298,14 @@ describe("renderer flow", () => {
     (el("chat-send") as HTMLButtonElement).click();
 
     expect(stub.api.prompt).toHaveBeenCalledWith("next step", []);
-    expect(el("chat-list").querySelector(".msg-user")?.textContent).toBe("next step");
+    expect(chatList().querySelector(".msg-user")?.textContent).toBe("next step");
     expect(el("chat-send").getAttribute("disabled")).not.toBeNull();
 
     fire("chatFrame", { frame: { kind: "turn", stopReason: "end_turn" } });
     expect(el("chat-send").getAttribute("disabled")).toBeNull();
   });
 
-  it("queues permission requests in the activity box and navigates the queue", async () => {
+  it("renders permission requests as inline cards in the chat view", async () => {
     await loadRenderer();
     fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
 
@@ -312,34 +320,22 @@ describe("renderer flow", () => {
 
     fire("permission", request("req-1"));
 
-    expect(el("activity-box").hidden).toBe(false);
-    expect(el("permission-text").textContent).toContain("Run tests");
-    expect(el("permission-actions").querySelectorAll("button").length).toBe(2);
-    // Single pending request: no need for navigation.
-    expect(el("permission-nav").hidden).toBe(true);
+    const cards = () => chatList().querySelectorAll(".permission-card");
+    expect(cards()).toHaveLength(1);
+    expect(cards()[0].querySelector(".permission-text")?.textContent).toContain("Run tests");
+    expect(cards()[0].querySelectorAll("button").length).toBe(2);
 
     fire("permission", request("req-2"));
-    expect(el("permission-nav").hidden).toBe(false);
-    expect(el("permission-counter").textContent).toBe("1/2");
+    expect(cards()).toHaveLength(2);
 
-    // Navigate to the second request, then back to the first.
-    (el("permission-next") as HTMLButtonElement).click();
-    expect(el("permission-counter").textContent).toBe("2/2");
-    (el("permission-prev") as HTMLButtonElement).click();
-    expect(el("permission-counter").textContent).toBe("1/2");
-
-    const allowBtn = el("permission-actions").querySelector("button") as HTMLButtonElement;
+    // Answer the first request — its card is removed, second stays.
+    const allowBtn = cards()[0].querySelector("button") as HTMLButtonElement;
     allowBtn.click();
     expect(stub.calls.answerPermission[0]).toEqual(["req-1", "allow_once"]);
-
-    // The answered request left the queue; the box stays open for req-2.
-    expect(el("activity-box").hidden).toBe(false);
-    expect(el("permission-counter").textContent).toBe("1/1");
-    expect(el("permission-nav").hidden).toBe(true);
-    expect(el("permission-actions").querySelectorAll("button").length).toBe(2);
+    expect(cards()).toHaveLength(1);
   });
 
-  it("hides the activity box when a chat reset clears permissions and tools", async () => {
+  it("clears permission cards and tool entries on chat reset", async () => {
     await loadRenderer();
     fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
 
@@ -349,11 +345,12 @@ describe("renderer flow", () => {
       options: [{ optionId: "allow", kind: "allow_once", name: "Allow once" }],
     });
     fire("chatFrame", { frame: { kind: "tool", call: { toolCallId: "t1", title: "grep" } } });
-    expect(el("activity-box").hidden).toBe(false);
+    expect(chatList().querySelectorAll(".permission-card")).toHaveLength(1);
+    expect(chatList().querySelectorAll(".tool-entry")).toHaveLength(1);
 
     fire("chatReset", {});
-    expect(el("activity-box").hidden).toBe(true);
-    expect(el("tool-list").querySelectorAll(".tool-entry")).toHaveLength(0);
+    expect(chatList().querySelectorAll(".permission-card")).toHaveLength(0);
+    expect(chatList().querySelectorAll(".tool-entry")).toHaveLength(0);
   });
 
   it("cycles composer modes with Tab (normal -> workflow -> normal when no custom modes)", async () => {
@@ -384,7 +381,7 @@ describe("renderer flow", () => {
 
     expect(stub.api.prompt).toHaveBeenCalledWith(`${GUIDE_TEXT.trim()}\n\ndo it`, []);
     // The user bubble shows only the typed text, not the injected guide.
-    expect(el("chat-list").querySelector(".msg-user")?.textContent).toBe("do it");
+    expect(chatList().querySelector(".msg-user")?.textContent).toBe("do it");
   });
 
   it("cycles through a custom ~/.orc/modes instruction and prepends it", async () => {
@@ -591,7 +588,7 @@ describe("renderer flow", () => {
     // Non-interactive empty state: Enter still submits the raw line.
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
     expect(stub.api.prompt).toHaveBeenCalledWith("/mod", []);
-    expect(el("chat-list").querySelector(".msg-user")?.textContent).toBe("/mod");
+    expect(chatList().querySelector(".msg-user")?.textContent).toBe("/mod");
   });
 
   it("never prepends the workflow guide to a leading-slash line", async () => {
@@ -685,5 +682,281 @@ describe("renderer flow", () => {
       },
     });
     expect(el("chat-model").hidden).toBe(true);
+  });
+
+  it("graph node click delegates to api.switchStep", async () => {
+    await loadRenderer();
+    // The renderer creates a GraphView whose constructor passes an onNodeClick
+    // callback to the (mocked) GraphCanvas.  The mock captures it via
+    // canvasCallbacks so we can simulate a node click without SVG internals.
+    expect(canvasCallbacks.onNodeClick).not.toBeNull();
+    canvasCallbacks.onNodeClick!("step-1");
+    expect(stub.api.switchStep).toHaveBeenCalledWith("step-1");
+  });
+
+  it("StepList row click wires through to api.switchStep", async () => {
+    await loadRenderer();
+    // Mount a standalone StepList whose onSelect mimics the StepsView wiring
+    // (StepsView.onStepSelect → api.switchStep).
+    const listContainer = document.createElement("div");
+    document.body.appendChild(listContainer);
+
+    const stepList = new StepList({
+      onSelect: (stepId) => {
+        // This mirrors what StepsView.onStepSelect does.
+        (stub.api.switchStep as Function)(stepId);
+      },
+    });
+    stepList.mount(listContainer);
+    stepList.setSteps([
+      { stepId: "step-a", status: "completed", isGate: false, order: 0 },
+      { stepId: "step-b", status: "running", isGate: false, order: 1 },
+    ]);
+
+    const row = listContainer.querySelector<HTMLElement>('tr[data-step-id="step-a"]');
+    expect(row).not.toBeNull();
+    row!.click();
+
+    expect(stub.api.switchStep).toHaveBeenCalledWith("step-a");
+
+    stepList.unmount();
+    listContainer.remove();
+  });
+
+  it("graph node click opens a step tab in ACP mode", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    expect(canvasCallbacks.onNodeClick).not.toBeNull();
+    canvasCallbacks.onNodeClick!("step-42");
+    const tabs = document.querySelectorAll(".chat-tab");
+    const labels = Array.from(tabs).map(t => t.querySelector(".chat-tab-label")?.textContent?.trim());
+    expect(labels).toContain("step-42");
+  });
+
+  it("graph node click does NOT open a step tab in PTY mode", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "pty" });
+    expect(canvasCallbacks.onNodeClick).not.toBeNull();
+    canvasCallbacks.onNodeClick!("step-42");
+    const tabs = document.querySelectorAll(".chat-tab");
+    const labels = Array.from(tabs).map(t => t.querySelector(".chat-tab-label")?.textContent?.trim());
+    expect(labels).not.toContain("step-42");
+  });
+
+  it("onStepActivated opens a tab in ACP mode for non-main steps", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    fire("step", { stepId: "arch" });
+    await vi.waitFor(() => {
+      const tabs = document.querySelectorAll(".chat-tab");
+      const labels = Array.from(tabs).map(t => t.querySelector(".chat-tab-label")?.textContent?.trim());
+      expect(labels).toContain("arch");
+    });
+  });
+
+  it("onStepActivated does NOT open a tab for __main__ step", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    fire("step", { stepId: "__main__" });
+    await vi.waitFor(() => {
+      const tabs = document.querySelectorAll(".chat-tab");
+      const labels = Array.from(tabs).map(t => t.querySelector(".chat-tab-label")?.textContent?.trim());
+      expect(labels).not.toContain("__main__");
+    });
+  });
+
+  it("renders completion summary in chat when report is present", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    fire("workflowStarted", {
+      runId: "r1",
+      workflowId: "wf-1",
+      workflow: {
+        version: 1,
+        workflow: { name: "Test Workflow", steps: [], completion: "Done" },
+      },
+    });
+    fire("workflowComplete", {
+      runId: "r1",
+      status: "completed",
+      finalSignal: "sig_done",
+      report: {
+        workflowId: "wf-1",
+        source: "registered",
+        outcomes: [
+          { stepId: "arch", status: "completed", summary: "architecture done", retries: 0 },
+        ],
+        totalSteps: 1,
+        completed: 1,
+        failed: 0,
+        paused: 0,
+      },
+    });
+
+    const chatText = chatList().textContent;
+    expect(chatText).toContain("Test Workflow");
+    expect(chatText).toContain("COMPLETED");
+    expect(chatText).toContain("arch");
+    expect(chatText).toContain("architecture done");
+  });
+
+  it("switches to chat view on completion in ACP mode", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    fire("workflowStarted", {
+      runId: "r1",
+      workflowId: "wf-1",
+      workflow: {
+        version: 1,
+        workflow: { name: "My WF", steps: [], completion: "Done" },
+      },
+    });
+    // Start on graph view
+    expect(el("chat-view").classList.contains("active")).toBe(false);
+
+    fire("workflowComplete", {
+      runId: "r1",
+      status: "completed",
+      report: {
+        workflowId: "wf-1",
+        source: "registered",
+        outcomes: [],
+        totalSteps: 0,
+        completed: 0,
+        failed: 0,
+        paused: 0,
+      },
+    });
+
+    expect(el("chat-view").classList.contains("active")).toBe(true);
+  });
+
+  it("does not show completion message when report is undefined (old daemon)", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    fire("workflowStarted", {
+      runId: "r1",
+      workflowId: "wf-1",
+      workflow: {
+        version: 1,
+        workflow: { name: "Old WF", steps: [], completion: "Done" },
+      },
+    });
+    const chatBefore = chatList().innerHTML;
+
+    fire("workflowComplete", {
+      runId: "r1",
+      status: "completed",
+    });
+
+    // No completion summary added — chat unchanged (except for empty state removal)
+    const chatAfter = chatList().innerHTML;
+    expect(chatAfter).not.toContain("COMPLETED");
+    expect(chatAfter).not.toContain("Old WF");
+  });
+
+  it("falls back to generic workflow name when not cached", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    // Skip workflowStarted — no cached name
+
+    fire("workflowComplete", {
+      runId: "r1",
+      status: "completed",
+      report: {
+        workflowId: "wf-1",
+        source: "registered",
+        outcomes: [],
+        totalSteps: 0,
+        completed: 0,
+        failed: 0,
+        paused: 0,
+      },
+    });
+
+    const chatText = chatList().textContent;
+    expect(chatText).toContain("workflow");
+  });
+
+  it("full ACP workflow: start → step frames → complete → graph click shows step chat", async () => {
+    await loadRenderer();
+    // 1. Enter ACP mode
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+
+    // 2. Workflow starts
+    fire("workflowStarted", {
+      runId: "r1",
+      workflowId: "wf-1",
+      workflow: {
+        version: 1,
+        workflow: { name: "E2E Workflow", steps: [], completion: "Done" },
+      },
+    });
+
+    // 3. Step frames arrive for "arch"
+    fire("stepFrame", {
+      stepId: "arch",
+      type: "tool_call",
+      data: { toolCallId: "tc-1", title: "write_file" },
+    });
+    fire("stepFrame", {
+      stepId: "arch",
+      type: "usage",
+      data: { totalTokens: 1500, inputTokens: 1000, outputTokens: 500 },
+    });
+
+    // 4. Workflow completes with report
+    fire("workflowComplete", {
+      runId: "r1",
+      status: "completed",
+      finalSignal: "sig_done",
+      report: {
+        workflowId: "wf-1",
+        source: "registered",
+        outcomes: [
+          { stepId: "arch", status: "completed", summary: "architecture done", retries: 0 },
+        ],
+        totalSteps: 1,
+        completed: 1,
+        failed: 0,
+        paused: 0,
+      },
+    });
+
+    // 5. Verify completion summary in chat
+    const chatText = chatList().textContent;
+    expect(chatText).toContain("E2E Workflow");
+    expect(chatText).toContain("completed");
+    expect(chatText).toContain("1/1");
+
+    // 6. Graph click on "arch" → step tab opens with buffered frames
+    canvasCallbacks.onNodeClick!("arch");
+    const tabs = document.querySelectorAll(".chat-tab");
+    const labels = Array.from(tabs).map(t => t.querySelector(".chat-tab-label")?.textContent?.trim());
+    expect(labels).toContain("arch");
+  });
+
+  it("old daemon (no report) → event logged but no completion message in chat", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    fire("workflowStarted", {
+      runId: "r1",
+      workflowId: "wf-1",
+      workflow: {
+        version: 1,
+        workflow: { name: "Old Workflow", steps: [], completion: "Done" },
+      },
+    });
+    // Complete without report (old daemon)
+    fire("workflowComplete", {
+      runId: "r1",
+      status: "completed",
+    });
+    // Old daemon: no report → no completion message in chat
+    const chatText = chatList().textContent;
+    expect(chatText).not.toContain("completed");
+    // But the event log should show the workflow completed
+    const eventText = el("event-list").textContent;
+    expect(eventText).toContain("completed");
   });
 });

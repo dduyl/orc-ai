@@ -1344,3 +1344,70 @@ describe("step-handler quota surfacing chain", () => {
     }
   });
 });
+
+describe("step-handler agent metadata", () => {
+  beforeEach(() => {
+    repoStateMock.readRepoState = null;
+    agentCalls.length = 0;
+    mockState.pending = false;
+    mockState.killSettles = true;
+    mockState.resolve = undefined;
+    mockState.rejectWith = undefined;
+    mockState.sequence = undefined;
+    mockState.callCount = 0;
+  });
+
+  it("populates usage, model, duration, and toolCalls from agent result", async () => {
+    mockState.sequence = [
+      {
+        resolveValue: {
+          content: "done",
+          model: "gpt-4o",
+          tokensUsed: 150,
+          duration: 5000,
+          usage: { totalTokens: 150, inputTokens: 80, outputTokens: 70, thoughtTokens: 0, cachedReadTokens: 0, cachedWriteTokens: 0 },
+          toolCalls: [{ name: "bash", rawInput: { command: "ls" } }],
+        },
+      },
+    ];
+    const handler = createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: emitter(),
+      task: "t",
+    });
+    const out = await handler(
+      { id: "s1", type: "agent", agent: "codegen", emits: [sig("sig_pass")], on: ["__start__"], context: [] } as any,
+      ctx(),
+    );
+
+    expect(out.status).toBe("completed");
+    expect(out.usage).toEqual({ totalTokens: 150, inputTokens: 80, outputTokens: 70, thoughtTokens: 0, cachedReadTokens: 0, cachedWriteTokens: 0 });
+    expect(out.model).toBe("gpt-4o");
+    expect(out.duration).toBe(5000);
+    expect(out.toolCalls).toHaveLength(1);
+    expect(out.toolCalls![0].name).toBe("bash");
+  });
+
+  it("omits usage/model/duration/toolCalls when not provided by the agent", async () => {
+    mockState.sequence = [
+      { resolveValue: { content: "done", model: "test", tokensUsed: 5, duration: 1 } },
+    ];
+    const handler = createStepHandler({
+      adapter: { id: "test", name: "test", provider: "openai", model: "x", url: "" } as any,
+      agentPrompts: new Map([["codegen", { systemPrompt: "SYS", description: "d", outputs: [] }]]),
+      completedSummaries: new Map(),
+      emitter: emitter(),
+      task: "t",
+    });
+    const out = await handler(
+      { id: "s1", type: "agent", agent: "codegen", emits: [sig("sig_pass")], on: ["__start__"], context: [] } as any,
+      ctx(),
+    );
+
+    expect(out.status).toBe("completed");
+    expect(out.usage).toBeUndefined();
+    expect(out.toolCalls).toBeUndefined();
+  });
+});

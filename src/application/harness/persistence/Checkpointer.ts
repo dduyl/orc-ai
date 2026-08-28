@@ -3,6 +3,8 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import type { HookEvent } from "../../../core/hooks.js";
 import type { QuotaInfo } from "../../agents/errors.js";
+import type { AgentUsage } from "../../agents/acp/types.js";
+import type { ToolCall } from "@agentclientprotocol/sdk";
 
 export interface StepResumeSnapshot {
   status: "completed" | "failed";
@@ -20,6 +22,14 @@ export interface StepResumeSnapshot {
   downgradedTo?: string;
   providerFailover?: string;
   needsHuman?: boolean;
+  /** Agent token usage observed during the step (ACP). */
+  usage?: AgentUsage;
+  /** Agent model identifier from the step. */
+  model?: string;
+  /** Wall-clock duration of the step in milliseconds. */
+  duration?: number;
+  /** Structured tool calls observed during the step (ACP). */
+  toolCalls?: ToolCall[];
 }
 
 export interface ResumeState {

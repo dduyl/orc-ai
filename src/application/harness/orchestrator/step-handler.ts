@@ -23,6 +23,7 @@ import type { ModelRoutingConfig } from "../../agents/config.js";
 import { resolveVariantTier, BUILTIN_TIERED_ROLES, type Tier } from "../../agents/variants.js";
 import { readConfiguredProviders } from "../../agents/configured-providers.js";
 import type { OnProviderQuota, TokenPaidRequest } from "../../agents/acp/types.js";
+import type { AcpChatFrame } from "../../agents/adapter-acp.js";
 
 /** Bounded exponential backoff: 1s -> 2s -> 4s ... capped at 30s. */
 const BACKOFF_BASE_MS = 1000;
@@ -329,8 +330,11 @@ export function createStepHandler(options: {
           ? agentInfo.systemPrompt + "\n\n" + buildRepairPrompt(repair.gateId, repair.result, step, completionKey)
           : agentInfo.systemPrompt + "\n\n" + buildStepContext(step, completedSummaries, task, agentInfo, completionKey);
         const hookFile = createHookFile(step.id);
+        const onStepChat = (sid: string, event: { textChunk?: string; chatFrame?: AcpChatFrame }) => {
+          onProgress?.({ type: "step_chat", runId, stepId: sid, ...event });
+        };
         try {
-          const handle = callAgentStream(callFor, combinedPrompt, hookFile, downgradeTo, tier, variantModel, configuredProviders, onProviderQuota, tokenPaid, modelRoutingConfig?.providers);
+          const handle = callAgentStream(callFor, combinedPrompt, hookFile, downgradeTo, tier, variantModel, configuredProviders, onProviderQuota, tokenPaid, modelRoutingConfig?.providers, onStepChat);
           onProgress?.({ type: "step_pty", runId, stepId: step.id, pty: handle.pty });
           const abortSignal = ctx.signal;
           // Register before attaching the abort listener: the sync aborted
@@ -415,6 +419,10 @@ export function createStepHandler(options: {
           signal: orcResult?.signal,
           ...(result.downgradedTo ? { downgradedTo: result.downgradedTo } : {}),
           ...(result.providerFailover ? { providerFailover: result.providerFailover } : {}),
+          ...(result.usage ? { usage: result.usage } : {}),
+          ...(result.model ? { model: result.model } : {}),
+          ...(result.duration ? { duration: result.duration } : {}),
+          ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}),
         };
         if (result.downgradedTo) {
           log.info(`step '${step.id}' quota — completed on downgraded model '${result.downgradedTo}'`);
@@ -426,8 +434,15 @@ export function createStepHandler(options: {
           log.info(`step '${step.id}' completed on token-paid fallback (method '${tokenPaid?.methodId}')`);
         }
         tracker?.tracker.setStepCompleted(tracker.runId, step.id, "completed");
-        onProgress?.({ type: "step_complete", runId, stepId: step.id, status: "completed", duration: result.duration });
-        emitter.stepFinish(step.id, "stop", "", { total: 0, input: 0, output: output.length, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
+        onProgress?.({
+          type: "step_complete", runId, stepId: step.id, status: "completed", duration: result.duration,
+          ...(result.usage ? { usage: result.usage } : {}),
+          ...(result.model ? { model: result.model } : {}),
+          ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}),
+        });
+        emitter.stepFinish(step.id, "stop", "", result.usage
+          ? { total: result.usage.totalTokens, input: result.usage.inputTokens, output: result.usage.outputTokens, reasoning: result.usage.thoughtTokens ?? 0, cache: { write: result.usage.cachedWriteTokens ?? 0, read: result.usage.cachedReadTokens ?? 0 } }
+          : { total: 0, input: 0, output: output.length, reasoning: 0, cache: { write: 0, read: 0 } }, 0);
         return o;
       } catch (err: any) {
         if (ctx.signal?.aborted) {
@@ -446,6 +461,10 @@ export function createStepHandler(options: {
             stepId: step.id,
             status: "failed",
             error: agentErr.message,
+            errorKind: agentErr.kind,
+            ...(agentErr.retryAfterMs ? { retryAfterMs: agentErr.retryAfterMs } : {}),
+            ...(agentErr.resetAtMs ? { resetAtMs: agentErr.resetAtMs } : {}),
+            ...(agentErr.providerCode ? { providerCode: agentErr.providerCode } : {}),
             ...(quota ? { quota } : {}),
           });
           emitter.stepFinish(step.id, quota ? "quota" : "error", "", { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } }, 0, quota);

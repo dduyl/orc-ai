@@ -117,10 +117,34 @@ body::before {
 /* ══ Chat view ══ */
 #chat-view { flex: 1; display: none; flex-direction: column; min-height: 0; }
 #chat-view.active { display: flex; }
+#chat-tabs {
+  display: flex; gap: 0; min-height: 32px; max-height: 32px;
+  overflow-x: auto; overflow-y: hidden;
+  background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle);
+}
+#chat-tabs:empty { display: none; }
+.chat-tab {
+  border: 0; background: transparent; color: var(--text-secondary);
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.3px;
+  padding: 7px 10px; cursor: pointer; white-space: nowrap;
+  position: relative; transition: color var(--dur-fast) var(--ease-out);
+  border-right: 1px solid var(--border-subtle);
+  display: flex; align-items: center; gap: 6px;
+}
+.chat-tab:hover { color: var(--text-primary); background: var(--bg-raised); }
+.chat-tab.active { color: var(--accent); }
+.chat-tab.active::after {
+  content: ""; position: absolute; left: 6px; right: 6px; bottom: 0;
+  height: 2px; background: var(--accent);
+}
+.chat-tab-close {
+  border: 0; background: transparent; color: var(--text-faint);
+  font-size: 13px; line-height: 1; padding: 0 2px; cursor: pointer;
+  border-radius: 2px; transition: all var(--dur-fast);
+}
+.chat-tab-close:hover { color: var(--err); background: rgba(255,107,107,0.12); }
 #chat-scroll { flex: 1; overflow-y: auto; padding: var(--space-5) var(--space-6); }
 #chat-scroll::-webkit-scrollbar { width: 8px; }
-
-#chat-list { display: flex; flex-direction: column; gap: var(--space-4); max-width: 860px; margin: 0 auto; }
 
 .msg { animation: reveal var(--dur-med) var(--ease-out); }
 @keyframes reveal { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
@@ -328,10 +352,36 @@ body::before {
 .gate-indicator.running { fill: var(--accent); }
 .gate-indicator.failed { fill: var(--err); }
 .gate-indicator.pending { fill: var(--text-faint); }
+.graph-zoom-controls { display: flex; align-items: center; gap: 4px; }
+.graph-zoom-controls .btn-icon {
+  width: 24px; height: 24px; padding: 0; font-size: 14px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-inset); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+  color: var(--text-secondary); cursor: pointer; transition: all var(--dur-fast);
+}
+.graph-zoom-controls .btn-icon:hover { background: var(--bg-raised); color: var(--text-primary); border-color: var(--border-strong); }
+.graph-zoom-level {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-faint);
+  min-width: 36px; text-align: center; user-select: none;
+}
+.graph-hint {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; color: var(--text-faint); background: var(--bg-surface);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+  padding: 4px 12px; pointer-events: none; z-index: 10;
+  opacity: 1; transition: opacity 0.6s ease;
+}
+.graph-hint.fading { opacity: 0; }
 
 /* ══ Steps view ══ */
 #steps-view { flex: 1; display: none; flex-direction: column; min-height: 0; overflow: hidden; }
 #steps-view.active { display: flex; }
+#steps-table-container { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.msg-error { color: #ef4444; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; padding: var(--space-2) var(--space-3); background: rgba(239,68,68,0.06); border-radius: var(--radius-sm); }
+.msg-error .error-header { display: flex; align-items: center; gap: 6px; }
+.msg-error .error-kind { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: rgba(239,68,68,0.15); color: #fca5a5; }
+.msg-error .error-detail { margin-top: 4px; font-size: 11px; color: var(--text-faint); }
+.msg-agent-streaming { white-space: pre-wrap; }
 .step-list-header {
   display: flex; align-items: center; justify-content: space-between;
   height: 32px; min-height: 32px; padding: 0 var(--space-3);
@@ -364,6 +414,7 @@ body::before {
 .step-list-table .gate-column.fail { color: var(--err); }
 .step-list-table .gate-column.running { color: var(--accent); }
 .step-list-empty { text-align: center; color: var(--text-faint); padding: var(--space-4); font-family: var(--font-mono); font-size: 11px; }
+.step-list-table tr.step-selected { background: var(--accent-dim); outline: 1px solid var(--accent); }
 
 /* ── Splitter ────────────────────────────────────────────── */
 #splitter {
@@ -423,53 +474,18 @@ body::before {
 #sb-spacer { flex: 1; }
 #term-size, #exit-status { color: var(--text-faint); }
 
-/* ── Activity box (permissions + tools) ──────────────────── */
-#activity-box {
-  position: fixed; right: var(--space-4);
-  bottom: calc(var(--status-h) + var(--space-3));
-  width: min(400px, calc(100vw - 2 * var(--space-4)));
-  z-index: 40;
-  display: flex; flex-direction: column; gap: var(--space-3);
-  padding: var(--space-3);
-  background: rgba(13, 16, 20, 0.78); backdrop-filter: blur(8px);
-  border: 1px solid var(--border-strong); border-radius: var(--radius-md);
-  box-shadow: var(--shadow-pop);
-  font-family: var(--font-ui);
-}
-#activity-box[hidden] { display: none; }
-#activity-box[hidden] .activity-section { display: none; }
-
-.activity-section {
+.permission-card {
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-inset); padding: var(--space-2) var(--space-3);
   display: flex; flex-direction: column; gap: var(--space-2);
-  min-width: 0;
 }
-.activity-section[hidden] { display: none; }
-.activity-section-head {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
-  min-height: 22px;
-}
-.activity-section-title {
-  font-family: var(--font-ui); font-size: 10px; text-transform: uppercase;
-  letter-spacing: 1.6px; color: var(--text-faint); font-weight: 600;
-}
-.permission-nav {
-  display: flex; align-items: center; gap: var(--space-1);
-  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
-}
-.permission-nav[hidden] { display: none; }
-.btn-nav {
-  min-width: 22px; padding: 2px 6px; font-size: 13px; line-height: 1;
-  color: var(--text-secondary); border-color: var(--border-subtle);
-}
-.btn-nav:hover { color: var(--text-primary); border-color: var(--border-strong); }
-#permission-counter { min-width: 34px; text-align: center; }
-
-#permission-text {
+.permission-header {
+  display: flex; align-items: center; gap: var(--space-2);
   font-family: var(--font-mono); font-size: 12.5px; color: var(--text-primary);
-  line-height: 1.55; word-break: break-word;
 }
-#permission-hint { font-family: var(--font-ui); font-size: 10.5px; color: var(--text-faint); }
-#permission-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: flex-end; }
+.permission-icon { font-size: 14px; }
+.permission-text { line-height: 1.55; word-break: break-word; }
+.permission-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: flex-end; }
 
 .btn {
   font-family: var(--font-ui); font-size: 12px; padding: 7px 14px;
@@ -486,7 +502,6 @@ body::before {
 .title-actions { margin-left: var(--space-4); }
 .title-actions .btn { font-size: 11px; padding: 4px 10px; }
 
-#tool-list { display: flex; flex-direction: column; gap: var(--space-1); max-height: 40vh; overflow-y: auto; }
 .tool-entry {
   border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
   background: var(--bg-inset); overflow: hidden;
@@ -648,19 +663,15 @@ body::before {
 
       <!-- Steps view -->
       <section id="steps-view">
-        <div class="muted-empty">› No active run</div>
+        <div id="steps-table-container">
+          <div class="muted-empty">› No active run</div>
+        </div>
       </section>
 
       <!-- Chat view -->
       <section id="chat-view">
-        <div id="chat-scroll">
-          <div id="chat-list">
-            <div class="chat-empty">
-              <div>Waiting for a message…</div>
-              <div class="kbd">Chat runs over ACP · Synced with the ORC daemon</div>
-            </div>
-          </div>
-        </div>
+        <div id="chat-tabs"></div>
+        <div id="chat-scroll"></div>
         <div id="chat-inputbar">
           <div id="chat-busy" hidden>
             <span class="pip"></span>
@@ -761,29 +772,6 @@ body::before {
     <span id="exit-status"></span>
   </footer>
 
-</div>
-
-<!-- Activity box: floating permissions + tool results -->
-<div id="activity-box" hidden>
-  <div id="activity-permission" class="activity-section" hidden>
-    <div class="activity-section-head">
-      <span class="activity-section-title">Permission</span>
-      <span id="permission-nav" class="permission-nav" hidden>
-        <button id="permission-prev" class="btn btn-nav" aria-label="Previous request">‹</button>
-        <span id="permission-counter">1/1</span>
-        <button id="permission-next" class="btn btn-nav" aria-label="Next request">›</button>
-      </span>
-    </div>
-    <p id="permission-text">Allow tool?</p>
-    <p id="permission-hint">The agent is waiting for your decision. Rejecting cancels this tool call.</p>
-    <div id="permission-actions"></div>
-  </div>
-  <div id="activity-tools" class="activity-section" hidden>
-    <div class="activity-section-head">
-      <span class="activity-section-title">Activity</span>
-    </div>
-    <div id="tool-list"></div>
-  </div>
 </div>
 
 <script src="renderer.js"></script>

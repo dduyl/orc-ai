@@ -2,6 +2,8 @@ import { START_SIGNAL, validateWorkflowGraph, type WorkflowStep } from "../../..
 import type { HookEvent } from "../../../core/hooks.js";
 import type { CommandExecutionResult } from "./CommandExecutor.js";
 import type { QuotaInfo } from "../../agents/errors.js";
+import type { AgentUsage } from "../../agents/acp/types.js";
+import type { ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
 import { log } from "../../../core/log.js";
 
 export interface RunContext {
@@ -58,6 +60,14 @@ export interface StepOutcome {
   providerFailover?: string;
   /** ADR-016: whether the failure requires human escalation. */
   needsHuman?: boolean;
+  /** Agent token usage observed during the step (ACP). */
+  usage?: AgentUsage;
+  /** Agent model identifier from the step. */
+  model?: string;
+  /** Wall-clock duration of the step in milliseconds. */
+  duration?: number;
+  /** Structured tool calls observed during the step (ACP). */
+  toolCalls?: ToolCall[];
 }
 
 export type StepHandler = (step: WorkflowStep, ctx: RunContext) => Promise<StepOutcome>;

@@ -46,7 +46,7 @@ export class DaemonBridge {
   private mainBuffer = "";
   private stepBuffers = new Map<string, string>();
   /** `pty` → raw ANSI bytes on the main pipe; `acp` → structured `MainFrame`s. */
-  private mainMode: "pty" | "acp" = "pty";
+  private mainMode: "pty" | "acp" = "acp";
   private activeStepId = MAIN_STEP_ID;
   private latestRunId: string | null = null;
   private mainExited = false;
@@ -497,8 +497,37 @@ export class DaemonBridge {
       if (!this.stepBuffers.has(event.stepId)) this.stepBuffers.set(event.stepId, "");
       if (event.runId === this.latestRunId) this.switchToStep(event.stepId);
       this.deriveStepStart(event);
-    } else if (event.type === "step_complete" && event.stepId) {
+    } else if (event.type === "step_complete" && event.stepId && event.runId) {
       this.deriveStepComplete(event);
+      this.send(IPC.MainToRenderer["step-frame"], {
+        stepId: event.stepId,
+        runId: event.runId,
+        status: event.status ?? "unknown",
+        ...(event.usage ? { usage: event.usage } : {}),
+        ...(event.model ? { model: event.model } : {}),
+        ...(event.duration ? { duration: event.duration } : {}),
+        ...(event.toolCalls ? { toolCalls: event.toolCalls } : {}),
+        ...(event.error ? { error: event.error } : {}),
+        ...(event.errorKind ? { errorKind: event.errorKind } : {}),
+        ...(event.resetAtMs ? { resetAtMs: event.resetAtMs } : {}),
+        ...(event.retryAfterMs ? { retryAfterMs: event.retryAfterMs } : {}),
+        ...(event.providerCode ? { providerCode: event.providerCode } : {}),
+      });
+    } else if (event.type === "step_chat" && event.stepId && event.runId) {
+      if (event.textChunk) {
+        this.send(IPC.MainToRenderer["step-chat"], {
+          stepId: event.stepId,
+          runId: event.runId,
+          textChunk: event.textChunk,
+        });
+      }
+      if (event.chatFrame) {
+        this.send(IPC.MainToRenderer["step-chat"], {
+          stepId: event.stepId,
+          runId: event.runId,
+          chatFrame: event.chatFrame,
+        });
+      }
     }
   }
 
@@ -616,6 +645,7 @@ export class DaemonBridge {
         runId: info.runId,
         status: info.status === "completed" ? "completed" : "failed",
         finalSignal: undefined,
+        report: info.report,
       });
       this.forgetRunState(info.runId);
       // Do NOT clear stepBuffers here: the combined `__screen__` replay and per-step

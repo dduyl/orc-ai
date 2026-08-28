@@ -76,6 +76,21 @@ export class StepList {
     this.render();
   }
 
+  /** Programmatically select a step row by id — highlights it and fires onSelect. */
+  selectStep(stepId: string): void {
+    if (!this.container) return;
+    const row = this.container.querySelector(`tr[data-step-id="${stepId}"]`) as HTMLElement | null;
+    this.clearSelection();
+    if (row) {
+      row.classList.add("step-selected");
+      this.callbacks.onSelect(stepId);
+    }
+  }
+
+  private clearSelection(): void {
+    this.container?.querySelectorAll(".step-selected").forEach(el => el.classList.remove("step-selected"));
+  }
+
   private setFilter(filter: typeof this.filter): void {
     this.filter = filter;
     this.container?.querySelectorAll<HTMLButtonElement>(".filter-btn").forEach(btn => {

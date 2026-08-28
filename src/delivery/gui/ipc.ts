@@ -12,13 +12,15 @@
  */
 import type { MainFrame } from "../../application/harness/daemon/main-frame-codec.js";
 import type { PromptMention } from "../../application/harness/daemon/rpc-protocol.js";
-import type { ProgressEvent } from "../../application/harness/orchestrator/index.js";
+import type { ProgressEvent, RunReport } from "../../application/harness/orchestrator/index.js";
 import type { RunRecord } from "../../application/harness/persistence/Tracker.js";
 import type { PermissionRequest } from "../../application/agents/acp/permission.js";
-import type { PermissionAnswerKind } from "../../application/agents/acp/types.js";
+import type { AcpChatFrame, PermissionAnswerKind } from "../../application/agents/acp/types.js";
 import type { WorkflowDefinition } from "../../core/schemas.js";
 import type { RegisteredWorkflow } from "../../application/planner/registry.js";
 import type { WorkflowGraphData, SignalEvent } from "../../core/workflow-graph.js";
+import type { AgentUsage } from "../../application/agents/acp/types.js";
+import type { ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
 export type {
   PermissionRequest,
   PermissionAnswerKind,
@@ -27,6 +29,7 @@ export type {
   RegisteredWorkflow,
   WorkflowGraphData,
   SignalEvent,
+  RunReport,
 };
 
 /**
@@ -85,6 +88,30 @@ export interface StepInfo {
  */
 export type ChatFrame = MainFrame | { kind: "user"; text: string };
 
+/**
+ * Structured step metadata broadcast when a step completes.
+ * Carries agent usage, model, duration, tool calls, and structured error info.
+ */
+export interface StepFrame {
+  stepId: string;
+  runId: string;
+  status: string;
+  usage?: AgentUsage;
+  model?: string;
+  duration?: number;
+  toolCalls?: ToolCall[];
+  error?: string;
+  errorKind?: string;
+  resetAtMs?: number;
+  retryAfterMs?: number;
+  providerCode?: string;
+}
+
+/** Per-step chat frame: streaming text or a structured agent event. */
+export type StepChatFrame =
+  | { textChunk: string; chatFrame?: never }
+  | { textChunk?: never; chatFrame: AcpChatFrame };
+
 // ── Payload contracts (keyed by wire channel name) ─────────────────────────
 
 /** Main → renderer event channels: name → payload type. */
@@ -100,12 +127,14 @@ export interface MainToRendererEvents {
   "chat-reset": Record<string, never>;
   "stream-event": ProgressEvent;
   "workflow-started": { runId: string; workflowId: string; workflow: WorkflowDefinition };
-  "workflow-complete": { runId: string; status: "completed" | "failed"; finalSignal?: string };
+  "workflow-complete": { runId: string; status: "completed" | "failed"; finalSignal?: string; report?: RunReport };
   "signal-emitted": { stepId: string; signal: string; payload?: unknown; timestamp: number };
   "edge-matched": { fromStep: string; signal: string; toStep: string; timestamp: number };
   "gate-result": { stepId: string; gate: string; exitCode: number; output: string };
   "loop-detected": { stepId: string; iteration: number; reason: string; fromSignal: string };
   "step-context": { stepId: string; agent: string; context: string[]; emits: string[] };
+  "step-frame": StepFrame;
+  "step-chat": { stepId: string; runId: string } & StepChatFrame;
 }
 
 /** The main process's channel → payload send function consumed by the bridge. */
@@ -181,6 +210,8 @@ export const IPC = {
     "gate-result": "gate-result",
     "loop-detected": "loop-detected",
     "step-context": "step-context",
+    "step-frame": "step-frame",
+    "step-chat": "step-chat",
   },
 } as const satisfies {
   RendererToMain: Record<keyof RendererToMainSend, string>;
@@ -202,12 +233,14 @@ export interface GuiApi {
   onChatFrame(cb: (data: { frame: ChatFrame }) => void): void;
   onChatReset(cb: () => void): void;
   onWorkflowStarted(cb: (data: { runId: string; workflowId: string; workflow: WorkflowDefinition }) => void): void;
-  onWorkflowComplete(cb: (data: { runId: string; status: "completed" | "failed"; finalSignal?: string }) => void): void;
+  onWorkflowComplete(cb: (data: { runId: string; status: "completed" | "failed"; finalSignal?: string; report?: RunReport }) => void): void;
   onSignalEmitted(cb: (data: { stepId: string; signal: string; payload?: unknown; timestamp: number }) => void): void;
   onEdgeMatched(cb: (data: { fromStep: string; signal: string; toStep: string; timestamp: number }) => void): void;
   onGateResult(cb: (data: { stepId: string; gate: string; exitCode: number; output: string }) => void): void;
   onLoopDetected(cb: (data: { stepId: string; iteration: number; reason: string; fromSignal: string }) => void): void;
   onStepContext(cb: (data: { stepId: string; agent: string; context: string[]; emits: string[] }) => void): void;
+  onStepFrame(cb: (data: StepFrame) => void): void;
+  onStepChat(cb: (data: { stepId: string; runId: string } & StepChatFrame) => void): void;
   write(data: string): void;
   prompt(text: string, mentions?: PromptMention[]): Promise<void>;
   cancelMain(): void;
