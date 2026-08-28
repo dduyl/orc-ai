@@ -13,16 +13,17 @@ import { renderToolCall, renderToolCallUpdate } from "./acp/render.js";
 import { log } from "../../core/log.js";
 import { AgentCallError, classifyAgentError, toQuotaInfo } from "./errors.js";
 
-/** Env switch that routes supported adapters through ACP instead of the PTY. */
-export const ACP_ENABLED_ENV = "ORC_ACP_ENABLED";
+/** Env switch that opts supported adapters OUT of ACP (defaults to on). */
+export const ACP_DISABLED_ENV = "ORC_ACP_DISABLED";
 
 /**
  * Whether an adapter should dispatch through ACP for this process.
- * `ORC_ACP_ENABLED=1` opts in; the adapter must also have a registered ACP
- * strategy whose probe succeeded. Absent either, the PTY path stays active.
+ * ACP is **on by default**; `ORC_ACP_DISABLED=1` opts out. The adapter must
+ * also have a registered ACP strategy whose probe succeeded — absent either,
+ * the PTY path stays active.
  */
 export function acpEnabledFor(adapterId: string): boolean {
-  if (process.env[ACP_ENABLED_ENV] !== "1") return false;
+  if (process.env[ACP_DISABLED_ENV] === "1") return false;
   const strat = getAcpStrategy(adapterId);
   if (!strat) return false;
   if (!strat.available) {

@@ -46,7 +46,7 @@ export class DaemonBridge {
   private mainBuffer = "";
   private stepBuffers = new Map<string, string>();
   /** `pty` → raw ANSI bytes on the main pipe; `acp` → structured `MainFrame`s. */
-  private mainMode: "pty" | "acp" = "pty";
+  private mainMode: "pty" | "acp" = "acp";
   private activeStepId = MAIN_STEP_ID;
   private latestRunId: string | null = null;
   private mainExited = false;

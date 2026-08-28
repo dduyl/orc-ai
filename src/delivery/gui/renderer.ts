@@ -64,7 +64,7 @@ let latestRunId: string | null = null;
 let latestWorkflowName: string = "workflow";
 let currentStepId: string | null = MAIN_STEP_ID;
 /** `pty` → bytes to a tty; `acp` → structured frames on the DOM chat panel. */
-let mainMode: "pty" | "acp" = "pty";
+let mainMode: "pty" | "acp" = "acp";
 let connected = false;
 let busy = false;
 let activeView: "graph" | "steps" | "chat" | "terminal" = "graph";

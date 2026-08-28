@@ -769,7 +769,8 @@ describe("renderer flow", () => {
 
   it("graph node click does NOT update step-chat-title in PTY mode", async () => {
     await loadRenderer();
-    // Stay in PTY mode (default)
+    // Explicitly enter PTY mode
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "pty" });
     expect(canvasCallbacks.onNodeClick).not.toBeNull();
     canvasCallbacks.onNodeClick!("step-42");
     // Step chat title should remain unchanged
