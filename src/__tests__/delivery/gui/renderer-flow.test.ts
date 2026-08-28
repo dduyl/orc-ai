@@ -40,6 +40,9 @@ vi.mock("../../../delivery/gui/graph-canvas.js", () => ({
     updateNodeStatus() {}
     highlightEdge() {}
     getData() { return { nodes: [], edges: [] }; }
+    render() {}
+    setActiveNode() {}
+    setLoopCount() {}
   },
 }));
 
@@ -750,5 +753,245 @@ describe("renderer flow", () => {
 
     stepList.unmount();
     listContainer.remove();
+  });
+
+  it("graph node click updates step-chat-title in ACP mode", async () => {
+    await loadRenderer();
+    // Enter ACP mode
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    // Simulate graph node click
+    expect(canvasCallbacks.onNodeClick).not.toBeNull();
+    canvasCallbacks.onNodeClick!("step-42");
+    // Step chat panel should show the clicked step
+    const title = document.getElementById("step-chat-title");
+    expect(title?.textContent).toBe("step-42");
+  });
+
+  it("graph node click does NOT update step-chat-title in PTY mode", async () => {
+    await loadRenderer();
+    // Stay in PTY mode (default)
+    expect(canvasCallbacks.onNodeClick).not.toBeNull();
+    canvasCallbacks.onNodeClick!("step-42");
+    // Step chat title should remain unchanged
+    const title = document.getElementById("step-chat-title");
+    expect(title?.textContent).toBe("Select a step");
+  });
+
+  it("onStepActivated updates step-chat-title in ACP mode for non-main steps", async () => {
+    await loadRenderer();
+    // Enter ACP mode
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    // Simulate step activation for a non-main step (async handler awaits getStepOutput)
+    fire("step", { stepId: "arch" });
+    await vi.waitFor(() => {
+      const title = document.getElementById("step-chat-title");
+      expect(title?.textContent).toBe("arch");
+    });
+  });
+
+  it("onStepActivated does NOT update step-chat-title for __main__ step", async () => {
+    await loadRenderer();
+    // Enter ACP mode
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    // Simulate step activation for __main__ (async handler awaits getStepOutput)
+    fire("step", { stepId: "__main__" });
+    await vi.waitFor(() => {
+      const title = document.getElementById("step-chat-title");
+      expect(title?.textContent).toBe("Select a step");
+    });
+  });
+
+  it("renders completion summary in chat when report is present", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    fire("workflowStarted", {
+      runId: "r1",
+      workflowId: "wf-1",
+      workflow: {
+        version: 1,
+        workflow: { name: "Test Workflow", steps: [], completion: "Done" },
+      },
+    });
+    fire("workflowComplete", {
+      runId: "r1",
+      status: "completed",
+      finalSignal: "sig_done",
+      report: {
+        workflowId: "wf-1",
+        source: "registered",
+        outcomes: [
+          { stepId: "arch", status: "completed", summary: "architecture done", retries: 0 },
+        ],
+        totalSteps: 1,
+        completed: 1,
+        failed: 0,
+        paused: 0,
+      },
+    });
+
+    const chatText = el("chat-list").textContent;
+    expect(chatText).toContain("Test Workflow");
+    expect(chatText).toContain("COMPLETED");
+    expect(chatText).toContain("arch");
+    expect(chatText).toContain("architecture done");
+  });
+
+  it("switches to chat view on completion in ACP mode", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    fire("workflowStarted", {
+      runId: "r1",
+      workflowId: "wf-1",
+      workflow: {
+        version: 1,
+        workflow: { name: "My WF", steps: [], completion: "Done" },
+      },
+    });
+    // Start on graph view
+    expect(el("chat-view").classList.contains("active")).toBe(false);
+
+    fire("workflowComplete", {
+      runId: "r1",
+      status: "completed",
+      report: {
+        workflowId: "wf-1",
+        source: "registered",
+        outcomes: [],
+        totalSteps: 0,
+        completed: 0,
+        failed: 0,
+        paused: 0,
+      },
+    });
+
+    expect(el("chat-view").classList.contains("active")).toBe(true);
+  });
+
+  it("does not show completion message when report is undefined (old daemon)", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    fire("workflowStarted", {
+      runId: "r1",
+      workflowId: "wf-1",
+      workflow: {
+        version: 1,
+        workflow: { name: "Old WF", steps: [], completion: "Done" },
+      },
+    });
+    const chatBefore = el("chat-list").innerHTML;
+
+    fire("workflowComplete", {
+      runId: "r1",
+      status: "completed",
+    });
+
+    // No completion summary added — chat unchanged (except for empty state removal)
+    const chatAfter = el("chat-list").innerHTML;
+    expect(chatAfter).not.toContain("COMPLETED");
+    expect(chatAfter).not.toContain("Old WF");
+  });
+
+  it("falls back to generic workflow name when not cached", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    // Skip workflowStarted — no cached name
+
+    fire("workflowComplete", {
+      runId: "r1",
+      status: "completed",
+      report: {
+        workflowId: "wf-1",
+        source: "registered",
+        outcomes: [],
+        totalSteps: 0,
+        completed: 0,
+        failed: 0,
+        paused: 0,
+      },
+    });
+
+    const chatText = el("chat-list").textContent;
+    expect(chatText).toContain("workflow");
+  });
+
+  it("full ACP workflow: start → step frames → complete → graph click shows step chat", async () => {
+    await loadRenderer();
+    // 1. Enter ACP mode
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+
+    // 2. Workflow starts
+    fire("workflowStarted", {
+      runId: "r1",
+      workflowId: "wf-1",
+      workflow: {
+        version: 1,
+        workflow: { name: "E2E Workflow", steps: [], completion: "Done" },
+      },
+    });
+
+    // 3. Step frames arrive for "arch"
+    fire("stepFrame", {
+      stepId: "arch",
+      type: "tool_call",
+      data: { toolCallId: "tc-1", title: "write_file" },
+    });
+    fire("stepFrame", {
+      stepId: "arch",
+      type: "usage",
+      data: { totalTokens: 1500, inputTokens: 1000, outputTokens: 500 },
+    });
+
+    // 4. Workflow completes with report
+    fire("workflowComplete", {
+      runId: "r1",
+      status: "completed",
+      finalSignal: "sig_done",
+      report: {
+        workflowId: "wf-1",
+        source: "registered",
+        outcomes: [
+          { stepId: "arch", status: "completed", summary: "architecture done", retries: 0 },
+        ],
+        totalSteps: 1,
+        completed: 1,
+        failed: 0,
+        paused: 0,
+      },
+    });
+
+    // 5. Verify completion summary in chat
+    const chatText = el("chat-list").textContent;
+    expect(chatText).toContain("E2E Workflow");
+    expect(chatText).toContain("completed");
+    expect(chatText).toContain("1/1");
+
+    // 6. Graph click on "arch" → step chat panel shows buffered frames
+    canvasCallbacks.onNodeClick!("arch");
+    const title = document.getElementById("step-chat-title");
+    expect(title?.textContent).toBe("arch");
+  });
+
+  it("old daemon (no report) → event logged but no completion message in chat", async () => {
+    await loadRenderer();
+    fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
+    fire("workflowStarted", {
+      runId: "r1",
+      workflowId: "wf-1",
+      workflow: {
+        version: 1,
+        workflow: { name: "Old Workflow", steps: [], completion: "Done" },
+      },
+    });
+    // Complete without report (old daemon)
+    fire("workflowComplete", {
+      runId: "r1",
+      status: "completed",
+    });
+    // Old daemon: no report → no completion message in chat
+    const chatText = el("chat-list").textContent;
+    expect(chatText).not.toContain("completed");
+    // But the event log should show the workflow completed
+    const eventText = el("event-list").textContent;
+    expect(eventText).toContain("completed");
   });
 });

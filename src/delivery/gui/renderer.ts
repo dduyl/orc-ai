@@ -14,6 +14,7 @@ import { WorkflowLauncher } from "./workflow-launcher.js";
 import { addEvent, setViewLabel, renderPTYTree, renderStepTree, type StepInfo } from "./ui-renderers.js";
 import { initSplitter } from "./splitter.js";
 import { GUIDE_TEXT } from "../../adapters/mcp/handlers/content.js";
+import { buildCompletionPrompt } from "../../application/harness/completion.js";
 import type { AgentCommand, AgentConfigOption } from "../../application/harness/daemon/main-frame-codec.js";
 import type { WorkflowDefinition } from "../../core/schemas.js";
 import type { RunRecord } from "../../application/harness/persistence/Tracker.js";
@@ -28,9 +29,14 @@ const graphView = new GraphView({
   onStepClick: (stepId) => {
     setActiveView("steps");
     stepsView.selectStep(stepId);
+    if (mainMode === "acp") selectStepChat(stepId);
   },
 });
-const stepsView = new StepsView();
+const stepsView = new StepsView({
+  onStepChat: (stepId) => {
+    if (mainMode === "acp") selectStepChat(stepId);
+  },
+});
 const terminalView = new TerminalView();
 const signalTrace = new SignalTrace();
 const activeStep = new ActiveStep();
@@ -55,6 +61,7 @@ const activity = new ActivityBox({
 });
 
 let latestRunId: string | null = null;
+let latestWorkflowName: string = "workflow";
 let currentStepId: string | null = MAIN_STEP_ID;
 /** `pty` → bytes to a tty; `acp` → structured frames on the DOM chat panel. */
 let mainMode: "pty" | "acp" = "pty";
@@ -481,6 +488,7 @@ async function refreshPTYTree(): Promise<void> {
     const steps = await api.listSteps();
     renderPTYTree(steps, currentStepId, refs.ptyTree, (stepId) => {
       api.switchStep(stepId).catch(() => {});
+      if (mainMode === "acp") selectStepChat(stepId);
     });
   } catch { /* ignore */ }
 }
@@ -611,6 +619,7 @@ api.onRunActive((data: { runId: string }) => {
 
 api.onWorkflowStarted((data: { runId: string; workflowId: string; workflow: WorkflowDefinition }) => {
   latestRunId = data.runId;
+  latestWorkflowName = data.workflow.workflow.name ?? "workflow";
   graphView.init(data.workflow);
   stepsView.setGateSteps(
     data.workflow.workflow.steps.filter(s => s.type === "script").map(s => s.id),
@@ -618,8 +627,12 @@ api.onWorkflowStarted((data: { runId: string; workflowId: string; workflow: Work
   setActiveView("graph");
 });
 
-api.onWorkflowComplete((data: { runId: string; status: "completed" | "failed"; finalSignal?: string }) => {
+api.onWorkflowComplete((data: { runId: string; status: "completed" | "failed"; finalSignal?: string; report?: import("./ipc.js").RunReport }) => {
   addEvent(`Workflow ${data.status} (${data.finalSignal ?? "—"})`, refs.eventList);
+  if (data.report) {
+    chat.addText(buildCompletionPrompt(data.runId, latestWorkflowName, data.report));
+    if (mainMode === "acp") setActiveView("chat");
+  }
   if (data.runId === latestRunId) {
     graphView.setStepStatus([]);
     activeStep.render({ stepId: "", agent: "", context: [], emits: [] });
@@ -665,6 +678,8 @@ api.onStepActivated(async (data: { stepId: string }) => {
   setActiveView(mainMode === "acp" && isMain ? "chat" : "terminal");
   refreshPTYTree();
   term.focus();
+
+  if (mainMode === "acp" && !isMain) selectStepChat(data.stepId);
 
   graphView.onStepActivated(data.stepId);
 });

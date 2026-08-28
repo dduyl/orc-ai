@@ -12,7 +12,7 @@
  */
 import type { MainFrame } from "../../application/harness/daemon/main-frame-codec.js";
 import type { PromptMention } from "../../application/harness/daemon/rpc-protocol.js";
-import type { ProgressEvent } from "../../application/harness/orchestrator/index.js";
+import type { ProgressEvent, RunReport } from "../../application/harness/orchestrator/index.js";
 import type { RunRecord } from "../../application/harness/persistence/Tracker.js";
 import type { PermissionRequest } from "../../application/agents/acp/permission.js";
 import type { PermissionAnswerKind } from "../../application/agents/acp/types.js";
@@ -29,6 +29,7 @@ export type {
   RegisteredWorkflow,
   WorkflowGraphData,
   SignalEvent,
+  RunReport,
 };
 
 /**
@@ -121,7 +122,7 @@ export interface MainToRendererEvents {
   "chat-reset": Record<string, never>;
   "stream-event": ProgressEvent;
   "workflow-started": { runId: string; workflowId: string; workflow: WorkflowDefinition };
-  "workflow-complete": { runId: string; status: "completed" | "failed"; finalSignal?: string };
+  "workflow-complete": { runId: string; status: "completed" | "failed"; finalSignal?: string; report?: RunReport };
   "signal-emitted": { stepId: string; signal: string; payload?: unknown; timestamp: number };
   "edge-matched": { fromStep: string; signal: string; toStep: string; timestamp: number };
   "gate-result": { stepId: string; gate: string; exitCode: number; output: string };
@@ -225,7 +226,7 @@ export interface GuiApi {
   onChatFrame(cb: (data: { frame: ChatFrame }) => void): void;
   onChatReset(cb: () => void): void;
   onWorkflowStarted(cb: (data: { runId: string; workflowId: string; workflow: WorkflowDefinition }) => void): void;
-  onWorkflowComplete(cb: (data: { runId: string; status: "completed" | "failed"; finalSignal?: string }) => void): void;
+  onWorkflowComplete(cb: (data: { runId: string; status: "completed" | "failed"; finalSignal?: string; report?: RunReport }) => void): void;
   onSignalEmitted(cb: (data: { stepId: string; signal: string; payload?: unknown; timestamp: number }) => void): void;
   onEdgeMatched(cb: (data: { fromStep: string; signal: string; toStep: string; timestamp: number }) => void): void;
   onGateResult(cb: (data: { stepId: string; gate: string; exitCode: number; output: string }) => void): void;

@@ -630,6 +630,7 @@ export class DaemonBridge {
         runId: info.runId,
         status: info.status === "completed" ? "completed" : "failed",
         finalSignal: undefined,
+        report: info.report,
       });
       this.forgetRunState(info.runId);
       // Do NOT clear stepBuffers here: the combined `__screen__` replay and per-step

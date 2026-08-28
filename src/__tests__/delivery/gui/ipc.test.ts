@@ -1,6 +1,6 @@
 import { describe, expect, it, expectTypeOf } from "vitest";
 import { IPC } from "../../../delivery/gui/ipc.js";
-import type { StepFrame, MainToRendererEvents } from "../../../delivery/gui/ipc.js";
+import type { StepFrame, MainToRendererEvents, RunReport } from "../../../delivery/gui/ipc.js";
 
 describe("IPC contract (gui)", () => {
   it("channel names are unique across all three groups", () => {
@@ -92,6 +92,55 @@ describe("IPC contract (gui)", () => {
       expect(frame.model).toBeUndefined();
       expect(frame.duration).toBeUndefined();
       expect(frame.toolCalls).toBeUndefined();
+    });
+  });
+
+  describe("workflow-complete channel", () => {
+    it("is registered in the MainToRenderer channel map", () => {
+      expect(IPC.MainToRenderer["workflow-complete"]).toBe("workflow-complete");
+    });
+
+    it("payload type has optional report field", () => {
+      // Compile-time: report is optional on the workflow-complete payload.
+      expectTypeOf<MainToRendererEvents["workflow-complete"]>().toHaveProperty("report");
+    });
+
+    it("accepts payload without report (backward compat with old daemon)", () => {
+      const event: MainToRendererEvents["workflow-complete"] = {
+        runId: "run-1",
+        status: "completed",
+      };
+      expect(event.report).toBeUndefined();
+    });
+
+    it("accepts payload with report", () => {
+      const report: RunReport = {
+        workflowId: "feat-impl",
+        source: "registered",
+        outcomes: [
+          { stepId: "arch", status: "completed", retries: 0 },
+        ],
+        totalSteps: 1,
+        completed: 1,
+        failed: 0,
+        paused: 0,
+      };
+      const event: MainToRendererEvents["workflow-complete"] = {
+        runId: "run-1",
+        status: "completed",
+        report,
+      };
+      expect(event.report).toBeDefined();
+      expect(event.report!.completed).toBe(1);
+    });
+
+    it("report field is truly optional (omitted compiles and is valid)", () => {
+      const event: MainToRendererEvents["workflow-complete"] = {
+        runId: "run-2",
+        status: "failed",
+        finalSignal: "sig_fail",
+      };
+      expect(event.report).toBeUndefined();
     });
   });
 });
