@@ -48,18 +48,6 @@ export interface DomRefs {
   chatCancel: HTMLButtonElement;
   chatSuggestions: HTMLElement;
   chatTabs: HTMLElement;
-  // activity box (permissions + tools)
-  activityBox: HTMLElement;
-  permissionSection: HTMLElement;
-  permissionText: HTMLElement;
-  permissionHint: HTMLElement;
-  permissionActions: HTMLElement;
-  permissionNav: HTMLElement;
-  permissionPrev: HTMLButtonElement;
-  permissionNext: HTMLButtonElement;
-  permissionCounter: HTMLElement;
-  toolsSection: HTMLElement;
-  toolList: HTMLElement;
   brandAdapter: HTMLElement;
   // graph view
   graphViewContainer: HTMLElement;
@@ -118,17 +106,6 @@ export function getDomRefs(): DomRefs {
     chatCancel: req("chat-cancel") as HTMLButtonElement,
     chatSuggestions: req("chat-suggestions"),
     chatTabs: req("chat-tabs"),
-    activityBox: req("activity-box"),
-    permissionSection: req("activity-permission"),
-    permissionText: req("permission-text"),
-    permissionHint: req("permission-hint"),
-    permissionActions: req("permission-actions"),
-    permissionNav: req("permission-nav"),
-    permissionPrev: req("permission-prev") as HTMLButtonElement,
-    permissionNext: req("permission-next") as HTMLButtonElement,
-    permissionCounter: req("permission-counter"),
-    toolsSection: req("activity-tools"),
-    toolList: req("tool-list"),
     brandAdapter: req("brand-adapter"),
     graphViewContainer: req("graph-view-container"),
     btnNewRun: req("btn-new-run") as HTMLButtonElement,

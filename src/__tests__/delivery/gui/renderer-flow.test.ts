@@ -116,25 +116,6 @@ const DOM = `
   <footer id="statusbar">
     <span id="term-size"></span><span id="exit-status"></span>
   </footer>
-  <div id="activity-box" hidden>
-    <div id="activity-permission" class="activity-section" hidden>
-      <div class="activity-section-head">
-        <span class="activity-section-title">Permission</span>
-        <span id="permission-nav" class="permission-nav" hidden>
-          <button id="permission-prev">‹</button>
-          <span id="permission-counter">1/1</span>
-          <button id="permission-next">›</button>
-        </span>
-      </div>
-      <p id="permission-text">Allow tool?</p>
-      <p id="permission-hint">The agent is waiting for your decision.</p>
-      <div id="permission-actions"></div>
-    </div>
-    <div id="activity-tools" class="activity-section" hidden>
-      <div class="activity-section-title">Activity</div>
-      <div id="tool-list"></div>
-    </div>
-  </div>
 </div>
 `;
 
@@ -281,19 +262,18 @@ describe("renderer flow", () => {
     fire("chatFrame", {
       frame: { kind: "tool", call: { toolCallId: "t1", title: "grep", name: "grep" } },
     });
-    const toolList = el("tool-list");
-    expect(toolList.querySelector(".tool-entry")).not.toBeNull();
-    expect(chatList().querySelector(".msg-tool")).toBeNull();
+    expect(chatList().querySelector(".tool-entry")).not.toBeNull();
+    expect(chatList().querySelector(".tool-entry .tool-title")?.textContent).toBe("grep");
 
     fire("chatFrame", {
       frame: { kind: "tool_update", update: { toolCallId: "t1", title: "grep", status: "completed" } },
     });
-    expect(toolList.querySelector(".tool-entry")?.classList.contains("done")).toBe(true);
+    expect(chatList().querySelector(".tool-entry")?.classList.contains("done")).toBe(true);
 
-    const head = toolList.querySelector(".tool-head") as HTMLElement | null;
+    const head = chatList().querySelector(".tool-head") as HTMLElement | null;
     expect(head).not.toBeNull();
     head!.click();
-    const entry = toolList.querySelector(".tool-entry") as HTMLElement;
+    const entry = chatList().querySelector(".tool-entry") as HTMLElement;
     expect(entry.classList.contains("expanded")).toBe(true);
 
     fire("chatFrame", { frame: { kind: "usage", usage: { totalTokens: 9, inputTokens: 4, outputTokens: 5 } } });
@@ -325,7 +305,7 @@ describe("renderer flow", () => {
     expect(el("chat-send").getAttribute("disabled")).toBeNull();
   });
 
-  it("queues permission requests in the activity box and navigates the queue", async () => {
+  it("renders permission requests as inline cards in the chat view", async () => {
     await loadRenderer();
     fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
 
@@ -340,34 +320,22 @@ describe("renderer flow", () => {
 
     fire("permission", request("req-1"));
 
-    expect(el("activity-box").hidden).toBe(false);
-    expect(el("permission-text").textContent).toContain("Run tests");
-    expect(el("permission-actions").querySelectorAll("button").length).toBe(2);
-    // Single pending request: no need for navigation.
-    expect(el("permission-nav").hidden).toBe(true);
+    const cards = () => chatList().querySelectorAll(".permission-card");
+    expect(cards()).toHaveLength(1);
+    expect(cards()[0].querySelector(".permission-text")?.textContent).toContain("Run tests");
+    expect(cards()[0].querySelectorAll("button").length).toBe(2);
 
     fire("permission", request("req-2"));
-    expect(el("permission-nav").hidden).toBe(false);
-    expect(el("permission-counter").textContent).toBe("1/2");
+    expect(cards()).toHaveLength(2);
 
-    // Navigate to the second request, then back to the first.
-    (el("permission-next") as HTMLButtonElement).click();
-    expect(el("permission-counter").textContent).toBe("2/2");
-    (el("permission-prev") as HTMLButtonElement).click();
-    expect(el("permission-counter").textContent).toBe("1/2");
-
-    const allowBtn = el("permission-actions").querySelector("button") as HTMLButtonElement;
+    // Answer the first request — its card is removed, second stays.
+    const allowBtn = cards()[0].querySelector("button") as HTMLButtonElement;
     allowBtn.click();
     expect(stub.calls.answerPermission[0]).toEqual(["req-1", "allow_once"]);
-
-    // The answered request left the queue; the box stays open for req-2.
-    expect(el("activity-box").hidden).toBe(false);
-    expect(el("permission-counter").textContent).toBe("1/1");
-    expect(el("permission-nav").hidden).toBe(true);
-    expect(el("permission-actions").querySelectorAll("button").length).toBe(2);
+    expect(cards()).toHaveLength(1);
   });
 
-  it("hides the activity box when a chat reset clears permissions and tools", async () => {
+  it("clears permission cards and tool entries on chat reset", async () => {
     await loadRenderer();
     fire("status", { type: "spawned", pid: 1, adapter: "opencode", mode: "acp" });
 
@@ -377,11 +345,12 @@ describe("renderer flow", () => {
       options: [{ optionId: "allow", kind: "allow_once", name: "Allow once" }],
     });
     fire("chatFrame", { frame: { kind: "tool", call: { toolCallId: "t1", title: "grep" } } });
-    expect(el("activity-box").hidden).toBe(false);
+    expect(chatList().querySelectorAll(".permission-card")).toHaveLength(1);
+    expect(chatList().querySelectorAll(".tool-entry")).toHaveLength(1);
 
     fire("chatReset", {});
-    expect(el("activity-box").hidden).toBe(true);
-    expect(el("tool-list").querySelectorAll(".tool-entry")).toHaveLength(0);
+    expect(chatList().querySelectorAll(".permission-card")).toHaveLength(0);
+    expect(chatList().querySelectorAll(".tool-entry")).toHaveLength(0);
   });
 
   it("cycles composer modes with Tab (normal -> workflow -> normal when no custom modes)", async () => {

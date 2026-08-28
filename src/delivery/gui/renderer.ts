@@ -2,8 +2,6 @@ import { createTerminal } from "./terminal.js";
 import { getDomRefs } from "./dom-refs.js";
 import { api } from "./api.js";
 import { ChatView } from "./chat-view.js";
-import { StepChatView } from "./step-chat-view.js";
-import { ActivityBox } from "./activity-box.js";
 import { MentionBox, type SuggestionItem } from "./mention-box.js";
 import { GraphView } from "./views/graph-view.js";
 import { StepsView } from "./views/steps-view.js";
@@ -42,24 +40,11 @@ const terminalView = new TerminalView();
 const signalTrace = new SignalTrace();
 const activeStep = new ActiveStep();
 const workflowLauncher = new WorkflowLauncher();
-const activity = new ActivityBox({
-  box: refs.activityBox,
-  permissionSection: refs.permissionSection,
-  permissionText: refs.permissionText,
-  permissionHint: refs.permissionHint,
-  permissionActions: refs.permissionActions,
-  permissionNav: refs.permissionNav,
-  permissionPrev: refs.permissionPrev,
-  permissionNext: refs.permissionNext,
-  permissionCounter: refs.permissionCounter,
-  toolsSection: refs.toolsSection,
-  toolList: refs.toolList,
-  onAnswer: (requestId, kind) => {
-    api.answerPermission(requestId, kind);
-    addEvent(`Permission answered: ${kind}`, refs.eventList);
-    setBusy(true, activity.hasPending() ? "Awaiting your decision…" : undefined);
-  },
-});
+function answerPermission(requestId: string, kind: string): void {
+  api.answerPermission(requestId, kind as import("../../application/agents/acp/types.js").PermissionAnswerKind);
+  addEvent(`Permission answered: ${kind}`, refs.eventList);
+  setBusy(false);
+}
 
 let latestRunId: string | null = null;
 let latestWorkflowName: string = "workflow";
@@ -404,8 +389,7 @@ interface ChatTab {
   stepId?: string;
   scrollEl: HTMLElement;
   listEl: HTMLElement;
-  view: StepChatView;
-  mainView?: ChatView;
+  view: ChatView;
   isMain: boolean;
 }
 
@@ -438,13 +422,14 @@ function ensureMainTab(): ChatTab {
   let tab = tabs.get(MAIN_TAB_ID);
   if (!tab) {
     const { scroll, list } = createTabContainer(MAIN_TAB_ID);
+    const view = new ChatView(list, scroll);
+    view.setPermissionHandler(answerPermission);
     tab = {
       id: MAIN_TAB_ID,
       label: "Main",
       scrollEl: scroll,
       listEl: list,
-      view: new StepChatView(list, scroll),
-      mainView: new ChatView(list, scroll),
+      view,
       isMain: true,
     };
     tabs.set(MAIN_TAB_ID, tab);
@@ -456,13 +441,15 @@ function openTab(stepId: string): void {
   let tab = tabs.get(stepId);
   if (!tab) {
     const { scroll, list } = createTabContainer(stepId);
+    const view = new ChatView(list, scroll);
+    view.setPermissionHandler(answerPermission);
     tab = {
       id: stepId,
       label: stepId,
       stepId,
       scrollEl: scroll,
       listEl: list,
-      view: new StepChatView(list, scroll),
+      view,
       isMain: false,
     };
     tabs.set(stepId, tab);
@@ -737,7 +724,7 @@ api.onWorkflowComplete((data: { runId: string; status: "completed" | "failed"; f
   addEvent(`Workflow ${data.status} (${data.finalSignal ?? "—"})`, refs.eventList);
   if (data.report) {
     const mainTab = ensureMainTab();
-    mainTab.mainView?.addText(buildCompletionPrompt(data.runId, latestWorkflowName, data.report));
+    mainTab.view.addText(buildCompletionPrompt(data.runId, latestWorkflowName, data.report));
     if (mainMode === "acp") setActiveView("chat");
   }
   if (data.runId === latestRunId) {
@@ -805,37 +792,36 @@ api.onStepActivated(async (data: { stepId: string }) => {
 // ── Chat panel (ACP main) ──────────────────────────────────────────────────
 api.onChatReset(() => {
   const mainTab = ensureMainTab();
-  mainTab.mainView?.clear();
-  activity.clear();
+  mainTab.view.clear();
 });
 
 api.onChatFrame((data) => {
   const frame = data.frame;
   const mainTab = ensureMainTab();
-  const mv = mainTab.mainView;
+  const mv = mainTab.view;
   switch (frame.kind) {
     case "text":
-      mv?.addText(frame.text);
+      mv.addText(frame.text);
       break;
     case "tool":
-      activity.addTool(frame.call);
+      mv.addToolCall(frame.call);
       break;
     case "tool_update":
-      activity.addToolUpdate(frame.update);
+      mv.addToolUpdate(frame.update);
       break;
     case "usage":
-      mv?.addUsage(frame.usage);
+      mv.addUsage(frame.usage);
       break;
     case "turn":
-      mv?.addTurn(frame.stopReason);
+      mv.addTurn(frame.stopReason);
       setBusy(false);
       break;
     case "error":
-      mv?.addError(frame.message);
+      mv.addError(frame.message);
       setBusy(false);
       break;
     case "user":
-      mv?.addUser(frame.text);
+      mv.addUser(frame.text);
       break;
     case "commands":
       commandCache = frame.commands;
@@ -898,7 +884,7 @@ api.onStepChat((data) => {
   }
 });
 
-function applyStepFrame(view: StepChatView, frame: StepFrame): void {
+function applyStepFrame(view: ChatView, frame: StepFrame): void {
   if (frame.toolCalls) {
     for (const tc of frame.toolCalls) view.addToolCall(tc);
   }
@@ -957,7 +943,7 @@ function submitChat(): void {
   commandGroup = null;
   suggestionBox.hide();
   const mainTab = ensureMainTab();
-  mainTab.mainView?.addUser(text);
+  mainTab.view.addUser(text);
   refs.chatInput.value = "";
   setBusy(true);
   api
@@ -969,7 +955,7 @@ function submitChat(): void {
       setBusy(false);
       const message = err instanceof Error ? err.message : String(err);
       const mainTab = ensureMainTab();
-      mainTab.mainView?.addError(message);
+      mainTab.view.addError(message);
     })
     .finally(() => refs.chatInput.focus());
 }
@@ -1026,9 +1012,10 @@ refs.chatCancel.addEventListener("click", () => {
   setBusy(true, "Cancelling…");
 });
 
-// ── Permission requests → activity box ─────────────────────────────────────
+// ── Permission requests → inline in chat ──────────────────────────────────
 api.onPermissionRequested((data) => {
-  activity.addPermission(data);
+  const mainTab = ensureMainTab();
+  mainTab.view.addPermission(data);
   setBusy(true, "Awaiting your decision…");
 });
 

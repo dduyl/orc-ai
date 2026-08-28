@@ -474,53 +474,18 @@ body::before {
 #sb-spacer { flex: 1; }
 #term-size, #exit-status { color: var(--text-faint); }
 
-/* ── Activity box (permissions + tools) ──────────────────── */
-#activity-box {
-  position: fixed; right: var(--space-4);
-  bottom: calc(var(--status-h) + var(--space-3));
-  width: min(400px, calc(100vw - 2 * var(--space-4)));
-  z-index: 40;
-  display: flex; flex-direction: column; gap: var(--space-3);
-  padding: var(--space-3);
-  background: rgba(13, 16, 20, 0.78); backdrop-filter: blur(8px);
-  border: 1px solid var(--border-strong); border-radius: var(--radius-md);
-  box-shadow: var(--shadow-pop);
-  font-family: var(--font-ui);
-}
-#activity-box[hidden] { display: none; }
-#activity-box[hidden] .activity-section { display: none; }
-
-.activity-section {
+.permission-card {
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-inset); padding: var(--space-2) var(--space-3);
   display: flex; flex-direction: column; gap: var(--space-2);
-  min-width: 0;
 }
-.activity-section[hidden] { display: none; }
-.activity-section-head {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
-  min-height: 22px;
-}
-.activity-section-title {
-  font-family: var(--font-ui); font-size: 10px; text-transform: uppercase;
-  letter-spacing: 1.6px; color: var(--text-faint); font-weight: 600;
-}
-.permission-nav {
-  display: flex; align-items: center; gap: var(--space-1);
-  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
-}
-.permission-nav[hidden] { display: none; }
-.btn-nav {
-  min-width: 22px; padding: 2px 6px; font-size: 13px; line-height: 1;
-  color: var(--text-secondary); border-color: var(--border-subtle);
-}
-.btn-nav:hover { color: var(--text-primary); border-color: var(--border-strong); }
-#permission-counter { min-width: 34px; text-align: center; }
-
-#permission-text {
+.permission-header {
+  display: flex; align-items: center; gap: var(--space-2);
   font-family: var(--font-mono); font-size: 12.5px; color: var(--text-primary);
-  line-height: 1.55; word-break: break-word;
 }
-#permission-hint { font-family: var(--font-ui); font-size: 10.5px; color: var(--text-faint); }
-#permission-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: flex-end; }
+.permission-icon { font-size: 14px; }
+.permission-text { line-height: 1.55; word-break: break-word; }
+.permission-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: flex-end; }
 
 .btn {
   font-family: var(--font-ui); font-size: 12px; padding: 7px 14px;
@@ -537,7 +502,6 @@ body::before {
 .title-actions { margin-left: var(--space-4); }
 .title-actions .btn { font-size: 11px; padding: 4px 10px; }
 
-#tool-list { display: flex; flex-direction: column; gap: var(--space-1); max-height: 40vh; overflow-y: auto; }
 .tool-entry {
   border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
   background: var(--bg-inset); overflow: hidden;
@@ -808,29 +772,6 @@ body::before {
     <span id="exit-status"></span>
   </footer>
 
-</div>
-
-<!-- Activity box: floating permissions + tool results -->
-<div id="activity-box" hidden>
-  <div id="activity-permission" class="activity-section" hidden>
-    <div class="activity-section-head">
-      <span class="activity-section-title">Permission</span>
-      <span id="permission-nav" class="permission-nav" hidden>
-        <button id="permission-prev" class="btn btn-nav" aria-label="Previous request">‹</button>
-        <span id="permission-counter">1/1</span>
-        <button id="permission-next" class="btn btn-nav" aria-label="Next request">›</button>
-      </span>
-    </div>
-    <p id="permission-text">Allow tool?</p>
-    <p id="permission-hint">The agent is waiting for your decision. Rejecting cancels this tool call.</p>
-    <div id="permission-actions"></div>
-  </div>
-  <div id="activity-tools" class="activity-section" hidden>
-    <div class="activity-section-head">
-      <span class="activity-section-title">Activity</span>
-    </div>
-    <div id="tool-list"></div>
-  </div>
 </div>
 
 <script src="renderer.js"></script>
